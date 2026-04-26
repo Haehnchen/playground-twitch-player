@@ -36,6 +36,8 @@ typedef struct {
     GtkWidget *stream_combo;
     GtkWidget *volume_scale;
     GtkWidget *status_label;
+    StreamEntry *streams;
+    guint stream_count;
     mpv_handle *mpv;
     mpv_render_context *mpv_gl;
     ChatPanel *chat_panel;
@@ -65,6 +67,7 @@ typedef enum {
 
 typedef enum {
     WINDOW_ICON_MINIMIZE,
+    WINDOW_ICON_FULLSCREEN,
     WINDOW_ICON_CLOSE,
 } WindowIconKind;
 
@@ -191,12 +194,12 @@ static void play_selected_stream(AppState *state)
 
     guint active = state->active_stream;
 
-    if (active >= G_N_ELEMENTS(STREAMS)) {
+    if (active >= state->stream_count) {
         set_status(state, "Kein Stream ausgewaehlt");
         return;
     }
 
-    load_stream_url(state, STREAMS[active].url, STREAMS[active].label, STREAMS[active].channel);
+    load_stream_url(state, state->streams[active].url, state->streams[active].label, state->streams[active].channel);
 }
 
 static void on_volume_changed(GtkRange *range, gpointer user_data)
@@ -296,6 +299,9 @@ static void draw_window_icon(GtkDrawingArea *area, cairo_t *cr, int width, int h
     if (kind == WINDOW_ICON_MINIMIZE) {
         cairo_move_to(cr, left, center_y);
         cairo_line_to(cr, right, center_y);
+    } else if (kind == WINDOW_ICON_FULLSCREEN) {
+        double inset = size * 0.06;
+        cairo_rectangle(cr, left + inset, top + inset, right - left - inset * 2, bottom - top - inset * 2);
     } else {
         cairo_move_to(cr, left, top);
         cairo_line_to(cr, right, bottom);
@@ -604,6 +610,12 @@ static void on_minimize_clicked(GtkButton *button, gpointer user_data)
     gtk_window_minimize(GTK_WINDOW(state->window));
 }
 
+static void on_fullscreen_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    toggle_fullscreen(user_data);
+}
+
 static void on_close_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
@@ -619,7 +631,7 @@ static void on_stream_menu_clicked(GtkButton *button, gpointer user_data)
     state->active_stream = GPOINTER_TO_UINT(index_data);
     GtkWidget *child = gtk_menu_button_get_child(GTK_MENU_BUTTON(state->stream_combo));
     if (GTK_IS_LABEL(child)) {
-        gtk_label_set_text(GTK_LABEL(child), STREAMS[state->active_stream].label);
+        gtk_label_set_text(GTK_LABEL(child), state->streams[state->active_stream].label);
     }
 
     GtkPopover *popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(state->stream_combo));
@@ -725,9 +737,9 @@ static GtkWidget *create_controls(AppState *state)
     gtk_widget_add_css_class(box, "video-footer");
 
     GtkWidget *stream_menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    for (guint i = 0; i < G_N_ELEMENTS(STREAMS); i++) {
+    for (guint i = 0; i < state->stream_count; i++) {
         GtkWidget *item = gtk_button_new();
-        GtkWidget *item_label = gtk_label_new(STREAMS[i].label);
+        GtkWidget *item_label = gtk_label_new(state->streams[i].label);
         gtk_label_set_xalign(GTK_LABEL(item_label), 0.0);
         gtk_widget_set_halign(item_label, GTK_ALIGN_FILL);
         gtk_widget_set_hexpand(item_label, TRUE);
@@ -748,7 +760,7 @@ static GtkWidget *create_controls(AppState *state)
 
     state->stream_combo = gtk_menu_button_new();
     gtk_widget_add_css_class(state->stream_combo, "stream-dropdown");
-    GtkWidget *stream_label = gtk_label_new(STREAMS[state->active_stream].label);
+    GtkWidget *stream_label = gtk_label_new(state->streams[state->active_stream].label);
     gtk_widget_add_css_class(stream_label, "stream-button-label");
     gtk_widget_set_halign(stream_label, GTK_ALIGN_START);
     gtk_label_set_xalign(GTK_LABEL(stream_label), 0.0);
@@ -936,44 +948,102 @@ static char *extract_twitch_channel(const char *target)
     return g_ascii_strdown(channel, -1);
 }
 
-static char *target_to_url(const char *target, const char **label, char **channel)
+static gboolean target_matches_stream(const char *target, const char *target_channel, const StreamEntry *stream)
 {
     if (target == NULL || target[0] == '\0') {
-        return NULL;
+        return FALSE;
     }
 
-    for (guint i = 0; i < G_N_ELEMENTS(STREAMS); i++) {
-        if (g_ascii_strcasecmp(target, STREAMS[i].label) == 0 ||
-            g_ascii_strcasecmp(target, STREAMS[i].channel) == 0 ||
-            g_ascii_strcasecmp(target, STREAMS[i].url) == 0) {
-            *label = STREAMS[i].label;
-            *channel = g_strdup(STREAMS[i].channel);
-            return g_strdup(STREAMS[i].url);
+    return g_ascii_strcasecmp(target, stream->label) == 0 ||
+        g_ascii_strcasecmp(target, stream->channel) == 0 ||
+        g_ascii_strcasecmp(target, stream->url) == 0 ||
+        (target_channel != NULL && g_ascii_strcasecmp(target_channel, stream->channel) == 0);
+}
+
+static void init_streams(AppState *state)
+{
+    guint base_count = G_N_ELEMENTS(STREAMS);
+    guint extra_count = 0;
+    guint active_stream = 0;
+    gboolean startup_known = FALSE;
+    g_autofree char *startup_channel = extract_twitch_channel(state->startup_target);
+    char *extra_label = NULL;
+    char *extra_channel = NULL;
+    char *extra_url = NULL;
+
+    if (state->startup_target != NULL && state->startup_target[0] != '\0') {
+        for (guint i = 0; i < base_count; i++) {
+            if (target_matches_stream(state->startup_target, startup_channel, &STREAMS[i])) {
+                active_stream = i;
+                startup_known = TRUE;
+                break;
+            }
         }
     }
 
-    if (g_str_has_prefix(target, "http://") || g_str_has_prefix(target, "https://")) {
-        *label = "custom URL";
-        *channel = extract_twitch_channel(target);
-        return g_strdup(target);
+    if (!startup_known && state->startup_target != NULL && state->startup_target[0] != '\0') {
+        extra_count = 1;
+
+        if (startup_channel != NULL) {
+            extra_label = g_strdup(startup_channel);
+            extra_channel = g_strdup(startup_channel);
+        } else if (g_str_has_prefix(state->startup_target, "http://") || g_str_has_prefix(state->startup_target, "https://")) {
+            extra_label = g_strdup(state->startup_target);
+        } else {
+            extra_label = g_strdup(state->startup_target);
+            extra_channel = g_ascii_strdown(state->startup_target, -1);
+        }
+
+        if (g_str_has_prefix(state->startup_target, "http://") || g_str_has_prefix(state->startup_target, "https://")) {
+            extra_url = g_strdup(state->startup_target);
+        } else {
+            extra_url = g_strdup_printf("https://www.twitch.tv/%s", state->startup_target);
+        }
+
+        active_stream = base_count;
     }
 
-    *label = target;
-    *channel = g_ascii_strdown(target, -1);
-    return g_strdup_printf("https://www.twitch.tv/%s", target);
+    state->stream_count = base_count + extra_count;
+    state->streams = g_new0(StreamEntry, state->stream_count);
+
+    for (guint i = 0; i < G_N_ELEMENTS(STREAMS); i++) {
+        state->streams[i].label = g_strdup(STREAMS[i].label);
+        state->streams[i].channel = g_strdup(STREAMS[i].channel);
+        state->streams[i].url = g_strdup(STREAMS[i].url);
+    }
+
+    if (extra_count == 1) {
+        state->streams[base_count].label = extra_label;
+        state->streams[base_count].channel = extra_channel;
+        state->streams[base_count].url = extra_url;
+    }
+
+    state->active_stream = active_stream;
+}
+
+static void free_streams(AppState *state)
+{
+    if (state->streams == NULL) {
+        return;
+    }
+
+    for (guint i = 0; i < state->stream_count; i++) {
+        g_free((char *)state->streams[i].label);
+        g_free((char *)state->streams[i].channel);
+        g_free((char *)state->streams[i].url);
+    }
+
+    g_clear_pointer(&state->streams, g_free);
+    state->stream_count = 0;
 }
 
 static void maybe_start_initial_stream(AppState *state)
 {
-    const char *label = NULL;
-    g_autofree char *channel = NULL;
-    g_autofree char *url = target_to_url(state->startup_target, &label, &channel);
-
-    if (url == NULL) {
+    if (state->startup_target == NULL || state->startup_target[0] == '\0') {
         return;
     }
 
-    load_stream_url(state, url, label, channel);
+    play_selected_stream(state);
 }
 
 static void destroy_state(gpointer user_data)
@@ -999,6 +1069,7 @@ static void destroy_state(gpointer user_data)
 
     chat_panel_free(state->chat_panel);
     state->chat_panel = NULL;
+    free_streams(state);
 }
 
 static void on_activate(GtkApplication *application, gpointer user_data)
@@ -1023,6 +1094,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     state->chat_paned_position = 740;
     state->active_stream = 0;
     state->chat_visible = TRUE;
+    init_streams(state);
 
     state->main_area = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_widget_set_hexpand(state->main_area, TRUE);
@@ -1046,7 +1118,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_overlay_set_child(GTK_OVERLAY(state->video_overlay), state->gl_area);
     gtk_paned_set_start_child(GTK_PANED(state->main_area), state->video_overlay);
 
-    state->chat_panel = chat_panel_new(state->chat_width);
+    state->chat_panel = chat_panel_new(state->chat_width / 2);
     gtk_paned_set_end_child(GTK_PANED(state->main_area), state->chat_panel->widget);
     gtk_paned_set_position(GTK_PANED(state->main_area), state->chat_paned_position);
 
@@ -1073,6 +1145,10 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     GtkWidget *minimize_button = create_overlay_button(create_window_icon(WINDOW_ICON_MINIMIZE), "Minimieren");
     gtk_box_append(GTK_BOX(state->top_controls), minimize_button);
     g_signal_connect(minimize_button, "clicked", G_CALLBACK(on_minimize_clicked), state);
+
+    GtkWidget *fullscreen_button = create_overlay_button(create_window_icon(WINDOW_ICON_FULLSCREEN), "Vollbild");
+    gtk_box_append(GTK_BOX(state->top_controls), fullscreen_button);
+    g_signal_connect(fullscreen_button, "clicked", G_CALLBACK(on_fullscreen_clicked), state);
 
     GtkWidget *close_button = create_overlay_button(create_window_icon(WINDOW_ICON_CLOSE), "Schliessen");
     gtk_widget_add_css_class(close_button, "close-button");

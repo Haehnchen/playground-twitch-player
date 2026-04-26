@@ -4,9 +4,12 @@
 
 #include "twitch_chat.h"
 
+typedef struct ChatPanelPrivate ChatPanelPrivate;
+
 typedef struct {
     GtkWidget *widget;
     TwitchChatClient *client;
+    ChatPanelPrivate *priv;
 } ChatPanel;
 
 ChatPanel *chat_panel_new(int width);
