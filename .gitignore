@@ -1,0 +1,5 @@
+build/
+.cache/
+.codex
+build
+.idea
