@@ -1,6 +1,7 @@
 # Twitch Player 2
 
-Simple Linux/Wayland Twitch player using GTK4 and libmpv.
+Simple Linux/Wayland Twitch player using GTK4, libmpv, and a read-only Twitch
+chat panel.
 
 The player embeds mpv through `libmpv` instead of trying to reparent an external mpv
 window. That matters on Wayland, where `mpv --wid` style embedding is not a reliable
@@ -8,7 +9,7 @@ application model.
 
 ## Streams
 
-The first MVP has three selectable Twitch channels:
+The default dropdown contains three Twitch channels:
 
 - https://www.twitch.tv/montanablack88
 - https://www.twitch.tv/papaplatte
@@ -47,21 +48,3 @@ Start with a channel or URL:
 ./build/twitch-player-2 papaplatte
 ./build/twitch-player-2 https://www.twitch.tv/montanablack88
 ```
-
-The app prints startup, libmpv, GL, and stream-loading diagnostics to the
-console.
-
-## Chat
-
-The app joins the selected Twitch channel chat anonymously/read-only via Twitch
-IRC and displays incoming chat messages in the right panel. Fullscreen hides the
-chat and controls so only the video remains visible.
-
-## Notes
-
-- Twitch playback is delegated to mpv, which uses yt-dlp for stream URL resolving.
-- The app forces mpv to `vo=libmpv` and `config=no` so user mpv config cannot
-  open a separate video window.
-- If a stream is offline or Twitch changes extraction behavior, update `yt-dlp` first.
-- A future overlay should be built as UI above the GL area first. A separate transparent
-  Wayland overlay window is compositor-dependent and should be treated as a second step.
