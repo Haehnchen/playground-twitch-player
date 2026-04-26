@@ -1,4 +1,4 @@
-# Twitch Player 2
+# Twitch Player
 
 Simple Linux/Wayland Twitch player using GTK4, libmpv, and a read-only Twitch
 chat panel.
@@ -36,15 +36,22 @@ meson setup build
 meson compile -C build
 ```
 
+Or use the Makefile wrapper:
+
+```bash
+make setup
+make build
+```
+
 ## Run
 
 ```bash
-./build/twitch-player-2
+./build/twitch-player
 ```
 
 Start with a channel or URL:
 
 ```bash
-./build/twitch-player-2 papaplatte
-./build/twitch-player-2 https://www.twitch.tv/montanablack88
+./build/twitch-player papaplatte
+./build/twitch-player https://www.twitch.tv/montanablack88
 ```

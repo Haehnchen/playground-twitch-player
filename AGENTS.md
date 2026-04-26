@@ -14,8 +14,8 @@
 ./scripts/check-deps.sh
 meson setup build
 meson compile -C build
-./build/twitch-player-2
-./build/twitch-player-2 papaplatte
+./build/twitch-player
+./build/twitch-player papaplatte
 ```
 
 Run `meson compile -C build` after code changes.

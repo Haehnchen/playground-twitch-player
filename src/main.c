@@ -1,4 +1,4 @@
-#define G_LOG_DOMAIN "twitch-player-2"
+#define G_LOG_DOMAIN "twitch-player"
 
 #include <gtk/gtk.h>
 #include <epoxy/egl.h>
@@ -9,6 +9,10 @@
 #include <math.h>
 
 #include "chat_panel.h"
+
+#define APP_ID "local.twitchplayer"
+#define APP_ICON_RESOURCE_PATH "/local/twitch-player/icons/hicolor/scalable/apps/local.twitch-player.svg"
+#define APP_ICON_RESOURCE_THEME_PATH "/local/twitch-player/icons"
 
 typedef struct {
     const char *label;
@@ -921,6 +925,91 @@ static void install_css(void)
     g_object_unref(provider);
 }
 
+static void install_app_icon(void)
+{
+    GtkIconTheme *theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
+    gtk_icon_theme_add_resource_path(theme, APP_ICON_RESOURCE_THEME_PATH);
+    gtk_window_set_default_icon_name(APP_ID);
+}
+
+static char *get_executable_path(const char *argv0)
+{
+    g_autofree char *link_path = g_file_read_link("/proc/self/exe", NULL);
+    if (link_path != NULL) {
+        return g_steal_pointer(&link_path);
+    }
+
+    if (g_path_is_absolute(argv0)) {
+        return g_strdup(argv0);
+    }
+
+    g_autofree char *cwd = g_get_current_dir();
+    return g_canonicalize_filename(argv0, cwd);
+}
+
+static char *quote_desktop_exec_path(const char *path)
+{
+    GString *quoted = g_string_new("\"");
+
+    for (const char *p = path; *p != '\0'; p++) {
+        if (*p == '"' || *p == '\\' || *p == '`' || *p == '$') {
+            g_string_append_c(quoted, '\\');
+        }
+        g_string_append_c(quoted, *p);
+    }
+
+    g_string_append_c(quoted, '"');
+    return g_string_free(quoted, FALSE);
+}
+
+static void write_user_desktop_identity(const char *argv0)
+{
+    g_autofree char *applications_dir = g_build_filename(g_get_user_data_dir(), "applications", NULL);
+    g_autofree char *icons_dir = g_build_filename(g_get_user_data_dir(), "icons", "hicolor", "scalable", "apps", NULL);
+    g_autofree char *desktop_path = g_build_filename(applications_dir, APP_ID ".desktop", NULL);
+    g_autofree char *icon_path = g_build_filename(icons_dir, APP_ID ".svg", NULL);
+    g_autofree char *exec_path = get_executable_path(argv0);
+    g_autofree char *quoted_exec = quote_desktop_exec_path(exec_path);
+    g_autoptr(GError) error = NULL;
+
+    if (g_mkdir_with_parents(applications_dir, 0700) < 0 || g_mkdir_with_parents(icons_dir, 0700) < 0) {
+        g_debug("could not create user desktop/icon directories");
+        return;
+    }
+
+    g_autoptr(GBytes) icon_data = g_resources_lookup_data(APP_ICON_RESOURCE_PATH, G_RESOURCE_LOOKUP_FLAGS_NONE, &error);
+    if (icon_data == NULL) {
+        g_debug("could not load embedded app icon: %s", error != NULL ? error->message : "unknown error");
+        return;
+    }
+
+    gsize icon_size = 0;
+    const char *icon_bytes = g_bytes_get_data(icon_data, &icon_size);
+    if (!g_file_set_contents(icon_path, icon_bytes, icon_size, &error)) {
+        g_debug("could not write user app icon: %s", error->message);
+        return;
+    }
+
+    g_autofree char *desktop = g_strdup_printf(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Twitch Player\n"
+        "Exec=%s %%u\n"
+        "Icon=%s\n"
+        "Terminal=false\n"
+        "Categories=AudioVideo;Player;Network;\n"
+        "StartupNotify=true\n"
+        "StartupWMClass=%s\n",
+        quoted_exec,
+        icon_path,
+        APP_ID
+    );
+
+    if (!g_file_set_contents(desktop_path, desktop, -1, &error)) {
+        g_debug("could not write desktop entry: %s", error->message);
+    }
+}
+
 static char *extract_twitch_channel(const char *target)
 {
     const char *start = strstr(target, "twitch.tv/");
@@ -1077,6 +1166,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     StartupConfig *config = user_data;
 
     install_css();
+    install_app_icon();
 
     AppState *state = g_new0(AppState, 1);
     state->application = application;
@@ -1086,6 +1176,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_window_set_title(GTK_WINDOW(state->window), "Twitch Player");
     gtk_window_set_default_size(GTK_WINDOW(state->window), 1100, 680);
     gtk_window_set_decorated(GTK_WINDOW(state->window), FALSE);
+    gtk_window_set_icon_name(GTK_WINDOW(state->window), APP_ID);
 
     GtkWidget *root = gtk_overlay_new();
     gtk_window_set_child(GTK_WINDOW(state->window), root);
@@ -1183,8 +1274,12 @@ int main(int argc, char **argv)
         .startup_target = argc > 1 ? argv[1] : NULL,
     };
 
+    g_set_prgname(APP_ID);
+    g_set_application_name("Twitch Player");
+    write_user_desktop_identity(argv[0]);
+
     g_autoptr(GtkApplication) application = gtk_application_new(
-        "dev.codex.twitch-player-2",
+        APP_ID,
         G_APPLICATION_NON_UNIQUE
     );
 
