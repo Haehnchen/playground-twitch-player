@@ -283,6 +283,38 @@ static GtkWidget *create_chat_icon(ChatIconKind kind)
     return icon;
 }
 
+static void draw_info_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
+{
+    (void)area;
+    (void)user_data;
+    double size = MIN(width, height);
+    double x = width / 2.0;
+    double y = height / 2.0;
+    double radius = size * 0.38;
+
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
+    cairo_set_line_width(cr, MAX(1.7, size * 0.08));
+    cairo_arc(cr, x, y, radius, 0, 2 * G_PI);
+    cairo_stroke(cr);
+
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_move_to(cr, x, y - radius * 0.05);
+    cairo_line_to(cr, x, y + radius * 0.50);
+    cairo_stroke(cr);
+
+    cairo_arc(cr, x, y - radius * 0.50, size * 0.045, 0, 2 * G_PI);
+    cairo_fill(cr);
+}
+
+static GtkWidget *create_info_icon(void)
+{
+    GtkWidget *icon = gtk_drawing_area_new();
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_info_icon, NULL, NULL);
+    return icon;
+}
+
 static void draw_window_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
 {
     (void)area;
@@ -607,6 +639,34 @@ static void on_chat_toggle_clicked(GtkButton *button, gpointer user_data)
     show_footer(state);
 }
 
+static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    AppState *state = user_data;
+
+    if (state->mpv == NULL) {
+        return;
+    }
+
+    const char *stats_cmd[] = {
+        "script-binding",
+        "stats/display-stats-toggle",
+        NULL,
+    };
+
+    int status = mpv_command(state->mpv, stats_cmd);
+    if (status < 0) {
+        const char *keypress_cmd[] = {
+            "keypress",
+            "i",
+            NULL,
+        };
+        check_mpv(mpv_command(state->mpv, keypress_cmd), "toggle stream info");
+    }
+
+    show_footer(state);
+}
+
 static void on_minimize_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
@@ -787,10 +847,14 @@ static GtkWidget *create_controls(AppState *state)
     gtk_box_append(GTK_BOX(box), state->footer_spacer);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
+    GtkWidget *stream_info_button = create_overlay_button(create_info_icon(), "Stream-Info anzeigen");
+    gtk_box_append(GTK_BOX(box), stream_info_button);
+
     state->chat_toggle_button = create_overlay_button(create_chat_icon(CHAT_ICON_CLOSE), "Chat schliessen");
     gtk_widget_add_css_class(state->chat_toggle_button, "chat-toggle");
     gtk_box_append(GTK_BOX(box), state->chat_toggle_button);
 
+    g_signal_connect(stream_info_button, "clicked", G_CALLBACK(on_stream_info_clicked), state);
     g_signal_connect(state->chat_toggle_button, "clicked", G_CALLBACK(on_chat_toggle_clicked), state);
     g_signal_connect(state->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), state);
 
