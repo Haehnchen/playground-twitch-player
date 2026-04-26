@@ -29,6 +29,7 @@ typedef struct {
     GtkWidget *video_overlay;
     GtkWidget *gl_area;
     GtkWidget *main_area;
+    GtkWidget *top_controls;
     GtkWidget *chat_toggle_button;
     GtkWidget *bottom_panel;
     GtkWidget *footer_spacer;
@@ -45,7 +46,10 @@ typedef struct {
     guint footer_hide_source;
     double last_motion_x;
     double last_motion_y;
+    double move_press_x;
+    double move_press_y;
     gboolean has_last_motion;
+    gboolean move_pressed;
     gboolean closing;
     gboolean fullscreen;
 } AppState;
@@ -58,6 +62,11 @@ typedef enum {
     CHAT_ICON_OPEN,
     CHAT_ICON_CLOSE,
 } ChatIconKind;
+
+typedef enum {
+    WINDOW_ICON_MINIMIZE,
+    WINDOW_ICON_CLOSE,
+} WindowIconKind;
 
 static void set_status(AppState *state, const char *message)
 {
@@ -267,6 +276,54 @@ static GtkWidget *create_chat_icon(ChatIconKind kind)
     return icon;
 }
 
+static void draw_window_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
+{
+    (void)area;
+    WindowIconKind kind = GPOINTER_TO_INT(user_data);
+    double size = MIN(width, height);
+    double x = (width - size) / 2.0;
+    double y = (height - size) / 2.0;
+    double left = x + size * 0.25;
+    double right = x + size * 0.75;
+    double top = y + size * 0.25;
+    double bottom = y + size * 0.75;
+    double center_y = y + size * 0.55;
+
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
+    cairo_set_line_width(cr, MAX(1.8, size * 0.10));
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+
+    if (kind == WINDOW_ICON_MINIMIZE) {
+        cairo_move_to(cr, left, center_y);
+        cairo_line_to(cr, right, center_y);
+    } else {
+        cairo_move_to(cr, left, top);
+        cairo_line_to(cr, right, bottom);
+        cairo_move_to(cr, right, top);
+        cairo_line_to(cr, left, bottom);
+    }
+
+    cairo_stroke(cr);
+}
+
+static GtkWidget *create_window_icon(WindowIconKind kind)
+{
+    GtkWidget *icon = gtk_drawing_area_new();
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 16);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 16);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_window_icon, GINT_TO_POINTER(kind), NULL);
+    return icon;
+}
+
+static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
+{
+    GtkWidget *button = gtk_button_new();
+    gtk_button_set_child(GTK_BUTTON(button), icon);
+    gtk_widget_add_css_class(button, "overlay-icon-button");
+    gtk_widget_set_tooltip_text(button, tooltip);
+    return button;
+}
+
 static gboolean hide_footer(gpointer user_data)
 {
     AppState *state = user_data;
@@ -275,6 +332,7 @@ static gboolean hide_footer(gpointer user_data)
 
     if (!state->closing) {
         gtk_widget_set_visible(state->bottom_panel, FALSE);
+        gtk_widget_set_visible(state->top_controls, FALSE);
         gtk_widget_set_visible(state->chat_toggle_button, FALSE);
     }
 
@@ -297,8 +355,81 @@ static void show_footer(AppState *state)
     }
 
     gtk_widget_set_visible(state->bottom_panel, TRUE);
+    gtk_widget_set_visible(state->top_controls, TRUE);
     gtk_widget_set_visible(state->chat_toggle_button, TRUE);
     schedule_footer_hide(state);
+}
+
+static gboolean get_toplevel_event_data(GtkWidget *window, GtkGesture *gesture, GdkToplevel **toplevel, GdkDevice **device, double *x, double *y, guint32 *timestamp)
+{
+    GtkNative *native = gtk_widget_get_native(window);
+    GdkSurface *surface = native != NULL ? gtk_native_get_surface(native) : NULL;
+    GdkEventSequence *sequence = gtk_gesture_get_last_updated_sequence(gesture);
+    GdkEvent *event = gtk_gesture_get_last_event(gesture, sequence);
+
+    if (surface == NULL || !GDK_IS_TOPLEVEL(surface) || event == NULL) {
+        return FALSE;
+    }
+
+    *device = gdk_event_get_device(event);
+    *timestamp = gdk_event_get_time(event);
+
+    if (*device == NULL || !gdk_event_get_position(event, x, y)) {
+        return FALSE;
+    }
+
+    *toplevel = GDK_TOPLEVEL(surface);
+    return TRUE;
+}
+
+static gboolean get_toplevel_event_data_from_event(GtkWidget *window, GdkEvent *event, GdkToplevel **toplevel, GdkDevice **device, double *x, double *y, guint32 *timestamp)
+{
+    GtkNative *native = gtk_widget_get_native(window);
+    GdkSurface *surface = native != NULL ? gtk_native_get_surface(native) : NULL;
+
+    if (surface == NULL || !GDK_IS_TOPLEVEL(surface) || event == NULL) {
+        return FALSE;
+    }
+
+    *device = gdk_event_get_device(event);
+    *timestamp = gdk_event_get_time(event);
+
+    if (*device == NULL || !gdk_event_get_position(event, x, y)) {
+        return FALSE;
+    }
+
+    *toplevel = GDK_TOPLEVEL(surface);
+    return TRUE;
+}
+
+static void begin_window_move_from_event(AppState *state, GdkEvent *event, guint button)
+{
+    GdkToplevel *toplevel = NULL;
+    GdkDevice *device = NULL;
+    double x = 0;
+    double y = 0;
+    guint32 timestamp = 0;
+
+    if (get_toplevel_event_data_from_event(state->window, event, &toplevel, &device, &x, &y, &timestamp)) {
+        gdk_toplevel_begin_move(toplevel, device, button, x, y, timestamp);
+    }
+}
+
+static void begin_window_resize(AppState *state, GtkGesture *gesture, GdkSurfaceEdge edge)
+{
+    if (state->fullscreen) {
+        return;
+    }
+
+    GdkToplevel *toplevel = NULL;
+    GdkDevice *device = NULL;
+    double x = 0;
+    double y = 0;
+    guint32 timestamp = 0;
+
+    if (get_toplevel_event_data(state->window, gesture, &toplevel, &device, &x, &y, &timestamp)) {
+        gdk_toplevel_begin_resize(toplevel, edge, device, GDK_BUTTON_PRIMARY, x, y, timestamp);
+    }
 }
 
 static void on_video_motion(GtkEventControllerMotion *controller, double x, double y, gpointer user_data)
@@ -343,6 +474,101 @@ static void on_video_pressed(GtkGestureClick *gesture, int n_press, double x, do
     }
 }
 
+static gboolean on_video_legacy_event(GtkEventControllerLegacy *controller, GdkEvent *event, gpointer user_data)
+{
+    (void)controller;
+    AppState *state = user_data;
+    GdkEventType type = gdk_event_get_event_type(event);
+
+    if (state->fullscreen) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    if (type == GDK_BUTTON_PRESS && gdk_button_event_get_button(event) == GDK_BUTTON_PRIMARY) {
+        state->move_pressed = gdk_event_get_position(event, &state->move_press_x, &state->move_press_y);
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    if (type == GDK_BUTTON_RELEASE && gdk_button_event_get_button(event) == GDK_BUTTON_PRIMARY) {
+        state->move_pressed = FALSE;
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    if (type != GDK_MOTION_NOTIFY || !state->move_pressed) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    if ((gdk_event_get_modifier_state(event) & GDK_BUTTON1_MASK) == 0) {
+        state->move_pressed = FALSE;
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    double x = 0;
+    double y = 0;
+    if (!gdk_event_get_position(event, &x, &y)) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    if (fabs(x - state->move_press_x) < 4.0 && fabs(y - state->move_press_y) < 4.0) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    state->move_pressed = FALSE;
+    begin_window_move_from_event(state, event, GDK_BUTTON_PRIMARY);
+    return GDK_EVENT_STOP;
+}
+
+static void on_resize_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data)
+{
+    (void)x;
+    (void)y;
+
+    if (n_press != 1) {
+        return;
+    }
+
+    GdkSurfaceEdge edge = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(gesture), "resize-edge"));
+    begin_window_resize(user_data, GTK_GESTURE(gesture), edge);
+}
+
+static GtkWidget *create_resize_handle(AppState *state, GdkSurfaceEdge edge, GtkAlign halign, GtkAlign valign, int width, int height, const char *cursor)
+{
+    GtkWidget *handle = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(handle, "resize-handle");
+    gtk_widget_set_halign(handle, halign);
+    gtk_widget_set_valign(handle, valign);
+    gtk_widget_set_size_request(handle, width, height);
+    gtk_widget_set_cursor_from_name(handle, cursor);
+
+    if (halign == GTK_ALIGN_FILL) {
+        gtk_widget_set_hexpand(handle, TRUE);
+    }
+    if (valign == GTK_ALIGN_FILL) {
+        gtk_widget_set_vexpand(handle, TRUE);
+    }
+
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), GDK_BUTTON_PRIMARY);
+    g_object_set_data(G_OBJECT(click), "resize-edge", GINT_TO_POINTER(edge));
+    g_signal_connect(click, "pressed", G_CALLBACK(on_resize_pressed), state);
+    gtk_widget_add_controller(handle, GTK_EVENT_CONTROLLER(click));
+
+    return handle;
+}
+
+static void add_resize_handles(GtkOverlay *overlay, AppState *state)
+{
+    gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_NORTH, GTK_ALIGN_FILL, GTK_ALIGN_START, -1, 6, "n-resize"));
+    gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_SOUTH, GTK_ALIGN_FILL, GTK_ALIGN_END, -1, 6, "s-resize"));
+    gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_WEST, GTK_ALIGN_START, GTK_ALIGN_FILL, 6, -1, "w-resize"));
+    gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_EAST, GTK_ALIGN_END, GTK_ALIGN_FILL, 6, -1, "e-resize"));
+
+    gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_NORTH_WEST, GTK_ALIGN_START, GTK_ALIGN_START, 12, 12, "nw-resize"));
+    gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_NORTH_EAST, GTK_ALIGN_END, GTK_ALIGN_START, 12, 12, "ne-resize"));
+    gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_SOUTH_WEST, GTK_ALIGN_START, GTK_ALIGN_END, 12, 12, "sw-resize"));
+    gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_SOUTH_EAST, GTK_ALIGN_END, GTK_ALIGN_END, 12, 12, "se-resize"));
+}
+
 static void set_chat_visible(AppState *state, gboolean visible)
 {
     state->chat_visible = visible;
@@ -369,6 +595,20 @@ static void on_chat_toggle_clicked(GtkButton *button, gpointer user_data)
     AppState *state = user_data;
     set_chat_visible(state, !state->chat_visible);
     show_footer(state);
+}
+
+static void on_minimize_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    AppState *state = user_data;
+    gtk_window_minimize(GTK_WINDOW(state->window));
+}
+
+static void on_close_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    AppState *state = user_data;
+    gtk_window_close(GTK_WINDOW(state->window));
 }
 
 static void on_stream_menu_clicked(GtkButton *button, gpointer user_data)
@@ -531,6 +771,11 @@ static GtkWidget *create_controls(AppState *state)
     gtk_box_append(GTK_BOX(box), state->footer_spacer);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
+    state->chat_toggle_button = create_overlay_button(create_chat_icon(CHAT_ICON_CLOSE), "Chat schliessen");
+    gtk_widget_add_css_class(state->chat_toggle_button, "chat-toggle");
+    gtk_box_append(GTK_BOX(box), state->chat_toggle_button);
+
+    g_signal_connect(state->chat_toggle_button, "clicked", G_CALLBACK(on_chat_toggle_clicked), state);
     g_signal_connect(state->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), state);
 
     return box;
@@ -577,19 +822,24 @@ static void install_css(void)
         "  padding: 8px;"
         "  border-radius: 0;"
         "}"
-        ".chat-toggle {"
+        ".top-overlay-controls {"
+        "  margin: 8px;"
+        "}"
+        ".overlay-icon-button {"
         "  background: rgba(0, 0, 0, 0.58);"
         "  color: white;"
         "  border-color: transparent;"
         "  outline-color: transparent;"
         "  box-shadow: none;"
-        "  margin: 8px;"
         "  min-width: 34px;"
         "  min-height: 30px;"
         "  padding: 4px 8px;"
         "}"
-        ".chat-toggle:hover {"
+        ".overlay-icon-button:hover {"
         "  background: rgba(54, 54, 54, 0.90);"
+        "}"
+        ".close-button:hover {"
+        "  background: rgba(170, 36, 36, 0.90);"
         "}"
         ".video-footer button,"
         ".video-footer menubutton,"
@@ -764,8 +1014,9 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     state->window = gtk_application_window_new(application);
     gtk_window_set_title(GTK_WINDOW(state->window), "Twitch Player");
     gtk_window_set_default_size(GTK_WINDOW(state->window), 1100, 680);
+    gtk_window_set_decorated(GTK_WINDOW(state->window), FALSE);
 
-    GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *root = gtk_overlay_new();
     gtk_window_set_child(GTK_WINDOW(state->window), root);
 
     state->chat_width = 360;
@@ -781,7 +1032,8 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_paned_set_shrink_start_child(GTK_PANED(state->main_area), FALSE);
     gtk_paned_set_resize_end_child(GTK_PANED(state->main_area), FALSE);
     gtk_paned_set_shrink_end_child(GTK_PANED(state->main_area), FALSE);
-    gtk_box_append(GTK_BOX(root), state->main_area);
+    gtk_overlay_set_child(GTK_OVERLAY(root), state->main_area);
+    add_resize_handles(GTK_OVERLAY(root), state);
 
     state->gl_area = gtk_gl_area_new();
     gtk_gl_area_set_auto_render(GTK_GL_AREA(state->gl_area), FALSE);
@@ -803,19 +1055,29 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     g_signal_connect(video_click, "pressed", G_CALLBACK(on_video_pressed), state);
     gtk_widget_add_controller(state->gl_area, GTK_EVENT_CONTROLLER(video_click));
 
+    GtkEventController *video_legacy = gtk_event_controller_legacy_new();
+    g_signal_connect(video_legacy, "event", G_CALLBACK(on_video_legacy_event), state);
+    gtk_widget_add_controller(state->gl_area, video_legacy);
+
     state->bottom_panel = create_controls(state);
     gtk_widget_set_halign(state->bottom_panel, GTK_ALIGN_FILL);
     gtk_widget_set_valign(state->bottom_panel, GTK_ALIGN_END);
     gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->bottom_panel);
 
-    state->chat_toggle_button = gtk_button_new();
-    gtk_button_set_child(GTK_BUTTON(state->chat_toggle_button), create_chat_icon(CHAT_ICON_CLOSE));
-    gtk_widget_add_css_class(state->chat_toggle_button, "chat-toggle");
-    gtk_widget_set_tooltip_text(state->chat_toggle_button, "Chat schliessen");
-    gtk_widget_set_halign(state->chat_toggle_button, GTK_ALIGN_END);
-    gtk_widget_set_valign(state->chat_toggle_button, GTK_ALIGN_START);
-    gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->chat_toggle_button);
-    g_signal_connect(state->chat_toggle_button, "clicked", G_CALLBACK(on_chat_toggle_clicked), state);
+    state->top_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_add_css_class(state->top_controls, "top-overlay-controls");
+    gtk_widget_set_halign(state->top_controls, GTK_ALIGN_END);
+    gtk_widget_set_valign(state->top_controls, GTK_ALIGN_START);
+    gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->top_controls);
+
+    GtkWidget *minimize_button = create_overlay_button(create_window_icon(WINDOW_ICON_MINIMIZE), "Minimieren");
+    gtk_box_append(GTK_BOX(state->top_controls), minimize_button);
+    g_signal_connect(minimize_button, "clicked", G_CALLBACK(on_minimize_clicked), state);
+
+    GtkWidget *close_button = create_overlay_button(create_window_icon(WINDOW_ICON_CLOSE), "Schliessen");
+    gtk_widget_add_css_class(close_button, "close-button");
+    gtk_box_append(GTK_BOX(state->top_controls), close_button);
+    g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), state);
 
     GtkEventController *video_motion = gtk_event_controller_motion_new();
     gtk_event_controller_set_propagation_phase(video_motion, GTK_PHASE_CAPTURE);
