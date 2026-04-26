@@ -243,7 +243,6 @@ void twitch_chat_client_start(TwitchChatClient *client, const char *channel)
     data->generation = client->generation;
     data->cancel = g_object_ref(client->cancel);
 
-    g_message("join #%s", data->channel);
     client->thread = g_thread_new("twitch-chat", chat_worker, data);
 }
 
