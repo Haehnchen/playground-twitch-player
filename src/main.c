@@ -7,15 +7,18 @@
 #include <mpv/render_gl.h>
 #include <locale.h>
 
+#include "chat_panel.h"
+
 typedef struct {
     const char *label;
+    const char *channel;
     const char *url;
 } StreamEntry;
 
 static const StreamEntry STREAMS[] = {
-    {"MontanaBlack88", "https://www.twitch.tv/montanablack88"},
-    {"Papaplatte", "https://www.twitch.tv/papaplatte"},
-    {"Rumathra", "https://www.twitch.tv/rumathra"},
+    {"MontanaBlack88", "montanablack88", "https://www.twitch.tv/montanablack88"},
+    {"Papaplatte", "papaplatte", "https://www.twitch.tv/papaplatte"},
+    {"Rumathra", "rumathra", "https://www.twitch.tv/rumathra"},
 };
 
 typedef struct {
@@ -23,12 +26,18 @@ typedef struct {
     const char *startup_target;
     GtkWidget *window;
     GtkWidget *gl_area;
+    GtkWidget *main_area;
+    GtkWidget *chat_toggle_button;
     GtkWidget *bottom_panel;
     GtkWidget *stream_combo;
     GtkWidget *volume_scale;
     GtkWidget *status_label;
     mpv_handle *mpv;
     mpv_render_context *mpv_gl;
+    ChatPanel *chat_panel;
+    int chat_width;
+    int chat_paned_position;
+    gboolean chat_visible;
     gboolean closing;
     gboolean fullscreen;
 } AppState;
@@ -40,6 +49,15 @@ typedef struct {
 static void set_status(AppState *state, const char *message)
 {
     gtk_label_set_text(GTK_LABEL(state->status_label), message);
+}
+
+static void start_chat(AppState *state, const char *channel)
+{
+    if (channel == NULL || channel[0] == '\0') {
+        return;
+    }
+
+    chat_panel_start(state->chat_panel, channel);
 }
 
 static void check_mpv(int status, const char *action)
@@ -126,7 +144,7 @@ static void on_mpv_wakeup(void *ctx)
     g_idle_add(process_mpv_events, ctx);
 }
 
-static void load_stream_url(AppState *state, const char *url, const char *label)
+static void load_stream_url(AppState *state, const char *url, const char *label, const char *channel)
 {
     g_message("mpv loadfile: %s (%s)", label, url);
 
@@ -138,6 +156,7 @@ static void load_stream_url(AppState *state, const char *url, const char *label)
     };
 
     set_status(state, "Stream wird gestartet");
+    start_chat(state, channel);
     check_mpv(mpv_command_async(state->mpv, 0, cmd), "loadfile");
 }
 
@@ -155,7 +174,7 @@ static void play_selected_stream(AppState *state)
         return;
     }
 
-    load_stream_url(state, STREAMS[active].url, STREAMS[active].label);
+    load_stream_url(state, STREAMS[active].url, STREAMS[active].label, STREAMS[active].channel);
 }
 
 static void on_stream_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
@@ -198,6 +217,29 @@ static void on_video_pressed(GtkGestureClick *gesture, int n_press, double x, do
     if (n_press == 2) {
         toggle_fullscreen(user_data);
     }
+}
+
+static void set_chat_visible(AppState *state, gboolean visible)
+{
+    state->chat_visible = visible;
+
+    if (visible) {
+        gtk_paned_set_end_child(GTK_PANED(state->main_area), state->chat_panel->widget);
+        gtk_paned_set_position(GTK_PANED(state->main_area), state->chat_paned_position);
+    } else {
+        state->chat_paned_position = gtk_paned_get_position(GTK_PANED(state->main_area));
+        g_object_ref(state->chat_panel->widget);
+        gtk_paned_set_end_child(GTK_PANED(state->main_area), NULL);
+    }
+
+    gtk_button_set_label(GTK_BUTTON(state->chat_toggle_button), visible ? "Chat schliessen" : "Chat oeffnen");
+}
+
+static void on_chat_toggle_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    AppState *state = user_data;
+    set_chat_visible(state, !state->chat_visible);
 }
 
 static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer user_data)
@@ -324,9 +366,12 @@ static GtkWidget *create_controls(AppState *state)
     gtk_scale_set_draw_value(GTK_SCALE(state->volume_scale), FALSE);
 
     gtk_box_append(GTK_BOX(box), state->stream_combo);
+    state->chat_toggle_button = gtk_button_new_with_label("Chat schliessen");
+    gtk_box_append(GTK_BOX(box), state->chat_toggle_button);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
     g_signal_connect(state->stream_combo, "notify::selected", G_CALLBACK(on_stream_changed), state);
+    g_signal_connect(state->chat_toggle_button, "clicked", G_CALLBACK(on_chat_toggle_clicked), state);
     g_signal_connect(state->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), state);
 
     return box;
@@ -371,7 +416,34 @@ static gboolean init_mpv(AppState *state)
     return TRUE;
 }
 
-static char *target_to_url(const char *target, const char **label)
+static char *extract_twitch_channel(const char *target)
+{
+    const char *start = strstr(target, "twitch.tv/");
+
+    if (start == NULL) {
+        return NULL;
+    }
+
+    start += strlen("twitch.tv/");
+
+    while (*start == '/') {
+        start++;
+    }
+
+    const char *end = start;
+    while (g_ascii_isalnum(*end) || *end == '_') {
+        end++;
+    }
+
+    if (end == start) {
+        return NULL;
+    }
+
+    g_autofree char *channel = g_strndup(start, end - start);
+    return g_ascii_strdown(channel, -1);
+}
+
+static char *target_to_url(const char *target, const char **label, char **channel)
 {
     if (target == NULL || target[0] == '\0') {
         return NULL;
@@ -379,25 +451,30 @@ static char *target_to_url(const char *target, const char **label)
 
     for (guint i = 0; i < G_N_ELEMENTS(STREAMS); i++) {
         if (g_ascii_strcasecmp(target, STREAMS[i].label) == 0 ||
+            g_ascii_strcasecmp(target, STREAMS[i].channel) == 0 ||
             g_ascii_strcasecmp(target, STREAMS[i].url) == 0) {
             *label = STREAMS[i].label;
+            *channel = g_strdup(STREAMS[i].channel);
             return g_strdup(STREAMS[i].url);
         }
     }
 
     if (g_str_has_prefix(target, "http://") || g_str_has_prefix(target, "https://")) {
         *label = "custom URL";
+        *channel = extract_twitch_channel(target);
         return g_strdup(target);
     }
 
     *label = target;
+    *channel = g_ascii_strdown(target, -1);
     return g_strdup_printf("https://www.twitch.tv/%s", target);
 }
 
 static void maybe_start_initial_stream(AppState *state)
 {
     const char *label = NULL;
-    g_autofree char *url = target_to_url(state->startup_target, &label);
+    g_autofree char *channel = NULL;
+    g_autofree char *url = target_to_url(state->startup_target, &label, &channel);
 
     if (url == NULL) {
         g_message("no startup stream target provided");
@@ -405,7 +482,7 @@ static void maybe_start_initial_stream(AppState *state)
     }
 
     g_message("startup stream target: %s -> %s", state->startup_target, url);
-    load_stream_url(state, url, label);
+    load_stream_url(state, url, label, channel);
 }
 
 static void destroy_state(gpointer user_data)
@@ -424,6 +501,9 @@ static void destroy_state(gpointer user_data)
         mpv_terminate_destroy(state->mpv);
         state->mpv = NULL;
     }
+
+    chat_panel_free(state->chat_panel);
+    state->chat_panel = NULL;
 }
 
 static void on_activate(GtkApplication *application, gpointer user_data)
@@ -443,11 +523,29 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_window_set_child(GTK_WINDOW(state->window), root);
 
+    state->chat_width = 360;
+    state->chat_paned_position = 740;
+    state->chat_visible = TRUE;
+
+    state->main_area = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_hexpand(state->main_area, TRUE);
+    gtk_widget_set_vexpand(state->main_area, TRUE);
+    gtk_paned_set_wide_handle(GTK_PANED(state->main_area), TRUE);
+    gtk_paned_set_resize_start_child(GTK_PANED(state->main_area), TRUE);
+    gtk_paned_set_shrink_start_child(GTK_PANED(state->main_area), FALSE);
+    gtk_paned_set_resize_end_child(GTK_PANED(state->main_area), FALSE);
+    gtk_paned_set_shrink_end_child(GTK_PANED(state->main_area), FALSE);
+    gtk_box_append(GTK_BOX(root), state->main_area);
+
     state->gl_area = gtk_gl_area_new();
     gtk_gl_area_set_auto_render(GTK_GL_AREA(state->gl_area), FALSE);
     gtk_widget_set_hexpand(state->gl_area, TRUE);
     gtk_widget_set_vexpand(state->gl_area, TRUE);
-    gtk_box_append(GTK_BOX(root), state->gl_area);
+    gtk_paned_set_start_child(GTK_PANED(state->main_area), state->gl_area);
+
+    state->chat_panel = chat_panel_new(state->chat_width);
+    gtk_paned_set_end_child(GTK_PANED(state->main_area), state->chat_panel->widget);
+    gtk_paned_set_position(GTK_PANED(state->main_area), state->chat_paned_position);
 
     GtkGesture *video_click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(video_click), GDK_BUTTON_PRIMARY);

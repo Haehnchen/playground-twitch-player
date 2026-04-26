@@ -14,7 +14,11 @@ epoxy_dep = dependency('epoxy')
 
 executable(
   'twitch-player-2',
-  'src/main.c',
+  [
+    'src/main.c',
+    'src/chat_panel.c',
+    'src/twitch_chat.c',
+  ],
   dependencies: [gtk_dep, mpv_dep, epoxy_dep],
   install: true,
 )

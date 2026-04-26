@@ -51,6 +51,12 @@ Start with a channel or URL:
 The app prints startup, libmpv, GL, and stream-loading diagnostics to the
 console.
 
+## Chat
+
+The app joins the selected Twitch channel chat anonymously/read-only via Twitch
+IRC and displays incoming chat messages in the right panel. Fullscreen hides the
+chat and controls so only the video remains visible.
+
 ## Notes
 
 - Twitch playback is delegated to mpv, which uses yt-dlp for stream URL resolving.
