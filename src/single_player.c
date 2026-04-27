@@ -51,6 +51,7 @@ struct _SinglePlayer {
     int chat_paned_position;
     int last_render_width;
     int last_render_height;
+    gint render_queued;
     guint active_stream;
     gboolean chat_visible;
     guint footer_hide_source;
@@ -224,6 +225,8 @@ static gboolean queue_mpv_render(gpointer user_data)
 {
     SinglePlayer *state = user_data;
 
+    g_atomic_int_set(&state->render_queued, 0);
+
     if (!state->closing && state->gl_area != NULL) {
         gtk_gl_area_queue_render(GTK_GL_AREA(state->gl_area));
     }
@@ -233,7 +236,11 @@ static gboolean queue_mpv_render(gpointer user_data)
 
 static void on_mpv_render_update(void *ctx)
 {
-    g_idle_add(queue_mpv_render, ctx);
+    SinglePlayer *state = ctx;
+
+    if (g_atomic_int_compare_and_exchange(&state->render_queued, 0, 1)) {
+        g_idle_add(queue_mpv_render, state);
+    }
 }
 
 static gboolean process_mpv_events(gpointer user_data)
@@ -969,6 +976,12 @@ static gboolean init_mpv(SinglePlayer *state)
     check_mpv(mpv_set_option_string(state->mpv, "vo", "libmpv"), "set vo");
     check_mpv(mpv_set_option_string(state->mpv, "ytdl", "yes"), "set ytdl");
     check_mpv(mpv_set_option_string(state->mpv, "hwdec", PLAYER_DEFAULT_MPV_HWDEC), "set hwdec");
+    check_mpv(mpv_set_option_string(state->mpv, "cache", PLAYER_DEFAULT_MPV_CACHE), "set cache");
+    check_mpv(mpv_set_option_string(state->mpv, "cache-pause-initial", PLAYER_DEFAULT_MPV_CACHE_PAUSE_INITIAL), "set cache pause initial");
+    check_mpv(mpv_set_option_string(state->mpv, "cache-pause-wait", PLAYER_DEFAULT_MPV_CACHE_PAUSE_WAIT), "set cache pause wait");
+    check_mpv(mpv_set_option_string(state->mpv, "demuxer-readahead-secs", PLAYER_DEFAULT_MPV_DEMUXER_READAHEAD_SECS), "set demuxer readahead");
+    check_mpv(mpv_set_option_string(state->mpv, "stream-buffer-size", PLAYER_DEFAULT_MPV_STREAM_BUFFER_SIZE), "set stream buffer size");
+    check_mpv(mpv_set_option_string(state->mpv, "video-sync", PLAYER_DEFAULT_MPV_VIDEO_SYNC), "set video sync");
     check_mpv(mpv_set_option_string(state->mpv, "volume", "80"), "set volume");
     int status = mpv_initialize(state->mpv);
     if (status < 0) {
