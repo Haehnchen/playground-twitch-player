@@ -248,6 +248,29 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
     check_mpv(mpv_set_property(state->mpv, "volume", MPV_FORMAT_DOUBLE, &volume), "set volume");
 }
 
+static void change_volume(AppState *state, double delta)
+{
+    double volume = gtk_range_get_value(GTK_RANGE(state->volume_scale));
+
+    volume = CLAMP(volume + delta, 0.0, 130.0);
+    gtk_range_set_value(GTK_RANGE(state->volume_scale), volume);
+}
+
+static void toggle_mute(AppState *state)
+{
+    if (state->mpv == NULL) {
+        return;
+    }
+
+    const char *cmd[] = {
+        "cycle",
+        "mute",
+        NULL,
+    };
+
+    check_mpv(mpv_command(state->mpv, cmd), "toggle mute");
+}
+
 static void draw_chat_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
 {
     (void)area;
@@ -591,6 +614,41 @@ static gboolean on_video_legacy_event(GtkEventControllerLegacy *controller, GdkE
 
     state->move_pressed = FALSE;
     begin_window_move_from_event(state, event, GDK_BUTTON_PRIMARY);
+    return GDK_EVENT_STOP;
+}
+
+static gboolean on_video_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer user_data)
+{
+    (void)controller;
+    AppState *state = user_data;
+
+    if (fabs(dy) < fabs(dx) || dy == 0.0) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    change_volume(state, -dy * 5.0);
+    show_footer(state);
+
+    return GDK_EVENT_STOP;
+}
+
+static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType modifiers, gpointer user_data)
+{
+    (void)controller;
+    (void)keycode;
+    AppState *state = user_data;
+
+    if ((modifiers & GDK_CONTROL_MASK) != 0) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    if (keyval != GDK_KEY_m && keyval != GDK_KEY_M) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    toggle_mute(state);
+    show_footer(state);
+
     return GDK_EVENT_STOP;
 }
 
@@ -1399,6 +1457,11 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     g_signal_connect(video_legacy, "event", G_CALLBACK(on_video_legacy_event), state);
     gtk_widget_add_controller(state->gl_area, video_legacy);
 
+    GtkEventController *video_scroll = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
+    gtk_event_controller_set_propagation_phase(video_scroll, GTK_PHASE_CAPTURE);
+    g_signal_connect(video_scroll, "scroll", G_CALLBACK(on_video_scroll), state);
+    gtk_widget_add_controller(state->video_overlay, video_scroll);
+
     state->bottom_panel = create_controls(state);
     gtk_widget_set_halign(state->bottom_panel, GTK_ALIGN_FILL);
     gtk_widget_set_valign(state->bottom_panel, GTK_ALIGN_END);
@@ -1427,6 +1490,11 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_event_controller_set_propagation_phase(video_motion, GTK_PHASE_CAPTURE);
     g_signal_connect(video_motion, "motion", G_CALLBACK(on_video_motion), state);
     gtk_widget_add_controller(state->video_overlay, video_motion);
+
+    GtkEventController *key_controller = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
+    g_signal_connect(key_controller, "key-pressed", G_CALLBACK(on_key_pressed), state);
+    gtk_widget_add_controller(state->window, key_controller);
 
     if (!init_mpv(state)) {
         gtk_widget_set_sensitive(state->stream_combo, FALSE);

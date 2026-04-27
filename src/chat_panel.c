@@ -13,7 +13,9 @@ struct ChatPanelPrivate {
     ChatAssets *assets;
     GtkTextTag *reply_tag;
     guint scroll_source;
+    guint scroll_state_source;
     guint line_count;
+    gboolean follow_tail;
     gboolean closing;
 };
 
@@ -78,11 +80,8 @@ static void trim_old_lines(ChatPanel *panel)
     }
 }
 
-static gboolean is_scrolled_to_bottom(ChatPanel *panel)
+static gboolean adjustment_is_at_bottom(GtkAdjustment *adjustment)
 {
-    ChatPanelPrivate *priv = panel->priv;
-    GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(priv->scroller));
-
     if (adjustment == NULL) {
         return TRUE;
     }
@@ -92,6 +91,14 @@ static gboolean is_scrolled_to_bottom(ChatPanel *panel)
     double page_size = gtk_adjustment_get_page_size(adjustment);
 
     return value + page_size >= upper - 2.0;
+}
+
+static gboolean is_scrolled_to_bottom(ChatPanel *panel)
+{
+    ChatPanelPrivate *priv = panel->priv;
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(priv->scroller));
+
+    return adjustment_is_at_bottom(adjustment);
 }
 
 static gboolean scroll_to_end_idle(gpointer user_data)
@@ -112,6 +119,8 @@ static gboolean scroll_to_end_idle(gpointer user_data)
         gtk_adjustment_set_value(adjustment, MAX(0.0, upper - page_size));
     }
 
+    priv->follow_tail = TRUE;
+
     GtkTextMark *insert = gtk_text_buffer_get_insert(priv->buffer);
     gtk_text_view_scroll_mark_onscreen(GTK_TEXT_VIEW(priv->view), insert);
 
@@ -122,11 +131,62 @@ static void queue_scroll_to_end(ChatPanel *panel)
 {
     ChatPanelPrivate *priv = panel->priv;
 
+    priv->follow_tail = TRUE;
+
     if (priv->scroll_source != 0) {
         g_source_remove(priv->scroll_source);
     }
 
     priv->scroll_source = g_idle_add(scroll_to_end_idle, panel);
+}
+
+static gboolean update_scroll_state_idle(gpointer user_data)
+{
+    ChatPanel *panel = user_data;
+    ChatPanelPrivate *priv = panel->priv;
+
+    priv->scroll_state_source = 0;
+
+    if (!priv->closing) {
+        priv->follow_tail = is_scrolled_to_bottom(panel);
+    }
+
+    return G_SOURCE_REMOVE;
+}
+
+static void queue_scroll_state_update(ChatPanel *panel)
+{
+    ChatPanelPrivate *priv = panel->priv;
+
+    if (priv->scroll_state_source == 0) {
+        priv->scroll_state_source = g_idle_add(update_scroll_state_idle, panel);
+    }
+}
+
+static gboolean on_chat_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer user_data)
+{
+    (void)controller;
+    (void)dx;
+    ChatPanel *panel = user_data;
+    ChatPanelPrivate *priv = panel->priv;
+
+    if (dy < 0.0) {
+        priv->follow_tail = FALSE;
+    } else if (dy > 0.0) {
+        queue_scroll_state_update(panel);
+    }
+
+    return GDK_EVENT_PROPAGATE;
+}
+
+static void on_chat_adjustment_changed(GtkAdjustment *adjustment, gpointer user_data)
+{
+    (void)adjustment;
+    ChatPanel *panel = user_data;
+
+    if (panel->priv->follow_tail) {
+        queue_scroll_to_end(panel);
+    }
 }
 
 static void insert_reply(ChatPanel *panel, GtkTextIter *iter, const TwitchChatLine *line)
@@ -156,7 +216,7 @@ static void append_status_line(ChatPanel *panel, const char *line)
         return;
     }
 
-    gboolean stick_to_bottom = is_scrolled_to_bottom(panel);
+    gboolean stick_to_bottom = priv->follow_tail || is_scrolled_to_bottom(panel);
 
     gtk_text_buffer_get_end_iter(priv->buffer, &end);
     gtk_text_buffer_insert(priv->buffer, &end, line, -1);
@@ -178,7 +238,7 @@ static void append_message(ChatPanel *panel, const TwitchChatLine *line)
         return;
     }
 
-    gboolean stick_to_bottom = is_scrolled_to_bottom(panel);
+    gboolean stick_to_bottom = priv->follow_tail || is_scrolled_to_bottom(panel);
 
     gtk_text_buffer_get_end_iter(priv->buffer, &end);
 
@@ -202,6 +262,7 @@ static void clear_chat(ChatPanel *panel, const char *channel)
     ChatPanelPrivate *priv = panel->priv;
     gtk_text_buffer_set_text(priv->buffer, "", -1);
     priv->line_count = 0;
+    priv->follow_tail = TRUE;
 
     if (channel != NULL) {
         g_autofree char *line = g_strdup_printf("Verbinde mit #%s ...", channel);
@@ -243,6 +304,10 @@ ChatPanel *chat_panel_new(int width)
     gtk_widget_set_vexpand(priv->scroller, TRUE);
     gtk_box_append(GTK_BOX(panel->widget), priv->scroller);
 
+    GtkEventController *scroll_controller = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
+    g_signal_connect(scroll_controller, "scroll", G_CALLBACK(on_chat_scroll), panel);
+    gtk_widget_add_controller(priv->scroller, scroll_controller);
+
     priv->view = gtk_text_view_new();
     gtk_widget_add_css_class(priv->view, "chat-view");
     gtk_text_view_set_editable(GTK_TEXT_VIEW(priv->view), FALSE);
@@ -257,6 +322,7 @@ ChatPanel *chat_panel_new(int width)
     priv->buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(priv->view));
     priv->username_tags = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     priv->assets = chat_assets_new();
+    priv->follow_tail = TRUE;
     priv->reply_tag = gtk_text_buffer_create_tag(
         priv->buffer,
         "reply",
@@ -265,6 +331,11 @@ ChatPanel *chat_panel_new(int width)
         NULL
     );
     gtk_text_buffer_set_text(priv->buffer, "Kein Chat verbunden", -1);
+
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(priv->scroller));
+    if (adjustment != NULL) {
+        g_signal_connect(adjustment, "changed", G_CALLBACK(on_chat_adjustment_changed), panel);
+    }
 
     panel->client = twitch_chat_client_new(on_chat_line, panel);
 
@@ -301,6 +372,11 @@ void chat_panel_free(ChatPanel *panel)
         if (panel->priv->scroll_source != 0) {
             g_source_remove(panel->priv->scroll_source);
             panel->priv->scroll_source = 0;
+        }
+
+        if (panel->priv->scroll_state_source != 0) {
+            g_source_remove(panel->priv->scroll_state_source);
+            panel->priv->scroll_state_source = 0;
         }
 
         g_clear_pointer(&panel->priv->username_tags, g_hash_table_destroy);
