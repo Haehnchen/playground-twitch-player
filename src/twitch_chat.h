@@ -14,6 +14,9 @@ typedef struct {
     const char *display_name;
     const char *message;
     const char *color;
+    const char *emotes;
+    const char *reply_display_name;
+    const char *reply_message;
 } TwitchChatLine;
 
 typedef void (*TwitchChatLineFunc)(const TwitchChatLine *line, gpointer user_data);

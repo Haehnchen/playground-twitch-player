@@ -24,6 +24,7 @@ executable(
   'twitch-player',
   [
     'src/main.c',
+    'src/chat_assets.c',
     'src/chat_panel.c',
     'src/twitch_chat.c',
     resources,

@@ -1,13 +1,18 @@
 #define G_LOG_DOMAIN "chat-panel"
 
+#include "chat_assets.h"
 #include "chat_panel.h"
 
 #define MAX_CHAT_LINES 200
 
 struct ChatPanelPrivate {
+    GtkWidget *scroller;
     GtkWidget *view;
     GtkTextBuffer *buffer;
     GHashTable *username_tags;
+    ChatAssets *assets;
+    GtkTextTag *reply_tag;
+    guint scroll_source;
     guint line_count;
     gboolean closing;
 };
@@ -73,12 +78,73 @@ static void trim_old_lines(ChatPanel *panel)
     }
 }
 
-static void scroll_to_end(ChatPanel *panel)
+static gboolean is_scrolled_to_bottom(ChatPanel *panel)
 {
     ChatPanelPrivate *priv = panel->priv;
-    GtkTextMark *insert = gtk_text_buffer_get_insert(priv->buffer);
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(priv->scroller));
 
+    if (adjustment == NULL) {
+        return TRUE;
+    }
+
+    double value = gtk_adjustment_get_value(adjustment);
+    double upper = gtk_adjustment_get_upper(adjustment);
+    double page_size = gtk_adjustment_get_page_size(adjustment);
+
+    return value + page_size >= upper - 2.0;
+}
+
+static gboolean scroll_to_end_idle(gpointer user_data)
+{
+    ChatPanel *panel = user_data;
+    ChatPanelPrivate *priv = panel->priv;
+
+    priv->scroll_source = 0;
+
+    if (priv->closing) {
+        return G_SOURCE_REMOVE;
+    }
+
+    GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(priv->scroller));
+    if (adjustment != NULL) {
+        double upper = gtk_adjustment_get_upper(adjustment);
+        double page_size = gtk_adjustment_get_page_size(adjustment);
+        gtk_adjustment_set_value(adjustment, MAX(0.0, upper - page_size));
+    }
+
+    GtkTextMark *insert = gtk_text_buffer_get_insert(priv->buffer);
     gtk_text_view_scroll_mark_onscreen(GTK_TEXT_VIEW(priv->view), insert);
+
+    return G_SOURCE_REMOVE;
+}
+
+static void queue_scroll_to_end(ChatPanel *panel)
+{
+    ChatPanelPrivate *priv = panel->priv;
+
+    if (priv->scroll_source != 0) {
+        g_source_remove(priv->scroll_source);
+    }
+
+    priv->scroll_source = g_idle_add(scroll_to_end_idle, panel);
+}
+
+static void insert_reply(ChatPanel *panel, GtkTextIter *iter, const TwitchChatLine *line)
+{
+    if (line->reply_display_name == NULL || line->reply_display_name[0] == '\0') {
+        return;
+    }
+
+    gtk_text_buffer_insert_with_tags(panel->priv->buffer, iter, "Replying to @", -1, panel->priv->reply_tag, NULL);
+    gtk_text_buffer_insert_with_tags(panel->priv->buffer, iter, line->reply_display_name, -1, panel->priv->reply_tag, NULL);
+
+    if (line->reply_message != NULL && line->reply_message[0] != '\0') {
+        gtk_text_buffer_insert_with_tags(panel->priv->buffer, iter, ": ", -1, panel->priv->reply_tag, NULL);
+        gtk_text_buffer_insert_with_tags(panel->priv->buffer, iter, line->reply_message, -1, panel->priv->reply_tag, NULL);
+    }
+
+    gtk_text_buffer_insert(panel->priv->buffer, iter, "\n", -1);
+    panel->priv->line_count++;
 }
 
 static void append_status_line(ChatPanel *panel, const char *line)
@@ -90,13 +156,17 @@ static void append_status_line(ChatPanel *panel, const char *line)
         return;
     }
 
+    gboolean stick_to_bottom = is_scrolled_to_bottom(panel);
+
     gtk_text_buffer_get_end_iter(priv->buffer, &end);
     gtk_text_buffer_insert(priv->buffer, &end, line, -1);
     gtk_text_buffer_insert(priv->buffer, &end, "\n", -1);
     priv->line_count++;
 
     trim_old_lines(panel);
-    scroll_to_end(panel);
+    if (stick_to_bottom) {
+        queue_scroll_to_end(panel);
+    }
 }
 
 static void append_message(ChatPanel *panel, const TwitchChatLine *line)
@@ -108,17 +178,23 @@ static void append_message(ChatPanel *panel, const TwitchChatLine *line)
         return;
     }
 
+    gboolean stick_to_bottom = is_scrolled_to_bottom(panel);
+
     gtk_text_buffer_get_end_iter(priv->buffer, &end);
+
+    insert_reply(panel, &end, line);
 
     GtkTextTag *username_tag = get_username_tag(panel, line->display_name, line->color);
     gtk_text_buffer_insert_with_tags(priv->buffer, &end, line->display_name, -1, username_tag, NULL);
     gtk_text_buffer_insert(priv->buffer, &end, ": ", -1);
-    gtk_text_buffer_insert(priv->buffer, &end, line->message, -1);
+    chat_assets_insert_message_text(priv->assets, priv->buffer, GTK_TEXT_VIEW(priv->view), &end, line->message, line->emotes);
     gtk_text_buffer_insert(priv->buffer, &end, "\n", -1);
     priv->line_count++;
 
     trim_old_lines(panel);
-    scroll_to_end(panel);
+    if (stick_to_bottom) {
+        queue_scroll_to_end(panel);
+    }
 }
 
 static void clear_chat(ChatPanel *panel, const char *channel)
@@ -160,12 +236,12 @@ ChatPanel *chat_panel_new(int width)
     gtk_widget_set_size_request(panel->widget, width, -1);
     gtk_widget_set_vexpand(panel->widget, TRUE);
 
-    GtkWidget *scroller = gtk_scrolled_window_new();
-    gtk_widget_add_css_class(scroller, "chat-scroll");
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_hexpand(scroller, TRUE);
-    gtk_widget_set_vexpand(scroller, TRUE);
-    gtk_box_append(GTK_BOX(panel->widget), scroller);
+    priv->scroller = gtk_scrolled_window_new();
+    gtk_widget_add_css_class(priv->scroller, "chat-scroll");
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(priv->scroller), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_hexpand(priv->scroller, TRUE);
+    gtk_widget_set_vexpand(priv->scroller, TRUE);
+    gtk_box_append(GTK_BOX(panel->widget), priv->scroller);
 
     priv->view = gtk_text_view_new();
     gtk_widget_add_css_class(priv->view, "chat-view");
@@ -176,10 +252,18 @@ ChatPanel *chat_panel_new(int width)
     gtk_text_view_set_right_margin(GTK_TEXT_VIEW(priv->view), 10);
     gtk_text_view_set_top_margin(GTK_TEXT_VIEW(priv->view), 8);
     gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(priv->view), 8);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), priv->view);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(priv->scroller), priv->view);
 
     priv->buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(priv->view));
     priv->username_tags = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    priv->assets = chat_assets_new();
+    priv->reply_tag = gtk_text_buffer_create_tag(
+        priv->buffer,
+        "reply",
+        "foreground", "#adadb8",
+        "scale", 0.90,
+        NULL
+    );
     gtk_text_buffer_set_text(priv->buffer, "Kein Chat verbunden", -1);
 
     panel->client = twitch_chat_client_new(on_chat_line, panel);
@@ -214,7 +298,13 @@ void chat_panel_free(ChatPanel *panel)
     }
 
     if (panel->priv != NULL) {
+        if (panel->priv->scroll_source != 0) {
+            g_source_remove(panel->priv->scroll_source);
+            panel->priv->scroll_source = 0;
+        }
+
         g_clear_pointer(&panel->priv->username_tags, g_hash_table_destroy);
+        g_clear_pointer(&panel->priv->assets, chat_assets_free);
     }
 
     g_clear_pointer(&panel->priv, g_free);

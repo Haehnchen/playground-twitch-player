@@ -31,12 +31,18 @@ typedef struct {
     char *display_name;
     char *message;
     char *color;
+    char *emotes;
+    char *reply_display_name;
+    char *reply_message;
 } ChatLineData;
 
 typedef struct {
     char *display_name;
     char *message;
     char *color;
+    char *emotes;
+    char *reply_display_name;
+    char *reply_message;
 } ParsedPrivmsg;
 
 static gboolean emit_line_on_main(gpointer user_data)
@@ -47,12 +53,18 @@ static gboolean emit_line_on_main(gpointer user_data)
         data->line.display_name = data->display_name;
         data->line.message = data->message;
         data->line.color = data->color;
+        data->line.emotes = data->emotes;
+        data->line.reply_display_name = data->reply_display_name;
+        data->line.reply_message = data->reply_message;
         data->line_func(&data->line, data->user_data);
     }
 
     g_free(data->display_name);
     g_free(data->message);
     g_free(data->color);
+    g_free(data->emotes);
+    g_free(data->reply_display_name);
+    g_free(data->reply_message);
     g_free(data);
     return G_SOURCE_REMOVE;
 }
@@ -81,6 +93,9 @@ static void emit_message(TwitchChatClient *client, guint generation, ParsedPrivm
     data->display_name = g_strdup(message->display_name);
     data->message = g_strdup(message->message);
     data->color = g_strdup(message->color);
+    data->emotes = g_strdup(message->emotes);
+    data->reply_display_name = g_strdup(message->reply_display_name);
+    data->reply_message = g_strdup(message->reply_message);
 
     g_main_context_invoke(NULL, emit_line_on_main, data);
 }
@@ -113,15 +128,36 @@ static char *extract_irc_tag(const char *tags, const char *key)
     }
 
     g_autofree char *raw = g_strndup(start, end - start);
-    char *decoded = g_strdup(raw);
-    for (char *p = decoded; *p != '\0'; p++) {
-        if (p[0] == '\\' && p[1] == 's') {
-            p[0] = ' ';
-            memmove(p + 1, p + 2, strlen(p + 2) + 1);
+    GString *decoded = g_string_new(NULL);
+    for (const char *p = raw; *p != '\0'; p++) {
+        if (*p == '\\' && p[1] != '\0') {
+            p++;
+            switch (*p) {
+            case 's':
+                g_string_append_c(decoded, ' ');
+                break;
+            case ':':
+                g_string_append_c(decoded, ';');
+                break;
+            case '\\':
+                g_string_append_c(decoded, '\\');
+                break;
+            case 'r':
+                g_string_append_c(decoded, '\r');
+                break;
+            case 'n':
+                g_string_append_c(decoded, '\n');
+                break;
+            default:
+                g_string_append_c(decoded, *p);
+                break;
+            }
+        } else {
+            g_string_append_c(decoded, *p);
         }
     }
 
-    return decoded;
+    return g_string_free(decoded, FALSE);
 }
 
 static char *extract_sender_from_prefix(const char *line)
@@ -149,6 +185,9 @@ static void parsed_privmsg_free(ParsedPrivmsg *message)
     g_free(message->display_name);
     g_free(message->message);
     g_free(message->color);
+    g_free(message->emotes);
+    g_free(message->reply_display_name);
+    g_free(message->reply_message);
     g_free(message);
 }
 
@@ -167,12 +206,18 @@ static ParsedPrivmsg *parse_privmsg(const char *line)
 
     g_autofree char *name = NULL;
     g_autofree char *color = NULL;
+    g_autofree char *emotes = NULL;
+    g_autofree char *reply_display_name = NULL;
+    g_autofree char *reply_message = NULL;
     if (line[0] == '@') {
         const char *tags_end = strchr(line, ' ');
         if (tags_end != NULL) {
             g_autofree char *tags = g_strndup(line + 1, tags_end - line - 1);
             name = extract_irc_tag(tags, "display-name");
             color = extract_irc_tag(tags, "color");
+            emotes = extract_irc_tag(tags, "emotes");
+            reply_display_name = extract_irc_tag(tags, "reply-parent-display-name");
+            reply_message = extract_irc_tag(tags, "reply-parent-msg-body");
         }
     }
 
@@ -187,6 +232,9 @@ static ParsedPrivmsg *parse_privmsg(const char *line)
     parsed->display_name = g_steal_pointer(&name);
     parsed->message = g_steal_pointer(&message);
     parsed->color = g_steal_pointer(&color);
+    parsed->emotes = g_steal_pointer(&emotes);
+    parsed->reply_display_name = g_steal_pointer(&reply_display_name);
+    parsed->reply_message = g_steal_pointer(&reply_message);
     return parsed;
 }
 
