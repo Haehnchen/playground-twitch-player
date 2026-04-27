@@ -28,6 +28,7 @@ static char *build_stream_title_request_body(const char *channel)
 {
     g_autoptr(JsonBuilder) builder = json_builder_new();
 
+    /* Build via JsonBuilder so channel names are always escaped correctly. */
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "query");
     json_builder_add_string_value(builder, TWITCH_GQL_QUERY);
@@ -66,12 +67,14 @@ static char *parse_stream_title_response(const char *json, gsize length, GError 
     JsonObject *data = json_node_get_object(data_node);
     JsonNode *user_node = json_object_get_member(data, "user");
     if (user_node == NULL || JSON_NODE_HOLDS_NULL(user_node) || !JSON_NODE_HOLDS_OBJECT(user_node)) {
+        /* Twitch returns a null user for unknown channels. */
         return NULL;
     }
 
     JsonObject *user = json_node_get_object(user_node);
     JsonNode *stream_node = json_object_get_member(user, "stream");
     if (stream_node == NULL || JSON_NODE_HOLDS_NULL(stream_node) || !JSON_NODE_HOLDS_OBJECT(stream_node)) {
+        /* Known channel, but currently offline or without a live stream. */
         return NULL;
     }
 
@@ -145,6 +148,7 @@ void twitch_stream_info_fetch_title_async(
 
     GTask *task = g_task_new(NULL, cancel, callback, user_data);
     g_task_set_task_data(task, data, (GDestroyNotify)fetch_title_data_free);
+    /* Network I/O runs off the GTK main thread. */
     g_task_run_in_thread(task, fetch_title_worker);
     g_object_unref(task);
 }

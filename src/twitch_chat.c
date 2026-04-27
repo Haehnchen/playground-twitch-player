@@ -111,18 +111,28 @@ static gboolean write_irc_line(GOutputStream *output, const char *line, GCancell
 static char *extract_irc_tag(const char *tags, const char *key)
 {
     g_autofree char *needle = g_strdup_printf("%s=", key);
-    const char *start = strstr(tags, needle);
+    const char *start = tags;
 
-    if (start == NULL) {
+    /* Match only complete IRC tag names, not suffixes inside another key. */
+    while (start != NULL && *start != '\0') {
+        const char *end = strchr(start, ';');
+        gsize length = end != NULL ? (gsize)(end - start) : strlen(start);
+
+        if (length > strlen(needle) && g_str_has_prefix(start, needle)) {
+            start += strlen(needle);
+            end = start + length - strlen(needle);
+            break;
+        }
+
+        start = end != NULL ? end + 1 : NULL;
+    }
+
+    if (start == NULL || *start == '\0') {
         return NULL;
     }
 
-    start += strlen(needle);
     const char *end = strchr(start, ';');
-    if (end == NULL) {
-        end = start + strlen(start);
-    }
-
+    end = end != NULL ? end : start + strlen(start);
     if (end == start) {
         return NULL;
     }
@@ -198,6 +208,7 @@ static ParsedPrivmsg *parse_privmsg(const char *line)
         return NULL;
     }
 
+    /* Twitch chat text starts after the IRC trailing-parameter marker. */
     message_start = strstr(message_start, " :");
     if (message_start == NULL) {
         return NULL;
@@ -212,6 +223,7 @@ static ParsedPrivmsg *parse_privmsg(const char *line)
     if (line[0] == '@') {
         const char *tags_end = strchr(line, ' ');
         if (tags_end != NULL) {
+            /* Copy tags before decoding so the original IRC line stays intact. */
             g_autofree char *tags = g_strndup(line + 1, tags_end - line - 1);
             name = extract_irc_tag(tags, "display-name");
             color = extract_irc_tag(tags, "color");
@@ -368,6 +380,7 @@ static gpointer chat_worker(gpointer user_data)
             break;
         }
 
+        /* Keep reconnect sleeps cancellable so channel switches do not block UI shutdown. */
         emit_status(data->client, data->generation, "Chat verbindet in 3 Sekunden neu ...");
         if (!wait_before_reconnect(data->cancel)) {
             break;

@@ -14,11 +14,14 @@
 ./scripts/check-deps.sh
 meson setup build
 meson compile -C build
+meson test -C build
 ./build/twitch-player
 ./build/twitch-player papaplatte
 ```
 
-Run `meson compile -C build` after code changes.
+Run `meson compile -C build` after code changes. Run `meson test -C build`
+after changes that touch tested helpers or behavior, and use failing tests to
+guide the fix before finishing.
 
 ## Style
 
@@ -29,5 +32,9 @@ logic in `main.c`.
 
 ## Testing
 
-There is no automated test suite. Manually smoke test startup, stream playback,
-chat connection, channel switching, fullscreen, window dragging, and resizing.
+Automated tests live in `tests/` and are wired through Meson. Use
+`meson test -C build` to run them.
+
+Manually smoke test startup, stream playback, chat connection, channel
+switching, fullscreen, window dragging, and resizing when the change affects
+runtime UI or playback behavior.

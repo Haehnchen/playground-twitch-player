@@ -128,6 +128,7 @@ static GArray *parse_emote_ranges(const char *emotes)
             continue;
         }
 
+        /* Twitch groups all text ranges for one emote id after the colon. */
         g_autofree char *id = g_strndup(emote_specs[i], colon - emote_specs[i]);
         g_auto(GStrv) positions = g_strsplit(colon + 1, ",", -1);
         for (guint j = 0; positions[j] != NULL; j++) {
@@ -170,6 +171,7 @@ static const char *utf8_offset_to_pointer_safe(const char *text, guint offset)
 {
     const char *p = text;
 
+    /* Twitch emote offsets are character indexes, not byte offsets. */
     for (guint i = 0; i < offset; i++) {
         if (*p == '\0') {
             return NULL;
@@ -218,6 +220,7 @@ void chat_assets_insert_message_text(ChatAssets *assets, GtkTextBuffer *buffer, 
         const char *start = utf8_offset_to_pointer_safe(message, range->start);
         const char *end = utf8_offset_to_pointer_safe(message, range->end + 1);
 
+        /* Ignore stale or overlapping ranges instead of corrupting the message. */
         if (start == NULL || end == NULL || start < cursor || end < start) {
             continue;
         }

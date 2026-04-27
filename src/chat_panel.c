@@ -68,6 +68,7 @@ static void trim_old_lines(ChatPanel *panel)
 {
     ChatPanelPrivate *priv = panel->priv;
 
+    /* Bound memory and widget work for long-running chat sessions. */
     while (priv->line_count > MAX_CHAT_LINES) {
         GtkTextIter start;
         GtkTextIter delete_end;
@@ -112,6 +113,7 @@ static gboolean scroll_to_end_idle(gpointer user_data)
         return G_SOURCE_REMOVE;
     }
 
+    /* GTK computes the final scroll range after layout, so scroll from idle. */
     GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(priv->scroller));
     if (adjustment != NULL) {
         double upper = gtk_adjustment_get_upper(adjustment);
@@ -170,6 +172,7 @@ static gboolean on_chat_scroll(GtkEventControllerScroll *controller, double dx, 
     if (dy < 0.0) {
         priv->follow_tail = FALSE;
     } else if (dy > 0.0) {
+        /* Re-check after GTK applies the wheel delta. */
         queue_scroll_state_update(panel);
     }
 
