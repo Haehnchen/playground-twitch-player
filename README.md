@@ -9,11 +9,14 @@ application model.
 
 ## Streams
 
-The default dropdown contains three Twitch channels:
+Channels are loaded from the user settings file:
 
-- https://www.twitch.tv/montanablack88
-- https://www.twitch.tv/papaplatte
-- https://www.twitch.tv/rumathra
+```text
+~/.config/twitch-player/settings.json
+```
+
+The first start is intentionally empty. Add channels through the Settings button
+in the top-left overlay.
 
 ## Dependencies
 

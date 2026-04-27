@@ -10,7 +10,9 @@
 #include <math.h>
 #include <string.h>
 
+#include "settings.h"
 #include "chat_panel.h"
+#include "settings_window.h"
 #include "twitch_stream_info.h"
 
 #define APP_ID "local.twitchplayer"
@@ -21,18 +23,13 @@
 #define GSK_RENDERER_OVERRIDE_ENV "TWITCH_PLAYER_GSK_RENDERER"
 #define MPV_HWDEC_OVERRIDE_ENV "TWITCH_PLAYER_HWDEC"
 #define STREAM_TITLE_REFRESH_SECONDS 60
+#define STREAM_DROPDOWN_WIDTH 170
 
 typedef struct {
     const char *label;
     const char *channel;
     const char *url;
 } StreamEntry;
-
-static const StreamEntry STREAMS[] = {
-    {"MontanaBlack88", "montanablack88", "https://www.twitch.tv/montanablack88"},
-    {"Papaplatte", "papaplatte", "https://www.twitch.tv/papaplatte"},
-    {"Rumathra", "rumathra", "https://www.twitch.tv/rumathra"},
-};
 
 typedef struct {
     GtkApplication *application;
@@ -41,7 +38,9 @@ typedef struct {
     GtkWidget *video_overlay;
     GtkWidget *gl_area;
     GtkWidget *main_area;
+    GtkWidget *top_left_controls;
     GtkWidget *top_controls;
+    GtkWidget *settings_button;
     GtkWidget *chat_toggle_button;
     GtkWidget *bottom_panel;
     GtkWidget *footer_spacer;
@@ -54,6 +53,7 @@ typedef struct {
     mpv_handle *mpv;
     mpv_render_context *mpv_gl;
     ChatPanel *chat_panel;
+    AppSettings *settings;
     GCancellable *title_cancel;
     int chat_width;
     int chat_paned_position;
@@ -95,6 +95,10 @@ typedef enum {
     WINDOW_ICON_FULLSCREEN,
     WINDOW_ICON_CLOSE,
 } WindowIconKind;
+
+static void init_streams(AppState *state, const char *target);
+static void free_streams(AppState *state);
+static void rebuild_stream_menu(AppState *state);
 
 static void set_status(AppState *state, const char *message)
 {
@@ -292,17 +296,17 @@ static gboolean process_mpv_events(gpointer user_data)
 
         switch (event->event_id) {
         case MPV_EVENT_START_FILE:
-            set_status(state, "Stream wird geladen");
+            set_status(state, "Loading stream");
             break;
         case MPV_EVENT_FILE_LOADED:
-            set_status(state, "Wiedergabe laeuft");
+            set_status(state, "Playback running");
             break;
         case MPV_EVENT_END_FILE: {
             mpv_event_end_file *end = event->data;
             if (end != NULL && end->reason == MPV_END_FILE_REASON_ERROR) {
-                set_status(state, "Stream konnte nicht abgespielt werden");
+                set_status(state, "Stream could not be played");
             } else {
-                set_status(state, "Gestoppt");
+                set_status(state, "Stopped");
             }
             break;
         }
@@ -339,7 +343,7 @@ static void load_stream_url(AppState *state, const char *url, const char *label,
         NULL,
     };
 
-    set_status(state, "Stream wird gestartet");
+    set_status(state, "Starting stream");
     state->stream_playing = TRUE;
     reset_stream_title(state);
     start_chat(state, channel);
@@ -357,7 +361,7 @@ static void play_selected_stream(AppState *state)
     guint active = state->active_stream;
 
     if (active >= state->stream_count) {
-        set_status(state, "Kein Stream ausgewaehlt");
+        set_status(state, "No stream selected");
         return;
     }
 
@@ -496,6 +500,60 @@ static GtkWidget *create_info_icon(void)
     return icon;
 }
 
+static void draw_settings_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
+{
+    (void)area;
+    (void)user_data;
+    double size = MIN(width, height);
+    double gear = size * 0.56;
+    double cx = width / 2.0;
+    double cy = height / 2.0;
+    double outer = gear * 0.39;
+    double inner = gear * 0.20;
+    static const double dirs[][2] = {
+        {1.0, 0.0},
+        {0.7071, 0.7071},
+        {0.0, 1.0},
+        {-0.7071, 0.7071},
+        {-1.0, 0.0},
+        {-0.7071, -0.7071},
+        {0.0, -1.0},
+        {0.7071, -0.7071},
+    };
+
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    cairo_set_line_width(cr, MAX(1.2, gear * 0.10));
+
+    for (guint i = 0; i < G_N_ELEMENTS(dirs); i++) {
+        double sx = cx + dirs[i][0] * gear * 0.31;
+        double sy = cy + dirs[i][1] * gear * 0.31;
+        double ex = cx + dirs[i][0] * outer;
+        double ey = cy + dirs[i][1] * outer;
+
+        cairo_move_to(cr, sx, sy);
+        cairo_line_to(cr, ex, ey);
+    }
+    cairo_stroke(cr);
+
+    cairo_set_line_width(cr, MAX(1.1, gear * 0.09));
+    cairo_arc(cr, cx, cy, gear * 0.29, 0, 2 * G_PI);
+    cairo_stroke(cr);
+
+    cairo_arc(cr, cx, cy, inner, 0, 2 * G_PI);
+    cairo_stroke(cr);
+}
+
+static GtkWidget *create_settings_icon(void)
+{
+    GtkWidget *icon = gtk_drawing_area_new();
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_settings_icon, NULL, NULL);
+    return icon;
+}
+
 static void draw_window_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
 {
     (void)area;
@@ -572,6 +630,7 @@ static gboolean hide_footer(gpointer user_data)
 
     if (!state->closing) {
         gtk_widget_set_visible(state->bottom_panel, FALSE);
+        gtk_widget_set_visible(state->top_left_controls, FALSE);
         gtk_widget_set_visible(state->top_controls, FALSE);
         gtk_widget_set_visible(state->chat_toggle_button, FALSE);
     }
@@ -595,6 +654,7 @@ static void show_footer(AppState *state)
     }
 
     gtk_widget_set_visible(state->bottom_panel, TRUE);
+    gtk_widget_set_visible(state->top_left_controls, TRUE);
     gtk_widget_set_visible(state->top_controls, TRUE);
     gtk_widget_set_visible(state->chat_toggle_button, TRUE);
     schedule_footer_hide(state);
@@ -857,7 +917,7 @@ static void set_chat_visible(AppState *state, gboolean visible)
         gtk_paned_set_end_child(GTK_PANED(state->main_area), NULL);
     }
 
-    gtk_widget_set_tooltip_text(state->chat_toggle_button, visible ? "Chat schliessen" : "Chat oeffnen");
+    gtk_widget_set_tooltip_text(state->chat_toggle_button, visible ? "Close chat" : "Open chat");
     gtk_button_set_child(
         GTK_BUTTON(state->chat_toggle_button),
         create_chat_icon(visible ? CHAT_ICON_CLOSE : CHAT_ICON_OPEN)
@@ -900,6 +960,30 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
     show_footer(state);
 }
 
+static void on_settings_saved(AppSettings *settings, gpointer user_data)
+{
+    (void)settings;
+    AppState *state = user_data;
+    g_autofree char *current_channel = NULL;
+
+    if (state->active_stream < state->stream_count) {
+        current_channel = g_strdup(state->streams[state->active_stream].channel);
+    }
+
+    free_streams(state);
+    init_streams(state, current_channel);
+    rebuild_stream_menu(state);
+    show_footer(state);
+}
+
+static void on_settings_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    AppState *state = user_data;
+    settings_window_show(GTK_WINDOW(state->window), state->settings, on_settings_saved, state);
+    show_footer(state);
+}
+
 static void on_minimize_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
@@ -937,6 +1021,67 @@ static void on_stream_menu_clicked(GtkButton *button, gpointer user_data)
     }
 
     play_selected_stream(state);
+}
+
+static void update_stream_combo_label(AppState *state)
+{
+    if (state->stream_combo == NULL) {
+        return;
+    }
+
+    GtkWidget *child = gtk_menu_button_get_child(GTK_MENU_BUTTON(state->stream_combo));
+    if (!GTK_IS_LABEL(child)) {
+        return;
+    }
+
+    if (state->stream_count == 0 || state->active_stream >= state->stream_count) {
+        gtk_label_set_text(GTK_LABEL(child), "No channels");
+        return;
+    }
+
+    gtk_label_set_text(GTK_LABEL(child), state->streams[state->active_stream].label);
+}
+
+static void rebuild_stream_menu(AppState *state)
+{
+    GtkWidget *stream_menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(stream_menu, "stream-menu");
+    gtk_widget_set_size_request(stream_menu, STREAM_DROPDOWN_WIDTH, -1);
+
+    for (guint i = 0; i < state->stream_count; i++) {
+        GtkWidget *item = gtk_button_new();
+        GtkWidget *item_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        GtkWidget *item_label = gtk_label_new(state->streams[i].label);
+
+        gtk_label_set_xalign(GTK_LABEL(item_label), 0.0);
+        gtk_widget_set_halign(item_label, GTK_ALIGN_START);
+        gtk_widget_set_hexpand(item_label, TRUE);
+        gtk_widget_set_halign(item_content, GTK_ALIGN_FILL);
+        gtk_widget_set_hexpand(item_content, TRUE);
+        gtk_box_append(GTK_BOX(item_content), item_label);
+        gtk_button_set_child(GTK_BUTTON(item), item_content);
+        gtk_widget_add_css_class(item, "stream-menu-item");
+        gtk_widget_set_halign(item, GTK_ALIGN_FILL);
+        gtk_widget_set_hexpand(item, TRUE);
+        gtk_widget_set_size_request(item, STREAM_DROPDOWN_WIDTH, -1);
+        gtk_widget_set_margin_start(item, 0);
+        gtk_widget_set_margin_end(item, 0);
+        gtk_widget_set_margin_top(item, 0);
+        gtk_widget_set_margin_bottom(item, 0);
+        g_object_set_data(G_OBJECT(item), "stream-index", GUINT_TO_POINTER(i));
+        g_signal_connect(item, "clicked", G_CALLBACK(on_stream_menu_clicked), state);
+        gtk_box_append(GTK_BOX(stream_menu), item);
+    }
+
+    GtkWidget *stream_popover = gtk_popover_new();
+    gtk_widget_add_css_class(stream_popover, "stream-popover");
+    gtk_widget_set_size_request(stream_popover, STREAM_DROPDOWN_WIDTH, -1);
+    gtk_popover_set_position(GTK_POPOVER(stream_popover), GTK_POS_TOP);
+    gtk_popover_set_has_arrow(GTK_POPOVER(stream_popover), FALSE);
+    gtk_popover_set_child(GTK_POPOVER(stream_popover), stream_menu);
+    gtk_menu_button_set_popover(GTK_MENU_BUTTON(state->stream_combo), stream_popover);
+    gtk_widget_set_sensitive(state->stream_combo, state->stream_count > 0);
+    update_stream_combo_label(state);
 }
 
 static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer user_data)
@@ -1005,7 +1150,7 @@ static void on_gl_realize(GtkGLArea *area, gpointer user_data)
 
     if (gtk_gl_area_get_error(area) != NULL) {
         g_warning("GTK GL area error: %s", gtk_gl_area_get_error(area)->message);
-        set_status(state, "OpenGL konnte nicht initialisiert werden");
+        set_status(state, "OpenGL could not be initialized");
         return;
     }
 
@@ -1024,7 +1169,7 @@ static void on_gl_realize(GtkGLArea *area, gpointer user_data)
     int status = mpv_render_context_create(&state->mpv_gl, state->mpv, params);
     if (status < 0) {
         g_warning("mpv render context: %s", mpv_error_string(status));
-        set_status(state, "mpv-Rendering konnte nicht gestartet werden");
+        set_status(state, "mpv rendering could not be started");
         return;
     }
 
@@ -1051,31 +1196,9 @@ static GtkWidget *create_controls(AppState *state)
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_add_css_class(box, "video-footer");
 
-    GtkWidget *stream_menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    for (guint i = 0; i < state->stream_count; i++) {
-        GtkWidget *item = gtk_button_new();
-        GtkWidget *item_label = gtk_label_new(state->streams[i].label);
-        gtk_label_set_xalign(GTK_LABEL(item_label), 0.0);
-        gtk_widget_set_halign(item_label, GTK_ALIGN_FILL);
-        gtk_widget_set_hexpand(item_label, TRUE);
-        gtk_button_set_child(GTK_BUTTON(item), item_label);
-        gtk_widget_add_css_class(item, "stream-menu-item");
-        gtk_widget_set_halign(item, GTK_ALIGN_FILL);
-        gtk_widget_set_hexpand(item, TRUE);
-        g_object_set_data(G_OBJECT(item), "stream-index", GUINT_TO_POINTER(i));
-        g_signal_connect(item, "clicked", G_CALLBACK(on_stream_menu_clicked), state);
-        gtk_box_append(GTK_BOX(stream_menu), item);
-    }
-
-    GtkWidget *stream_popover = gtk_popover_new();
-    gtk_widget_add_css_class(stream_popover, "stream-popover");
-    gtk_popover_set_position(GTK_POPOVER(stream_popover), GTK_POS_TOP);
-    gtk_popover_set_has_arrow(GTK_POPOVER(stream_popover), FALSE);
-    gtk_popover_set_child(GTK_POPOVER(stream_popover), stream_menu);
-
     state->stream_combo = gtk_menu_button_new();
     gtk_widget_add_css_class(state->stream_combo, "stream-dropdown");
-    GtkWidget *stream_label = gtk_label_new(state->streams[state->active_stream].label);
+    GtkWidget *stream_label = gtk_label_new("");
     gtk_widget_add_css_class(stream_label, "stream-button-label");
     gtk_widget_set_halign(stream_label, GTK_ALIGN_START);
     gtk_label_set_xalign(GTK_LABEL(stream_label), 0.0);
@@ -1083,9 +1206,9 @@ static GtkWidget *create_controls(AppState *state)
     gtk_widget_set_halign(state->stream_combo, GTK_ALIGN_START);
     gtk_menu_button_set_direction(GTK_MENU_BUTTON(state->stream_combo), GTK_ARROW_UP);
     gtk_menu_button_set_always_show_arrow(GTK_MENU_BUTTON(state->stream_combo), FALSE);
-    gtk_menu_button_set_popover(GTK_MENU_BUTTON(state->stream_combo), stream_popover);
-    gtk_widget_set_size_request(state->stream_combo, 170, -1);
+    gtk_widget_set_size_request(state->stream_combo, STREAM_DROPDOWN_WIDTH, -1);
     gtk_widget_set_hexpand(state->stream_combo, FALSE);
+    rebuild_stream_menu(state);
 
     state->stream_title_label = gtk_label_new("");
     gtk_widget_add_css_class(state->stream_title_label, "stream-title-label");
@@ -1108,10 +1231,10 @@ static GtkWidget *create_controls(AppState *state)
     gtk_box_append(GTK_BOX(box), state->footer_spacer);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
-    GtkWidget *stream_info_button = create_overlay_button(create_info_icon(), "Stream-Info anzeigen");
+    GtkWidget *stream_info_button = create_overlay_button(create_info_icon(), "Show stream info");
     gtk_box_append(GTK_BOX(box), stream_info_button);
 
-    state->chat_toggle_button = create_overlay_button(create_chat_icon(CHAT_ICON_CLOSE), "Chat schliessen");
+    state->chat_toggle_button = create_overlay_button(create_chat_icon(CHAT_ICON_CLOSE), "Close chat");
     gtk_widget_add_css_class(state->chat_toggle_button, "chat-toggle");
     gtk_box_append(GTK_BOX(box), state->chat_toggle_button);
 
@@ -1131,7 +1254,7 @@ static gboolean init_mpv(AppState *state)
     state->mpv = mpv_create();
     if (state->mpv == NULL) {
         g_warning("mpv_create returned NULL");
-        set_status(state, "mpv konnte nicht erstellt werden");
+        set_status(state, "mpv could not be created");
         return FALSE;
     }
 
@@ -1144,7 +1267,7 @@ static gboolean init_mpv(AppState *state)
     int status = mpv_initialize(state->mpv);
     if (status < 0) {
         g_warning("mpv init: %s", mpv_error_string(status));
-        set_status(state, "mpv konnte nicht initialisiert werden");
+        set_status(state, "mpv could not be initialized");
         return FALSE;
     }
 
@@ -1235,6 +1358,12 @@ static void install_css(void)
         ".overlay-icon-button:hover {"
         "  background: rgba(54, 54, 54, 0.90);"
         "}"
+        ".settings-overlay-button {"
+        "  background: rgba(0, 0, 0, 0.30);"
+        "}"
+        ".settings-overlay-button:hover {"
+        "  background: rgba(38, 38, 38, 0.62);"
+        "}"
         ".close-button:hover {"
         "  background: rgba(170, 36, 36, 0.90);"
         "}"
@@ -1258,7 +1387,7 @@ static void install_css(void)
         "  background: rgba(54, 54, 54, 0.90);"
         "}"
         ".stream-dropdown {"
-        "  min-width: 160px;"
+        "  min-width: 170px;"
         "}"
         ".stream-dropdown > button {"
         "  padding-left: 10px;"
@@ -1273,19 +1402,45 @@ static void install_css(void)
         "  margin-left: 4px;"
         "  margin-right: 12px;"
         "}"
-        ".stream-popover contents,"
-        ".stream-popover box,"
-        ".stream-menu-item {"
+        ".stream-popover contents {"
         "  background: rgba(28, 28, 28, 0.98);"
+        "  padding: 0;"
+        "  margin: 0;"
+        "  border: none;"
+        "  border-radius: 4px;"
+        "  box-shadow: none;"
+        "}"
+        ".stream-popover {"
+        "  padding: 0;"
+        "  margin: 0;"
+        "  border: none;"
+        "  border-radius: 4px;"
+        "  box-shadow: none;"
+        "}"
+        ".stream-menu {"
+        "  background: rgba(28, 28, 28, 0.98);"
+        "  padding: 2px 0;"
+        "  margin: 0;"
+        "}"
+        ".stream-menu-item {"
+        "  background: transparent;"
         "  color: white;"
         "  border-color: transparent;"
         "  outline-color: transparent;"
         "  box-shadow: none;"
-        "  padding-left: 10px;"
-        "  padding-right: 10px;"
+        "  border-radius: 0;"
+        "  margin: 0;"
+        "  min-height: 0;"
+        "  padding: 6px 10px;"
+        "}"
+        ".stream-menu-item box {"
+        "  padding: 0;"
+        "  margin: 0;"
         "}"
         ".stream-menu-item label {"
         "  color: white;"
+        "  padding: 0;"
+        "  margin: 0;"
         "}"
         ".stream-menu-item:hover {"
         "  background: rgba(74, 74, 74, 0.98);"
@@ -1300,6 +1455,89 @@ static void install_css(void)
         ".video-footer scale slider {"
         "  background: rgba(255, 255, 255, 0.95);"
         "  border-color: rgba(0, 0, 0, 0.45);"
+        "}"
+        ".settings-window {"
+        "  background: #141417;"
+        "  color: #efeff1;"
+        "}"
+        ".settings-sidebar {"
+        "  background: #1f1f23;"
+        "  border-right: 1px solid rgba(255, 255, 255, 0.10);"
+        "  padding: 8px;"
+        "}"
+        ".settings-sidebar row {"
+        "  border-radius: 6px;"
+        "  padding: 10px 12px;"
+        "}"
+        ".settings-sidebar row:selected {"
+        "  background: #2f2f35;"
+        "}"
+        ".settings-sidebar-label,"
+        ".settings-page-title,"
+        ".settings-channel-header label,"
+        ".settings-empty-label,"
+        ".settings-status-label {"
+        "  color: #efeff1;"
+        "}"
+        ".settings-page {"
+        "  padding: 18px;"
+        "  background: #141417;"
+        "}"
+        ".settings-page-title {"
+        "  font-size: 20px;"
+        "  font-weight: 700;"
+        "}"
+        ".settings-channel-header label {"
+        "  color: rgba(239, 239, 241, 0.70);"
+        "  font-size: 12px;"
+        "  font-weight: 700;"
+        "}"
+        ".settings-channel-row entry {"
+        "  background: #222226;"
+        "  color: #ffffff;"
+        "  border-color: rgba(255, 255, 255, 0.12);"
+        "  font-size: 13px;"
+        "  min-height: 28px;"
+        "  padding: 3px 8px;"
+        "}"
+        ".settings-channel-row entry selection {"
+        "  background: rgba(145, 70, 255, 0.55);"
+        "  color: #ffffff;"
+        "}"
+        ".settings-page button {"
+        "  background: #26262c;"
+        "  color: #efeff1;"
+        "  border-color: rgba(255, 255, 255, 0.12);"
+        "  outline-color: transparent;"
+        "  box-shadow: none;"
+        "}"
+        ".settings-page button:hover {"
+        "  background: #34343b;"
+        "}"
+        ".settings-page .settings-primary-button {"
+        "  background: #3a2b52;"
+        "  color: #ffffff;"
+        "}"
+        ".settings-page .settings-primary-button:hover {"
+        "  background: #4b3670;"
+        "}"
+        ".settings-page .settings-remove-button {"
+        "  background: transparent;"
+        "  border-color: transparent;"
+        "  min-width: 24px;"
+        "  min-height: 24px;"
+        "  padding: 2px 4px;"
+        "}"
+        ".settings-page .settings-remove-button:hover {"
+        "  background: rgba(255, 255, 255, 0.08);"
+        "}"
+        ".settings-empty-label {"
+        "  color: rgba(239, 239, 241, 0.62);"
+        "  margin-top: 8px;"
+        "  margin-bottom: 8px;"
+        "}"
+        ".settings-status-label {"
+        "  color: #ffb4ab;"
         "}"
     );
 
@@ -1428,32 +1666,40 @@ static char *extract_twitch_channel(const char *target)
     return g_ascii_strdown(channel, -1);
 }
 
-static gboolean target_matches_stream(const char *target, const char *target_channel, const StreamEntry *stream)
+static gboolean target_matches_stream_values(
+    const char *target,
+    const char *target_channel,
+    const char *label,
+    const char *channel,
+    const char *url
+)
 {
     if (target == NULL || target[0] == '\0') {
         return FALSE;
     }
 
-    return g_ascii_strcasecmp(target, stream->label) == 0 ||
-        g_ascii_strcasecmp(target, stream->channel) == 0 ||
-        g_ascii_strcasecmp(target, stream->url) == 0 ||
-        (target_channel != NULL && g_ascii_strcasecmp(target_channel, stream->channel) == 0);
+    return g_ascii_strcasecmp(target, label) == 0 ||
+        g_ascii_strcasecmp(target, channel) == 0 ||
+        g_ascii_strcasecmp(target, url) == 0 ||
+        (target_channel != NULL && g_ascii_strcasecmp(target_channel, channel) == 0);
 }
 
-static void init_streams(AppState *state)
+static void init_streams(AppState *state, const char *target)
 {
-    guint base_count = G_N_ELEMENTS(STREAMS);
+    guint settings_count = app_settings_get_channel_count(state->settings);
+    guint base_count = settings_count;
     guint extra_count = 0;
     guint active_stream = 0;
     gboolean startup_known = FALSE;
-    g_autofree char *startup_channel = extract_twitch_channel(state->startup_target);
+    g_autofree char *startup_channel = extract_twitch_channel(target);
     char *extra_label = NULL;
     char *extra_channel = NULL;
     char *extra_url = NULL;
 
-    if (state->startup_target != NULL && state->startup_target[0] != '\0') {
+    if (target != NULL && target[0] != '\0') {
         for (guint i = 0; i < base_count; i++) {
-            if (target_matches_stream(state->startup_target, startup_channel, &STREAMS[i])) {
+            const AppSettingsChannel *channel = app_settings_get_channel(state->settings, i);
+            if (target_matches_stream_values(target, startup_channel, channel->label, channel->channel, channel->url)) {
                 active_stream = i;
                 startup_known = TRUE;
                 break;
@@ -1461,23 +1707,23 @@ static void init_streams(AppState *state)
         }
     }
 
-    if (!startup_known && state->startup_target != NULL && state->startup_target[0] != '\0') {
+    if (!startup_known && target != NULL && target[0] != '\0') {
         extra_count = 1;
 
         if (startup_channel != NULL) {
             extra_label = g_strdup(startup_channel);
             extra_channel = g_strdup(startup_channel);
-        } else if (g_str_has_prefix(state->startup_target, "http://") || g_str_has_prefix(state->startup_target, "https://")) {
-            extra_label = g_strdup(state->startup_target);
+        } else if (g_str_has_prefix(target, "http://") || g_str_has_prefix(target, "https://")) {
+            extra_label = g_strdup(target);
         } else {
-            extra_label = g_strdup(state->startup_target);
-            extra_channel = g_ascii_strdown(state->startup_target, -1);
+            extra_label = g_strdup(target);
+            extra_channel = g_ascii_strdown(target, -1);
         }
 
-        if (g_str_has_prefix(state->startup_target, "http://") || g_str_has_prefix(state->startup_target, "https://")) {
-            extra_url = g_strdup(state->startup_target);
+        if (g_str_has_prefix(target, "http://") || g_str_has_prefix(target, "https://")) {
+            extra_url = g_strdup(target);
         } else {
-            extra_url = g_strdup_printf("https://www.twitch.tv/%s", state->startup_target);
+            extra_url = g_strdup_printf("https://www.twitch.tv/%s", target);
         }
 
         active_stream = base_count;
@@ -1486,10 +1732,11 @@ static void init_streams(AppState *state)
     state->stream_count = base_count + extra_count;
     state->streams = g_new0(StreamEntry, state->stream_count);
 
-    for (guint i = 0; i < G_N_ELEMENTS(STREAMS); i++) {
-        state->streams[i].label = g_strdup(STREAMS[i].label);
-        state->streams[i].channel = g_strdup(STREAMS[i].channel);
-        state->streams[i].url = g_strdup(STREAMS[i].url);
+    for (guint i = 0; i < base_count; i++) {
+        const AppSettingsChannel *channel = app_settings_get_channel(state->settings, i);
+        state->streams[i].label = g_strdup(channel->label);
+        state->streams[i].channel = g_strdup(channel->channel);
+        state->streams[i].url = g_strdup(channel->url);
     }
 
     if (extra_count == 1) {
@@ -1560,6 +1807,8 @@ static void destroy_state(gpointer user_data)
     chat_panel_free(state->chat_panel);
     state->chat_panel = NULL;
     free_streams(state);
+    app_settings_free(state->settings);
+    state->settings = NULL;
 }
 
 static void on_activate(GtkApplication *application, gpointer user_data)
@@ -1586,7 +1835,8 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     state->chat_paned_position = 740;
     state->active_stream = 0;
     state->chat_visible = TRUE;
-    init_streams(state);
+    state->settings = app_settings_load();
+    init_streams(state, state->startup_target);
 
     state->main_area = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_widget_add_css_class(state->main_area, "main-area");
@@ -1635,21 +1885,32 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->bottom_panel);
     state->title_refresh_source = g_timeout_add_seconds(STREAM_TITLE_REFRESH_SECONDS, refresh_stream_title, state);
 
+    state->top_left_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_add_css_class(state->top_left_controls, "top-overlay-controls");
+    gtk_widget_set_halign(state->top_left_controls, GTK_ALIGN_START);
+    gtk_widget_set_valign(state->top_left_controls, GTK_ALIGN_START);
+    gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->top_left_controls);
+
+    state->settings_button = create_overlay_button(create_settings_icon(), "Settings");
+    gtk_widget_add_css_class(state->settings_button, "settings-overlay-button");
+    gtk_box_append(GTK_BOX(state->top_left_controls), state->settings_button);
+    g_signal_connect(state->settings_button, "clicked", G_CALLBACK(on_settings_clicked), state);
+
     state->top_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_add_css_class(state->top_controls, "top-overlay-controls");
     gtk_widget_set_halign(state->top_controls, GTK_ALIGN_END);
     gtk_widget_set_valign(state->top_controls, GTK_ALIGN_START);
     gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->top_controls);
 
-    GtkWidget *minimize_button = create_overlay_button(create_window_icon(WINDOW_ICON_MINIMIZE), "Minimieren");
+    GtkWidget *minimize_button = create_overlay_button(create_window_icon(WINDOW_ICON_MINIMIZE), "Minimize");
     gtk_box_append(GTK_BOX(state->top_controls), minimize_button);
     g_signal_connect(minimize_button, "clicked", G_CALLBACK(on_minimize_clicked), state);
 
-    GtkWidget *fullscreen_button = create_overlay_button(create_window_icon(WINDOW_ICON_FULLSCREEN), "Vollbild");
+    GtkWidget *fullscreen_button = create_overlay_button(create_window_icon(WINDOW_ICON_FULLSCREEN), "Fullscreen");
     gtk_box_append(GTK_BOX(state->top_controls), fullscreen_button);
     g_signal_connect(fullscreen_button, "clicked", G_CALLBACK(on_fullscreen_clicked), state);
 
-    GtkWidget *close_button = create_overlay_button(create_window_icon(WINDOW_ICON_CLOSE), "Schliessen");
+    GtkWidget *close_button = create_overlay_button(create_window_icon(WINDOW_ICON_CLOSE), "Close");
     gtk_widget_add_css_class(close_button, "close-button");
     gtk_box_append(GTK_BOX(state->top_controls), close_button);
     g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), state);

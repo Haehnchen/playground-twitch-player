@@ -331,7 +331,7 @@ ChatPanel *chat_panel_new(int width)
         "scale", 0.90,
         NULL
     );
-    gtk_text_buffer_set_text(priv->buffer, "Kein Chat verbunden", -1);
+    gtk_text_buffer_set_text(priv->buffer, "No chat connected", -1);
 
     GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(priv->scroller));
     if (adjustment != NULL) {

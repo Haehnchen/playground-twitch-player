@@ -27,8 +27,10 @@ executable(
   'twitch-player',
   [
     'src/main.c',
+    'src/settings.c',
     'src/chat_assets.c',
     'src/chat_panel.c',
+    'src/settings_window.c',
     'src/twitch_chat.c',
     'src/twitch_stream_info.c',
     resources,
@@ -50,6 +52,16 @@ test_twitch_stream_info = executable(
   dependencies: [gio_dep, json_glib_dep, libsoup_dep],
 )
 test('twitch-stream-info', test_twitch_stream_info)
+
+test_app_settings = executable(
+  'test-app-settings',
+  [
+    'tests/test_settings.c',
+    'src/settings.c',
+  ],
+  dependencies: [gio_dep, json_glib_dep],
+)
+test('settings', test_app_settings)
 
 test_chat_assets = executable(
   'test-chat-assets',
