@@ -1,4 +1,4 @@
-.PHONY: setup build run install clean
+.PHONY: setup build run run-grid install clean
 
 setup:
 	meson setup build
@@ -8,6 +8,9 @@ build:
 
 run:
 	./build/twitch-player
+
+run-grid:
+	./build/twitch-player --grid papaplatte rumathra
 
 install:
 	meson install -C build

@@ -58,3 +58,11 @@ Start with a channel or URL:
 ./build/twitch-player papaplatte
 ./build/twitch-player https://www.twitch.tv/montanablack88
 ```
+
+Switch between the normal player and the 2x2 grid from the overlay controls.
+Start directly in grid mode with up to four channels:
+
+```bash
+./build/twitch-player --grid papaplatte rumathra
+./build/twitch-player --grid papaplatte rumathra montanablack88 another_channel
+```
