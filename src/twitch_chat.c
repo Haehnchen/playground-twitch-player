@@ -5,6 +5,10 @@
 #include <gio/gio.h>
 #include <string.h>
 
+#define CHAT_CONNECT_TIMEOUT_SECONDS 15
+#define CHAT_RECONNECT_DELAY_MS 3000
+#define CHAT_RECONNECT_POLL_MS 100
+
 struct TwitchChatClient {
     TwitchChatLineFunc line_func;
     gpointer user_data;
@@ -23,30 +27,60 @@ typedef struct {
 typedef struct {
     TwitchChatLineFunc line_func;
     gpointer user_data;
-    char *line;
+    TwitchChatLine line;
+    char *display_name;
+    char *message;
+    char *color;
 } ChatLineData;
+
+typedef struct {
+    char *display_name;
+    char *message;
+    char *color;
+} ParsedPrivmsg;
 
 static gboolean emit_line_on_main(gpointer user_data)
 {
     ChatLineData *data = user_data;
 
     if (data->line_func != NULL) {
-        data->line_func(data->line, data->user_data);
+        data->line.display_name = data->display_name;
+        data->line.message = data->message;
+        data->line.color = data->color;
+        data->line_func(&data->line, data->user_data);
     }
 
-    g_free(data->line);
+    g_free(data->display_name);
+    g_free(data->message);
+    g_free(data->color);
     g_free(data);
     return G_SOURCE_REMOVE;
 }
 
-static void emit_line(TwitchChatClient *client, guint generation, const char *line)
+static void emit_status(TwitchChatClient *client, guint generation, const char *message)
 {
     (void)generation;
 
     ChatLineData *data = g_new0(ChatLineData, 1);
     data->line_func = client->line_func;
     data->user_data = client->user_data;
-    data->line = g_strdup(line);
+    data->line.kind = TWITCH_CHAT_LINE_STATUS;
+    data->message = g_strdup(message);
+
+    g_main_context_invoke(NULL, emit_line_on_main, data);
+}
+
+static void emit_message(TwitchChatClient *client, guint generation, ParsedPrivmsg *message)
+{
+    (void)generation;
+
+    ChatLineData *data = g_new0(ChatLineData, 1);
+    data->line_func = client->line_func;
+    data->user_data = client->user_data;
+    data->line.kind = TWITCH_CHAT_LINE_MESSAGE;
+    data->display_name = g_strdup(message->display_name);
+    data->message = g_strdup(message->message);
+    data->color = g_strdup(message->color);
 
     g_main_context_invoke(NULL, emit_line_on_main, data);
 }
@@ -106,7 +140,19 @@ static char *extract_sender_from_prefix(const char *line)
     return g_strndup(prefix, bang - prefix);
 }
 
-static char *parse_privmsg(const char *line)
+static void parsed_privmsg_free(ParsedPrivmsg *message)
+{
+    if (message == NULL) {
+        return;
+    }
+
+    g_free(message->display_name);
+    g_free(message->message);
+    g_free(message->color);
+    g_free(message);
+}
+
+static ParsedPrivmsg *parse_privmsg(const char *line)
 {
     const char *message_start = strstr(line, " PRIVMSG ");
     if (message_start == NULL) {
@@ -120,11 +166,13 @@ static char *parse_privmsg(const char *line)
     message_start += 2;
 
     g_autofree char *name = NULL;
+    g_autofree char *color = NULL;
     if (line[0] == '@') {
         const char *tags_end = strchr(line, ' ');
         if (tags_end != NULL) {
             g_autofree char *tags = g_strndup(line + 1, tags_end - line - 1);
             name = extract_irc_tag(tags, "display-name");
+            color = extract_irc_tag(tags, "color");
         }
     }
 
@@ -135,17 +183,29 @@ static char *parse_privmsg(const char *line)
     g_autofree char *message = g_strdup(message_start);
     g_strchomp(message);
 
-    return g_strdup_printf("%s: %s", name, message);
+    ParsedPrivmsg *parsed = g_new0(ParsedPrivmsg, 1);
+    parsed->display_name = g_steal_pointer(&name);
+    parsed->message = g_steal_pointer(&message);
+    parsed->color = g_steal_pointer(&color);
+    return parsed;
 }
 
-static gpointer chat_worker(gpointer user_data)
+static gboolean wait_before_reconnect(GCancellable *cancel)
 {
-    ChatWorkerData *data = user_data;
-    g_autoptr(GSocketClient) socket_client = g_socket_client_new();
-    g_autoptr(GError) error = NULL;
+    for (guint elapsed = 0; elapsed < CHAT_RECONNECT_DELAY_MS; elapsed += CHAT_RECONNECT_POLL_MS) {
+        if (g_cancellable_is_cancelled(cancel)) {
+            return FALSE;
+        }
 
-    g_socket_client_set_tls(socket_client, TRUE);
-    g_socket_client_set_timeout(socket_client, 15);
+        g_usleep(CHAT_RECONNECT_POLL_MS * 1000);
+    }
+
+    return !g_cancellable_is_cancelled(cancel);
+}
+
+static gboolean run_chat_session(ChatWorkerData *data, GSocketClient *socket_client)
+{
+    g_autoptr(GError) error = NULL;
 
     g_autoptr(GSocketConnection) connection = g_socket_client_connect_to_host(
         socket_client,
@@ -156,11 +216,20 @@ static gpointer chat_worker(gpointer user_data)
     );
 
     if (connection == NULL) {
-        if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
-            g_autofree char *line = g_strdup_printf("Chat-Verbindung fehlgeschlagen: %s", error->message);
-            emit_line(data->client, data->generation, line);
+        if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            return FALSE;
         }
-        goto done;
+
+        if (!g_cancellable_is_cancelled(data->cancel)) {
+            g_autofree char *line = g_strdup_printf("Chat-Verbindung fehlgeschlagen: %s", error->message);
+            emit_status(data->client, data->generation, line);
+        }
+        return TRUE;
+    }
+
+    GSocket *socket = g_socket_connection_get_socket(connection);
+    if (socket != NULL) {
+        g_socket_set_timeout(socket, 0);
     }
 
     GOutputStream *output = g_io_stream_get_output_stream(G_IO_STREAM(connection));
@@ -174,16 +243,20 @@ static gpointer chat_worker(gpointer user_data)
     if (!write_irc_line(output, "CAP REQ :twitch.tv/tags twitch.tv/commands", data->cancel, &error) ||
         !write_irc_line(output, nick_line, data->cancel, &error) ||
         !write_irc_line(output, join_line, data->cancel, &error)) {
-        if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
-            g_autofree char *line = g_strdup_printf("Chat-Login fehlgeschlagen: %s", error->message);
-            emit_line(data->client, data->generation, line);
+        if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            return FALSE;
         }
-        goto done;
+
+        if (!g_cancellable_is_cancelled(data->cancel)) {
+            g_autofree char *line = g_strdup_printf("Chat-Login fehlgeschlagen: %s", error->message);
+            emit_status(data->client, data->generation, line);
+        }
+        return TRUE;
     }
 
     {
         g_autofree char *line = g_strdup_printf("Chat verbunden: #%s", data->channel);
-        emit_line(data->client, data->generation, line);
+        emit_status(data->client, data->generation, line);
     }
 
     while (!g_cancellable_is_cancelled(data->cancel)) {
@@ -192,27 +265,67 @@ static gpointer chat_worker(gpointer user_data)
         g_autofree char *line = g_data_input_stream_read_line_utf8(data_input, &length, data->cancel, &error);
 
         if (line == NULL) {
-            if (error != NULL && !g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
-                g_autofree char *message = g_strdup_printf("Chat getrennt: %s", error->message);
-                emit_line(data->client, data->generation, message);
+            if (error != NULL && g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+                return FALSE;
             }
-            break;
+
+            if (error != NULL && !g_cancellable_is_cancelled(data->cancel)) {
+                g_autofree char *message = g_strdup_printf("Chat getrennt: %s", error->message);
+                emit_status(data->client, data->generation, message);
+            } else if (!g_cancellable_is_cancelled(data->cancel)) {
+                emit_status(data->client, data->generation, "Chat getrennt");
+            }
+            return TRUE;
         }
 
         if (g_str_has_prefix(line, "PING ")) {
             g_autofree char *pong = g_strdup_printf("PONG %s", line + 5);
             g_clear_error(&error);
-            write_irc_line(output, pong, data->cancel, &error);
+            if (!write_irc_line(output, pong, data->cancel, &error)) {
+                if (g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+                    return FALSE;
+                }
+
+                if (!g_cancellable_is_cancelled(data->cancel)) {
+                    g_autofree char *message = g_strdup_printf("Chat getrennt: %s", error->message);
+                    emit_status(data->client, data->generation, message);
+                }
+                return TRUE;
+            }
             continue;
         }
 
-        g_autofree char *chat_line = parse_privmsg(line);
+        ParsedPrivmsg *chat_line = parse_privmsg(line);
         if (chat_line != NULL) {
-            emit_line(data->client, data->generation, chat_line);
+            emit_message(data->client, data->generation, chat_line);
+            parsed_privmsg_free(chat_line);
         }
     }
 
-done:
+    return FALSE;
+}
+
+static gpointer chat_worker(gpointer user_data)
+{
+    ChatWorkerData *data = user_data;
+    g_autoptr(GSocketClient) socket_client = g_socket_client_new();
+
+    g_socket_client_set_tls(socket_client, TRUE);
+    g_socket_client_set_timeout(socket_client, CHAT_CONNECT_TIMEOUT_SECONDS);
+
+    while (!g_cancellable_is_cancelled(data->cancel)) {
+        gboolean reconnect = run_chat_session(data, socket_client);
+
+        if (!reconnect || g_cancellable_is_cancelled(data->cancel)) {
+            break;
+        }
+
+        emit_status(data->client, data->generation, "Chat verbindet in 3 Sekunden neu ...");
+        if (!wait_before_reconnect(data->cancel)) {
+            break;
+        }
+    }
+
     g_clear_object(&data->cancel);
     g_free(data->channel);
     g_free(data);

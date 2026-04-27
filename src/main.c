@@ -902,6 +902,59 @@ static void install_css(void)
         "  padding: 8px;"
         "  border-radius: 0;"
         "}"
+        ".main-area {"
+        "  background: #0e0e10;"
+        "}"
+        "paned.main-area > separator,"
+        "paned.main-area > separator.wide,"
+        ".main-area separator,"
+        ".main-area separator.wide,"
+        ".main-area > separator,"
+        ".main-area > separator.wide {"
+        "  background: transparent;"
+        "  background-image: none;"
+        "  border: none;"
+        "  outline: none;"
+        "  box-shadow: none;"
+        "  color: transparent;"
+        "  margin: 0;"
+        "  padding: 0;"
+        "  min-width: 1px;"
+        "}"
+        "paned.main-area > separator:hover,"
+        "paned.main-area > separator.wide:hover,"
+        ".main-area separator:hover,"
+        ".main-area separator.wide:hover {"
+        "  background: transparent;"
+        "  background-image: none;"
+        "  border: none;"
+        "  outline: none;"
+        "  box-shadow: none;"
+        "}"
+        ".chat-panel,"
+        ".chat-scroll,"
+        ".chat-scroll viewport,"
+        ".chat-view,"
+        ".chat-view text {"
+        "  background: #0e0e10;"
+        "  color: #efeff1;"
+        "}"
+        ".chat-view {"
+        "  caret-color: transparent;"
+        "  font-size: 14px;"
+        "}"
+        ".chat-view text selection {"
+        "  background: rgba(145, 70, 255, 0.35);"
+        "  color: #ffffff;"
+        "}"
+        ".chat-scroll scrollbar {"
+        "  background: transparent;"
+        "}"
+        ".chat-scroll scrollbar slider {"
+        "  background: rgba(255, 255, 255, 0.28);"
+        "  border-radius: 999px;"
+        "  min-width: 4px;"
+        "}"
         ".top-overlay-controls {"
         "  margin: 8px;"
         "}"
@@ -1076,6 +1129,10 @@ static void write_user_desktop_identity(const char *argv0)
 
 static char *extract_twitch_channel(const char *target)
 {
+    if (target == NULL || target[0] == '\0') {
+        return NULL;
+    }
+
     const char *start = strstr(target, "twitch.tv/");
 
     if (start == NULL) {
@@ -1252,9 +1309,10 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     init_streams(state);
 
     state->main_area = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_add_css_class(state->main_area, "main-area");
     gtk_widget_set_hexpand(state->main_area, TRUE);
     gtk_widget_set_vexpand(state->main_area, TRUE);
-    gtk_paned_set_wide_handle(GTK_PANED(state->main_area), TRUE);
+    gtk_paned_set_wide_handle(GTK_PANED(state->main_area), FALSE);
     gtk_paned_set_resize_start_child(GTK_PANED(state->main_area), TRUE);
     gtk_paned_set_shrink_start_child(GTK_PANED(state->main_area), FALSE);
     gtk_paned_set_resize_end_child(GTK_PANED(state->main_area), FALSE);

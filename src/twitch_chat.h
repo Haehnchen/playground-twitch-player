@@ -4,7 +4,19 @@
 
 typedef struct TwitchChatClient TwitchChatClient;
 
-typedef void (*TwitchChatLineFunc)(const char *line, gpointer user_data);
+typedef enum {
+    TWITCH_CHAT_LINE_STATUS,
+    TWITCH_CHAT_LINE_MESSAGE,
+} TwitchChatLineKind;
+
+typedef struct {
+    TwitchChatLineKind kind;
+    const char *display_name;
+    const char *message;
+    const char *color;
+} TwitchChatLine;
+
+typedef void (*TwitchChatLineFunc)(const TwitchChatLine *line, gpointer user_data);
 
 TwitchChatClient *twitch_chat_client_new(TwitchChatLineFunc line_func, gpointer user_data);
 void twitch_chat_client_start(TwitchChatClient *client, const char *channel);
