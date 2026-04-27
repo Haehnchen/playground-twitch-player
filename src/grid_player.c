@@ -36,7 +36,7 @@ typedef struct {
 } StreamTile;
 
 struct _GridAppState {
-    const char * const *targets;
+    char *targets[MAX_TILES];
     guint target_count;
     GtkWidget *window;
     GtkWidget *root_overlay;
@@ -209,7 +209,7 @@ static void update_tile_channel_label(StreamTile *tile)
         return;
     }
 
-    const char *label = tile->label != NULL && tile->label[0] != '\0' ? tile->label : "Channel";
+    const char *label = tile->label != NULL && tile->label[0] != '\0' ? tile->label : PLAYER_EMPTY_STREAM_LABEL;
     gtk_label_set_text(GTK_LABEL(tile->channel_label), label);
     gtk_widget_set_tooltip_text(tile->channel_label, tile->label != NULL && tile->label[0] != '\0' ? tile->label : NULL);
 }
@@ -247,7 +247,7 @@ static void load_tile_stream(StreamTile *tile)
         NULL,
     };
 
-    set_tile_status(tile, "Starting stream");
+    set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
     check_mpv(mpv_command_async(tile->mpv, 0, cmd), "loadfile");
 }
 
@@ -936,7 +936,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_set_size_request(tile->volume_scale, 120, -1);
     g_signal_connect(tile->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), tile);
 
-    tile->stream_info_button = create_overlay_button(create_info_icon(), "Show stream info");
+    tile->stream_info_button = create_overlay_button(create_info_icon(), PLAYER_STREAM_INFO_TOOLTIP);
     g_signal_connect(tile->stream_info_button, "clicked", G_CALLBACK(on_stream_info_clicked), tile);
 
     gtk_box_append(GTK_BOX(box), tile->channel_combo);
@@ -959,6 +959,12 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
 
     tile->container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(tile->container, "tile-container");
+    if (index % 2 == 0) {
+        gtk_widget_add_css_class(tile->container, "tile-left");
+    }
+    if (index / 2 == 0) {
+        gtk_widget_add_css_class(tile->container, "tile-top");
+    }
     gtk_widget_set_hexpand(tile->container, TRUE);
     gtk_widget_set_vexpand(tile->container, TRUE);
 
@@ -1022,7 +1028,13 @@ static void install_css(void)
         "}"
         ".tile-container {"
         "  background: #050505;"
-        "  border: 1px solid rgba(255, 255, 255, 0.12);"
+        "  border: none;"
+        "}"
+        ".tile-left {"
+        "  border-right: 1px solid rgba(255, 255, 255, 0.12);"
+        "}"
+        ".tile-top {"
+        "  border-bottom: 1px solid rgba(255, 255, 255, 0.12);"
         "}"
         ".empty-label {"
         "  color: rgba(255, 255, 255, 0.35);"
@@ -1151,21 +1163,12 @@ static void install_css(void)
 
 static guint get_target_count(GridAppState *state)
 {
-    if (state->target_count > 0) {
-        return MIN(state->target_count, MAX_TILES);
-    }
-
-    return MIN(app_settings_get_channel_count(state->settings), MAX_TILES);
+    return MIN(state->target_count, MAX_TILES);
 }
 
 static const char *get_target_at(GridAppState *state, guint index)
 {
-    if (state->target_count > 0) {
-        return state->targets[index];
-    }
-
-    const AppSettingsChannel *channel = app_settings_get_channel(state->settings, index);
-    return channel != NULL ? channel->url : NULL;
+    return index < state->target_count ? state->targets[index] : NULL;
 }
 
 void grid_player_free(GridPlayer *player)
@@ -1212,6 +1215,10 @@ void grid_player_free(GridPlayer *player)
         tile->volume_scale = NULL;
     }
 
+    for (guint i = 0; i < MAX_TILES; i++) {
+        g_clear_pointer(&state->targets[i], g_free);
+    }
+
     state->root_overlay = NULL;
     state->grid = NULL;
     state->settings = NULL;
@@ -1229,8 +1236,10 @@ GridPlayer *grid_player_new(
 
     GridAppState *state = g_new0(GridAppState, 1);
     state->window = GTK_WIDGET(window);
-    state->targets = targets;
-    state->target_count = target_count;
+    state->target_count = targets != NULL ? MIN(target_count, (guint)MAX_TILES) : 0;
+    for (guint i = 0; i < state->target_count; i++) {
+        state->targets[i] = g_strdup(targets[i]);
+    }
     state->settings = settings;
 
     state->root_overlay = gtk_overlay_new();
@@ -1268,6 +1277,22 @@ GtkWidget *grid_player_get_widget(GridPlayer *player)
     return player != NULL ? player->root_overlay : NULL;
 }
 
+char *grid_player_dup_first_target(GridPlayer *player)
+{
+    if (player == NULL) {
+        return NULL;
+    }
+
+    for (guint i = 0; i < MAX_TILES; i++) {
+        const char *url = player->tiles[i].url;
+        if (url != NULL && url[0] != '\0') {
+            return g_strdup(url);
+        }
+    }
+
+    return NULL;
+}
+
 void grid_player_start(GridPlayer *player)
 {
     if (player == NULL || player->started) {
@@ -1297,22 +1322,6 @@ void grid_player_set_settings(GridPlayer *player, AppSettings *settings)
     }
 
     player->settings = settings;
-    if (!player->started && player->target_count == 0) {
-        guint target_count = get_target_count(player);
-        for (guint i = 0; i < MAX_TILES; i++) {
-            StreamTile *tile = &player->tiles[i];
-            g_clear_pointer(&tile->label, g_free);
-            g_clear_pointer(&tile->url, g_free);
-
-            if (i < target_count) {
-                const char *target = get_target_at(player, i);
-                tile->label = target_to_label(target);
-                tile->url = target_to_url(target);
-            }
-            update_tile_empty_state(tile);
-        }
-    }
-
     for (guint i = 0; i < MAX_TILES; i++) {
         if (player->tiles[i].channel_combo != NULL) {
             rebuild_tile_channel_popover(&player->tiles[i]);

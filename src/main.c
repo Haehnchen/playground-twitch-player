@@ -47,6 +47,9 @@ typedef struct {
     const char *startup_target;
     const char * const *grid_targets;
     guint grid_target_count;
+    char *single_target;
+    gboolean has_single_target_handoff;
+    int single_chat_paned_position;
     ContentMode content_mode;
     guint overlay_hide_source;
     gboolean closing;
@@ -379,13 +382,39 @@ static void destroy_active_content(AppState *state)
     }
 }
 
+static void capture_single_handoff(AppState *state)
+{
+    if (state->single_player == NULL) {
+        return;
+    }
+
+    g_clear_pointer(&state->single_target, g_free);
+    state->single_target = single_player_dup_current_target(state->single_player);
+    state->has_single_target_handoff = TRUE;
+    state->single_chat_paned_position = single_player_get_chat_paned_position(state->single_player);
+}
+
+static void capture_grid_handoff(AppState *state)
+{
+    if (state->grid_player == NULL) {
+        return;
+    }
+
+    g_clear_pointer(&state->single_target, g_free);
+    state->single_target = grid_player_dup_first_target(state->grid_player);
+    state->has_single_target_handoff = TRUE;
+}
+
 static void create_single_content(AppState *state)
 {
+    const char *target = state->has_single_target_handoff ? state->single_target : state->startup_target;
+
     state->single_player = single_player_new(
         GTK_WINDOW(state->window),
         state->settings,
-        state->startup_target,
-        state->startup_target != NULL && state->startup_target[0] != '\0',
+        target,
+        target != NULL && target[0] != '\0',
+        state->single_chat_paned_position,
         on_content_fullscreen_requested,
         state
     );
@@ -398,11 +427,30 @@ static void create_single_content(AppState *state)
 
 static void create_grid_content(AppState *state)
 {
+    const char *targets[GRID_PLAYER_MAX_TILES] = {0};
+    guint target_count = 0;
+
+    if (state->single_target != NULL && state->single_target[0] != '\0') {
+        targets[target_count++] = state->single_target;
+    }
+
+    for (guint i = 0; i < state->grid_target_count && target_count < GRID_PLAYER_MAX_TILES; i++) {
+        const char *target = state->grid_targets[i];
+        if (target == NULL || target[0] == '\0') {
+            continue;
+        }
+        if (state->single_target != NULL && g_strcmp0(target, state->single_target) == 0) {
+            continue;
+        }
+
+        targets[target_count++] = target;
+    }
+
     state->grid_player = grid_player_new(
         GTK_WINDOW(state->window),
         state->settings,
-        state->grid_targets,
-        state->grid_target_count
+        targets,
+        target_count
     );
     grid_player_set_fullscreen(state->grid_player, state->fullscreen);
     gtk_overlay_set_child(GTK_OVERLAY(state->root_overlay), grid_player_get_widget(state->grid_player));
@@ -427,6 +475,12 @@ static void set_layout_mode(AppState *state, ContentMode mode)
     if (state->content_mode == mode) {
         show_window_overlay(state);
         return;
+    }
+
+    if (mode == CONTENT_MODE_GRID) {
+        capture_single_handoff(state);
+    } else {
+        capture_grid_handoff(state);
     }
 
     destroy_active_content(state);
@@ -881,6 +935,7 @@ static void destroy_state(gpointer user_data)
     }
 
     destroy_active_content(state);
+    g_clear_pointer(&state->single_target, g_free);
     app_settings_free(state->settings);
     state->settings = NULL;
 }

@@ -15,6 +15,7 @@ GridPlayer *grid_player_new(
     guint target_count
 );
 GtkWidget *grid_player_get_widget(GridPlayer *player);
+char *grid_player_dup_first_target(GridPlayer *player);
 void grid_player_start(GridPlayer *player);
 void grid_player_set_fullscreen(GridPlayer *player, gboolean fullscreen);
 void grid_player_set_settings(GridPlayer *player, AppSettings *settings);

@@ -18,6 +18,8 @@
 
 #define STREAM_TITLE_REFRESH_SECONDS 60
 #define STREAM_DROPDOWN_WIDTH 170
+#define DEFAULT_CHAT_WIDTH 360
+#define DEFAULT_CHAT_PANED_POSITION 740
 
 typedef struct {
     const char *label;
@@ -53,6 +55,7 @@ struct _SinglePlayer {
     gboolean chat_visible;
     guint footer_hide_source;
     guint title_refresh_source;
+    guint chat_position_source;
     guint title_generation;
     double last_motion_x;
     double last_motion_y;
@@ -297,7 +300,7 @@ static void load_stream_url(SinglePlayer *state, const char *url, const char *la
         NULL,
     };
 
-    set_status(state, "Starting stream");
+    set_status(state, PLAYER_STARTING_STREAM_STATUS);
     state->stream_playing = TRUE;
     reset_stream_title(state);
     start_chat(state, channel);
@@ -737,8 +740,8 @@ static void update_stream_combo_label(SinglePlayer *state)
         return;
     }
 
-    if (state->stream_count == 0 || state->active_stream >= state->stream_count) {
-        gtk_label_set_text(GTK_LABEL(child), "No channels");
+    if (!state->stream_playing || state->stream_count == 0 || state->active_stream >= state->stream_count) {
+        gtk_label_set_text(GTK_LABEL(child), PLAYER_EMPTY_STREAM_LABEL);
         return;
     }
 
@@ -934,10 +937,10 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_box_append(GTK_BOX(box), state->footer_spacer);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
-    GtkWidget *stream_info_button = create_overlay_button(create_info_icon(), "Show stream info");
+    GtkWidget *stream_info_button = create_overlay_button(create_info_icon(), PLAYER_STREAM_INFO_TOOLTIP);
     gtk_box_append(GTK_BOX(box), stream_info_button);
 
-    state->chat_toggle_button = create_overlay_button(create_chat_icon(CHAT_ICON_CLOSE), "Close chat");
+    state->chat_toggle_button = create_overlay_button(create_chat_icon(CHAT_ICON_OPEN), "Open chat");
     gtk_widget_add_css_class(state->chat_toggle_button, "chat-toggle");
     gtk_box_append(GTK_BOX(box), state->chat_toggle_button);
 
@@ -1116,6 +1119,30 @@ static void maybe_start_initial_stream(SinglePlayer *state)
     play_selected_stream(state);
 }
 
+static gboolean apply_default_chat_position(gpointer user_data)
+{
+    SinglePlayer *state = user_data;
+
+    if (state->closing || state->main_area == NULL) {
+        state->chat_position_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    int width = gtk_widget_get_width(state->main_area);
+    if (width <= 1) {
+        return G_SOURCE_CONTINUE;
+    }
+
+    int position = width > state->chat_width + 320
+        ? width - state->chat_width
+        : DEFAULT_CHAT_PANED_POSITION;
+    gtk_paned_set_position(GTK_PANED(state->main_area), position);
+    state->chat_paned_position = position;
+    state->chat_position_source = 0;
+
+    return G_SOURCE_REMOVE;
+}
+
 
 
 static void single_player_destroy(SinglePlayer *state)
@@ -1139,6 +1166,11 @@ static void single_player_destroy(SinglePlayer *state)
     if (state->title_cancel != NULL) {
         g_cancellable_cancel(state->title_cancel);
         g_clear_object(&state->title_cancel);
+    }
+
+    if (state->chat_position_source != 0) {
+        g_source_remove(state->chat_position_source);
+        state->chat_position_source = 0;
     }
 
     if (state->mpv_gl != NULL) {
@@ -1173,6 +1205,7 @@ SinglePlayer *single_player_new(
     AppSettings *settings,
     const char *startup_target,
     gboolean auto_start,
+    int chat_paned_position,
     SinglePlayerFullscreenCallback fullscreen_callback,
     gpointer fullscreen_user_data
 )
@@ -1180,10 +1213,10 @@ SinglePlayer *single_player_new(
     SinglePlayer *state = g_new0(SinglePlayer, 1);
     state->startup_target = startup_target;
     state->window = GTK_WIDGET(window);
-    state->chat_width = 360;
-    state->chat_paned_position = 740;
+    state->chat_width = DEFAULT_CHAT_WIDTH;
+    state->chat_paned_position = chat_paned_position > 0 ? chat_paned_position : DEFAULT_CHAT_PANED_POSITION;
     state->active_stream = 0;
-    state->chat_visible = TRUE;
+    state->chat_visible = FALSE;
     state->settings = settings;
     state->fullscreen_callback = fullscreen_callback;
     state->fullscreen_user_data = fullscreen_user_data;
@@ -1211,8 +1244,10 @@ SinglePlayer *single_player_new(
     gtk_paned_set_start_child(GTK_PANED(state->main_area), state->video_overlay);
 
     state->chat_panel = chat_panel_new(state->chat_width / 2);
-    gtk_paned_set_end_child(GTK_PANED(state->main_area), state->chat_panel->widget);
     gtk_paned_set_position(GTK_PANED(state->main_area), state->chat_paned_position);
+    if (chat_paned_position <= 0) {
+        state->chat_position_source = g_timeout_add(50, apply_default_chat_position, state);
+    }
 
     GtkGesture *video_click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(video_click), GDK_BUTTON_PRIMARY);
@@ -1259,6 +1294,25 @@ SinglePlayer *single_player_new(
 GtkWidget *single_player_get_widget(SinglePlayer *player)
 {
     return player != NULL ? player->main_area : NULL;
+}
+
+char *single_player_dup_current_target(SinglePlayer *player)
+{
+    if (player == NULL || !player->stream_playing || player->active_stream >= player->stream_count) {
+        return NULL;
+    }
+
+    const char *url = player->streams[player->active_stream].url;
+    return url != NULL && url[0] != '\0' ? g_strdup(url) : NULL;
+}
+
+int single_player_get_chat_paned_position(SinglePlayer *player)
+{
+    if (player == NULL || player->main_area == NULL) {
+        return 0;
+    }
+
+    return gtk_paned_get_position(GTK_PANED(player->main_area));
 }
 
 void single_player_set_fullscreen(SinglePlayer *player, gboolean fullscreen)
