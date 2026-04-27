@@ -1,5 +1,6 @@
 #define G_LOG_DOMAIN "twitch-player"
 
+#include <gio/gio.h>
 #include <gtk/gtk.h>
 #include <epoxy/egl.h>
 #include <epoxy/gl.h>
@@ -7,8 +8,10 @@
 #include <mpv/render_gl.h>
 #include <locale.h>
 #include <math.h>
+#include <string.h>
 
 #include "chat_panel.h"
+#include "twitch_stream_info.h"
 
 #define APP_ID "local.twitchplayer"
 #define APP_ICON_RESOURCE_PATH "/local/twitch-player/icons/hicolor/scalable/apps/local.twitch-player.svg"
@@ -17,6 +20,7 @@
 #define DEFAULT_MPV_HWDEC "auto-safe"
 #define GSK_RENDERER_OVERRIDE_ENV "TWITCH_PLAYER_GSK_RENDERER"
 #define MPV_HWDEC_OVERRIDE_ENV "TWITCH_PLAYER_HWDEC"
+#define STREAM_TITLE_REFRESH_SECONDS 60
 
 typedef struct {
     const char *label;
@@ -42,6 +46,7 @@ typedef struct {
     GtkWidget *bottom_panel;
     GtkWidget *footer_spacer;
     GtkWidget *stream_combo;
+    GtkWidget *stream_title_label;
     GtkWidget *volume_scale;
     GtkWidget *status_label;
     StreamEntry *streams;
@@ -49,6 +54,7 @@ typedef struct {
     mpv_handle *mpv;
     mpv_render_context *mpv_gl;
     ChatPanel *chat_panel;
+    GCancellable *title_cancel;
     int chat_width;
     int chat_paned_position;
     int last_render_width;
@@ -56,6 +62,8 @@ typedef struct {
     guint active_stream;
     gboolean chat_visible;
     guint footer_hide_source;
+    guint title_refresh_source;
+    guint title_generation;
     double last_motion_x;
     double last_motion_y;
     double move_press_x;
@@ -64,11 +72,18 @@ typedef struct {
     gboolean move_pressed;
     gboolean closing;
     gboolean fullscreen;
+    gboolean stream_playing;
+    gboolean title_fetch_in_progress;
 } AppState;
 
 typedef struct {
     const char *startup_target;
 } StartupConfig;
+
+typedef struct {
+    AppState *state;
+    guint generation;
+} StreamTitleCallbackData;
 
 typedef enum {
     CHAT_ICON_OPEN,
@@ -86,6 +101,112 @@ static void set_status(AppState *state, const char *message)
     if (state->status_label != NULL) {
         gtk_label_set_text(GTK_LABEL(state->status_label), message);
     }
+}
+
+static void set_stream_title(AppState *state, const char *title)
+{
+    if (state->stream_title_label == NULL) {
+        return;
+    }
+
+    gtk_label_set_text(GTK_LABEL(state->stream_title_label), title != NULL ? title : "");
+    gtk_widget_set_tooltip_text(state->stream_title_label, title != NULL && title[0] != '\0' ? title : NULL);
+}
+
+static const char *get_active_stream_channel(AppState *state)
+{
+    if (state->active_stream >= state->stream_count) {
+        return NULL;
+    }
+
+    return state->streams[state->active_stream].channel;
+}
+
+static void on_stream_title_fetched(GObject *source_object, GAsyncResult *result, gpointer user_data)
+{
+    (void)source_object;
+    StreamTitleCallbackData *data = user_data;
+    AppState *state = data->state;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *title = twitch_stream_info_fetch_title_finish(result, &error);
+
+    if (data->generation != state->title_generation) {
+        g_free(data);
+        return;
+    }
+
+    state->title_fetch_in_progress = FALSE;
+    g_clear_object(&state->title_cancel);
+
+    if (state->closing || !state->stream_playing) {
+        g_free(data);
+        return;
+    }
+
+    if (error != NULL) {
+        if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            g_debug("stream title fetch failed: %s", error->message);
+        }
+        g_free(data);
+        return;
+    }
+
+    set_stream_title(state, title);
+    g_free(data);
+}
+
+static void request_stream_title_update(AppState *state, gboolean force)
+{
+    const char *channel = get_active_stream_channel(state);
+
+    if (state->closing || !state->stream_playing || channel == NULL || channel[0] == '\0') {
+        return;
+    }
+    if (state->title_fetch_in_progress && !force) {
+        return;
+    }
+
+    if (force) {
+        state->title_generation++;
+        if (state->title_cancel != NULL) {
+            g_cancellable_cancel(state->title_cancel);
+            g_clear_object(&state->title_cancel);
+        }
+        state->title_fetch_in_progress = FALSE;
+    }
+
+    StreamTitleCallbackData *data = g_new0(StreamTitleCallbackData, 1);
+    data->state = state;
+    data->generation = ++state->title_generation;
+
+    state->title_cancel = g_cancellable_new();
+    state->title_fetch_in_progress = TRUE;
+
+    twitch_stream_info_fetch_title_async(channel, state->title_cancel, on_stream_title_fetched, data);
+}
+
+static gboolean refresh_stream_title(gpointer user_data)
+{
+    AppState *state = user_data;
+
+    if (state->closing) {
+        state->title_refresh_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    request_stream_title_update(state, FALSE);
+    return G_SOURCE_CONTINUE;
+}
+
+static void reset_stream_title(AppState *state)
+{
+    state->title_generation++;
+    if (state->title_cancel != NULL) {
+        g_cancellable_cancel(state->title_cancel);
+        g_clear_object(&state->title_cancel);
+    }
+    state->title_fetch_in_progress = FALSE;
+    set_stream_title(state, "");
 }
 
 static void start_chat(AppState *state, const char *channel)
@@ -219,7 +340,10 @@ static void load_stream_url(AppState *state, const char *url, const char *label,
     };
 
     set_status(state, "Stream wird gestartet");
+    state->stream_playing = TRUE;
+    reset_stream_title(state);
     start_chat(state, channel);
+    request_stream_title_update(state, TRUE);
     check_mpv(mpv_command_async(state->mpv, 0, cmd), "loadfile");
 }
 
@@ -946,14 +1070,24 @@ static GtkWidget *create_controls(AppState *state)
     gtk_widget_set_size_request(state->stream_combo, 170, -1);
     gtk_widget_set_hexpand(state->stream_combo, FALSE);
 
+    state->stream_title_label = gtk_label_new("");
+    gtk_widget_add_css_class(state->stream_title_label, "stream-title-label");
+    gtk_widget_set_halign(state->stream_title_label, GTK_ALIGN_START);
+    gtk_widget_set_valign(state->stream_title_label, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(state->stream_title_label, TRUE);
+    gtk_label_set_xalign(GTK_LABEL(state->stream_title_label), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(state->stream_title_label), PANGO_ELLIPSIZE_END);
+    gtk_label_set_single_line_mode(GTK_LABEL(state->stream_title_label), TRUE);
+
     state->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 130, 1);
     gtk_range_set_value(GTK_RANGE(state->volume_scale), 80);
     gtk_widget_set_size_request(state->volume_scale, 140, -1);
     gtk_scale_set_draw_value(GTK_SCALE(state->volume_scale), FALSE);
 
     gtk_box_append(GTK_BOX(box), state->stream_combo);
+    gtk_box_append(GTK_BOX(box), state->stream_title_label);
     state->footer_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_hexpand(state->footer_spacer, TRUE);
+    gtk_widget_set_hexpand(state->footer_spacer, FALSE);
     gtk_box_append(GTK_BOX(box), state->footer_spacer);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
@@ -1115,6 +1249,12 @@ static void install_css(void)
         "}"
         ".stream-button-label {"
         "  color: white;"
+        "}"
+        ".stream-title-label {"
+        "  color: rgba(255, 255, 255, 0.92);"
+        "  font-size: 13px;"
+        "  margin-left: 4px;"
+        "  margin-right: 12px;"
         "}"
         ".stream-popover contents,"
         ".stream-popover box,"
@@ -1380,6 +1520,16 @@ static void destroy_state(gpointer user_data)
         state->footer_hide_source = 0;
     }
 
+    if (state->title_refresh_source != 0) {
+        g_source_remove(state->title_refresh_source);
+        state->title_refresh_source = 0;
+    }
+
+    if (state->title_cancel != NULL) {
+        g_cancellable_cancel(state->title_cancel);
+        g_clear_object(&state->title_cancel);
+    }
+
     if (state->mpv_gl != NULL) {
         mpv_render_context_free(state->mpv_gl);
         state->mpv_gl = NULL;
@@ -1466,6 +1616,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_widget_set_halign(state->bottom_panel, GTK_ALIGN_FILL);
     gtk_widget_set_valign(state->bottom_panel, GTK_ALIGN_END);
     gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->bottom_panel);
+    state->title_refresh_source = g_timeout_add_seconds(STREAM_TITLE_REFRESH_SECONDS, refresh_stream_title, state);
 
     state->top_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_add_css_class(state->top_controls, "top-overlay-controls");

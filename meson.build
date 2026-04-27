@@ -11,6 +11,8 @@ project(
 gtk_dep = dependency('gtk4', version: '>=4.10')
 mpv_dep = dependency('mpv')
 epoxy_dep = dependency('epoxy')
+json_glib_dep = dependency('json-glib-1.0')
+libsoup_dep = dependency('libsoup-3.0')
 gnome = import('gnome')
 
 resources = gnome.compile_resources(
@@ -27,8 +29,9 @@ executable(
     'src/chat_assets.c',
     'src/chat_panel.c',
     'src/twitch_chat.c',
+    'src/twitch_stream_info.c',
     resources,
   ],
-  dependencies: [gtk_dep, mpv_dep, epoxy_dep],
+  dependencies: [gtk_dep, mpv_dep, epoxy_dep, json_glib_dep, libsoup_dep],
   install: true,
 )
