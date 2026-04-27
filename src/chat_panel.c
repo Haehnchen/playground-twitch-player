@@ -121,9 +121,6 @@ static gboolean scroll_to_end_idle(gpointer user_data)
 
     priv->follow_tail = TRUE;
 
-    GtkTextMark *insert = gtk_text_buffer_get_insert(priv->buffer);
-    gtk_text_view_scroll_mark_onscreen(GTK_TEXT_VIEW(priv->view), insert);
-
     return G_SOURCE_REMOVE;
 }
 
@@ -310,6 +307,7 @@ ChatPanel *chat_panel_new(int width)
 
     priv->view = gtk_text_view_new();
     gtk_widget_add_css_class(priv->view, "chat-view");
+    gtk_widget_set_focusable(priv->view, FALSE);
     gtk_text_view_set_editable(GTK_TEXT_VIEW(priv->view), FALSE);
     gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(priv->view), FALSE);
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(priv->view), GTK_WRAP_WORD_CHAR);

@@ -538,6 +538,8 @@ static GtkWidget *create_window_icon(WindowIconKind kind)
     return icon;
 }
 
+static void schedule_footer_hide(AppState *state);
+
 static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
 {
     GtkWidget *button = gtk_button_new();
@@ -547,11 +549,26 @@ static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
     return button;
 }
 
+static gboolean is_stream_menu_open(AppState *state)
+{
+    if (state->stream_combo == NULL) {
+        return FALSE;
+    }
+
+    GtkPopover *popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(state->stream_combo));
+    return popover != NULL && gtk_widget_get_mapped(GTK_WIDGET(popover));
+}
+
 static gboolean hide_footer(gpointer user_data)
 {
     AppState *state = user_data;
 
     state->footer_hide_source = 0;
+
+    if (is_stream_menu_open(state)) {
+        schedule_footer_hide(state);
+        return G_SOURCE_REMOVE;
+    }
 
     if (!state->closing) {
         gtk_widget_set_visible(state->bottom_panel, FALSE);
