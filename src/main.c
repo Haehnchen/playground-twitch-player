@@ -13,6 +13,10 @@
 #define APP_ID "local.twitchplayer"
 #define APP_ICON_RESOURCE_PATH "/local/twitch-player/icons/hicolor/scalable/apps/local.twitch-player.svg"
 #define APP_ICON_RESOURCE_THEME_PATH "/local/twitch-player/icons"
+#define DEFAULT_GSK_RENDERER "gl"
+#define DEFAULT_MPV_HWDEC "auto-safe"
+#define GSK_RENDERER_OVERRIDE_ENV "TWITCH_PLAYER_GSK_RENDERER"
+#define MPV_HWDEC_OVERRIDE_ENV "TWITCH_PLAYER_HWDEC"
 
 typedef struct {
     const char *label;
@@ -47,6 +51,8 @@ typedef struct {
     ChatPanel *chat_panel;
     int chat_width;
     int chat_paned_position;
+    int last_render_width;
+    int last_render_height;
     guint active_stream;
     gboolean chat_visible;
     guint footer_hide_source;
@@ -96,6 +102,34 @@ static void check_mpv(int status, const char *action)
     if (status < 0) {
         g_warning("%s: %s", action, mpv_error_string(status));
     }
+}
+
+static void configure_graphics_environment(void)
+{
+    const char *renderer = g_getenv(GSK_RENDERER_OVERRIDE_ENV);
+
+    if (renderer != NULL && renderer[0] != '\0') {
+        g_setenv("GSK_RENDERER", renderer, TRUE);
+        return;
+    }
+
+    renderer = g_getenv("GSK_RENDERER");
+    if (renderer != NULL && renderer[0] != '\0') {
+        return;
+    }
+
+    g_setenv("GSK_RENDERER", DEFAULT_GSK_RENDERER, TRUE);
+}
+
+static const char *get_mpv_hwdec(void)
+{
+    const char *hwdec = g_getenv(MPV_HWDEC_OVERRIDE_ENV);
+
+    if (hwdec != NULL && hwdec[0] != '\0') {
+        return hwdec;
+    }
+
+    return DEFAULT_MPV_HWDEC;
 }
 
 static void *get_proc_address(void *ctx, const char *name)
@@ -723,6 +757,13 @@ static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer us
         return TRUE;
     }
 
+    uint64_t update_flags = mpv_render_context_update(state->mpv_gl);
+    gboolean size_changed = width != state->last_render_width || height != state->last_render_height;
+
+    if ((update_flags & MPV_RENDER_UPDATE_FRAME) == 0 && !size_changed) {
+        return TRUE;
+    }
+
     gtk_gl_area_attach_buffers(area);
 
     GLint current_fbo = 0;
@@ -741,7 +782,13 @@ static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer us
         {MPV_RENDER_PARAM_INVALID, NULL},
     };
 
-    mpv_render_context_render(state->mpv_gl, params);
+    int status = mpv_render_context_render(state->mpv_gl, params);
+    if (status < 0) {
+        g_warning("mpv render: %s", mpv_error_string(status));
+    } else {
+        state->last_render_width = width;
+        state->last_render_height = height;
+    }
 
     return TRUE;
 }
@@ -767,9 +814,11 @@ static void on_gl_realize(GtkGLArea *area, gpointer user_data)
         .get_proc_address = get_proc_address,
         .get_proc_address_ctx = NULL,
     };
+    int advanced_control = 1;
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE, (void *)MPV_RENDER_API_TYPE_OPENGL},
         {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params},
+        {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced_control},
         {MPV_RENDER_PARAM_INVALID, NULL},
     };
 
@@ -793,6 +842,9 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
         mpv_render_context_free(state->mpv_gl);
         state->mpv_gl = NULL;
     }
+
+    state->last_render_width = 0;
+    state->last_render_height = 0;
 }
 
 static GtkWidget *create_controls(AppState *state)
@@ -878,7 +930,7 @@ static gboolean init_mpv(AppState *state)
     check_mpv(mpv_set_option_string(state->mpv, "config", "no"), "set config");
     check_mpv(mpv_set_option_string(state->mpv, "vo", "libmpv"), "set vo");
     check_mpv(mpv_set_option_string(state->mpv, "ytdl", "yes"), "set ytdl");
-    check_mpv(mpv_set_option_string(state->mpv, "hwdec", "auto-safe"), "set hwdec");
+    check_mpv(mpv_set_option_string(state->mpv, "hwdec", get_mpv_hwdec()), "set hwdec");
     check_mpv(mpv_set_option_string(state->mpv, "volume", "80"), "set volume");
     int status = mpv_initialize(state->mpv);
     if (status < 0) {
@@ -1401,6 +1453,7 @@ int main(int argc, char **argv)
 
     g_set_prgname(APP_ID);
     g_set_application_name("Twitch Player");
+    configure_graphics_environment();
     write_user_desktop_identity(argv[0]);
 
     g_autoptr(GtkApplication) application = gtk_application_new(
