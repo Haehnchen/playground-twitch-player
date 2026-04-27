@@ -94,6 +94,19 @@ static gboolean adjustment_is_at_bottom(GtkAdjustment *adjustment)
     return value + page_size >= upper - 2.0;
 }
 
+static void remove_source_if_active(guint *source_id)
+{
+    if (*source_id == 0) {
+        return;
+    }
+
+    GSource *source = g_main_context_find_source_by_id(NULL, *source_id);
+    if (source != NULL) {
+        g_source_destroy(source);
+    }
+    *source_id = 0;
+}
+
 static gboolean is_scrolled_to_bottom(ChatPanel *panel)
 {
     ChatPanelPrivate *priv = panel->priv;
@@ -132,9 +145,7 @@ static void queue_scroll_to_end(ChatPanel *panel)
 
     priv->follow_tail = TRUE;
 
-    if (priv->scroll_source != 0) {
-        g_source_remove(priv->scroll_source);
-    }
+    remove_source_if_active(&priv->scroll_source);
 
     priv->scroll_source = g_idle_add(scroll_to_end_idle, panel);
 }
@@ -370,15 +381,9 @@ void chat_panel_free(ChatPanel *panel)
     }
 
     if (panel->priv != NULL) {
-        if (panel->priv->scroll_source != 0) {
-            g_source_remove(panel->priv->scroll_source);
-            panel->priv->scroll_source = 0;
-        }
+        remove_source_if_active(&panel->priv->scroll_source);
 
-        if (panel->priv->scroll_state_source != 0) {
-            g_source_remove(panel->priv->scroll_state_source);
-            panel->priv->scroll_state_source = 0;
-        }
+        remove_source_if_active(&panel->priv->scroll_state_source);
 
         g_clear_pointer(&panel->priv->username_tags, g_hash_table_destroy);
         g_clear_pointer(&panel->priv->assets, chat_assets_free);

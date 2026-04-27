@@ -85,6 +85,7 @@ typedef enum {
 static void init_streams(SinglePlayer *state, const char *target);
 static void free_streams(SinglePlayer *state);
 static void rebuild_stream_menu(SinglePlayer *state);
+static void update_stream_combo_label(SinglePlayer *state);
 
 static void set_status(SinglePlayer *state, const char *message)
 {
@@ -215,6 +216,19 @@ static void check_mpv(int status, const char *action)
     }
 }
 
+static void remove_source_if_active(guint *source_id)
+{
+    if (*source_id == 0) {
+        return;
+    }
+
+    GSource *source = g_main_context_find_source_by_id(NULL, *source_id);
+    if (source != NULL) {
+        g_source_destroy(source);
+    }
+    *source_id = 0;
+}
+
 static void *get_proc_address(void *ctx, const char *name)
 {
     (void)ctx;
@@ -309,6 +323,7 @@ static void load_stream_url(SinglePlayer *state, const char *url, const char *la
 
     set_status(state, PLAYER_STARTING_STREAM_STATUS);
     state->stream_playing = TRUE;
+    update_stream_combo_label(state);
     reset_stream_title(state);
     start_chat(state, channel);
     request_stream_title_update(state, TRUE);
@@ -510,9 +525,7 @@ static gboolean hide_footer(gpointer user_data)
 
 static void schedule_footer_hide(SinglePlayer *state)
 {
-    if (state->footer_hide_source != 0) {
-        g_source_remove(state->footer_hide_source);
-    }
+    remove_source_if_active(&state->footer_hide_source);
 
     state->footer_hide_source = g_timeout_add(1800, hide_footer, state);
 }
@@ -663,6 +676,10 @@ static gboolean on_video_scroll(GtkEventControllerScroll *controller, double dx,
 
 static void set_chat_visible(SinglePlayer *state, gboolean visible)
 {
+    if (!GTK_IS_PANED(state->main_area) || state->chat_panel == NULL) {
+        return;
+    }
+
     state->chat_visible = visible;
 
     if (visible) {
@@ -1166,25 +1183,16 @@ static void single_player_destroy(SinglePlayer *state)
 
     state->closing = TRUE;
 
-    if (state->footer_hide_source != 0) {
-        g_source_remove(state->footer_hide_source);
-        state->footer_hide_source = 0;
-    }
+    remove_source_if_active(&state->footer_hide_source);
 
-    if (state->title_refresh_source != 0) {
-        g_source_remove(state->title_refresh_source);
-        state->title_refresh_source = 0;
-    }
+    remove_source_if_active(&state->title_refresh_source);
 
     if (state->title_cancel != NULL) {
         g_cancellable_cancel(state->title_cancel);
         g_clear_object(&state->title_cancel);
     }
 
-    if (state->chat_position_source != 0) {
-        g_source_remove(state->chat_position_source);
-        state->chat_position_source = 0;
-    }
+    remove_source_if_active(&state->chat_position_source);
 
     if (state->mpv_gl != NULL) {
         mpv_render_context_set_update_callback(state->mpv_gl, NULL, NULL);
@@ -1196,6 +1204,11 @@ static void single_player_destroy(SinglePlayer *state)
         mpv_set_wakeup_callback(state->mpv, NULL, NULL);
         mpv_terminate_destroy(state->mpv);
         state->mpv = NULL;
+    }
+
+    if (GTK_IS_PANED(state->main_area)) {
+        state->chat_paned_position = gtk_paned_get_position(GTK_PANED(state->main_area));
+        gtk_paned_set_end_child(GTK_PANED(state->main_area), NULL);
     }
 
     chat_panel_free(state->chat_panel);
@@ -1236,6 +1249,7 @@ SinglePlayer *single_player_new(
     init_streams(state, state->startup_target);
 
     state->main_area = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    g_object_add_weak_pointer(G_OBJECT(state->main_area), (gpointer *)&state->main_area);
     gtk_widget_add_css_class(state->main_area, "main-area");
     gtk_widget_set_hexpand(state->main_area, TRUE);
     gtk_widget_set_vexpand(state->main_area, TRUE);
@@ -1246,11 +1260,13 @@ SinglePlayer *single_player_new(
     gtk_paned_set_shrink_end_child(GTK_PANED(state->main_area), FALSE);
 
     state->gl_area = gtk_gl_area_new();
+    g_object_add_weak_pointer(G_OBJECT(state->gl_area), (gpointer *)&state->gl_area);
     gtk_gl_area_set_auto_render(GTK_GL_AREA(state->gl_area), FALSE);
     gtk_widget_set_hexpand(state->gl_area, TRUE);
     gtk_widget_set_vexpand(state->gl_area, TRUE);
 
     state->video_overlay = gtk_overlay_new();
+    g_object_add_weak_pointer(G_OBJECT(state->video_overlay), (gpointer *)&state->video_overlay);
     gtk_widget_set_hexpand(state->video_overlay, TRUE);
     gtk_widget_set_vexpand(state->video_overlay, TRUE);
     gtk_overlay_set_child(GTK_OVERLAY(state->video_overlay), state->gl_area);
@@ -1306,7 +1322,7 @@ SinglePlayer *single_player_new(
 
 GtkWidget *single_player_get_widget(SinglePlayer *player)
 {
-    return player != NULL ? player->main_area : NULL;
+    return player != NULL && GTK_IS_WIDGET(player->main_area) ? player->main_area : NULL;
 }
 
 char *single_player_dup_current_target(SinglePlayer *player)
@@ -1321,11 +1337,15 @@ char *single_player_dup_current_target(SinglePlayer *player)
 
 int single_player_get_chat_paned_position(SinglePlayer *player)
 {
-    if (player == NULL || player->main_area == NULL) {
+    if (player == NULL) {
         return 0;
     }
 
-    return gtk_paned_get_position(GTK_PANED(player->main_area));
+    if (GTK_IS_PANED(player->main_area)) {
+        player->chat_paned_position = gtk_paned_get_position(GTK_PANED(player->main_area));
+    }
+
+    return player->chat_paned_position;
 }
 
 void single_player_set_fullscreen(SinglePlayer *player, gboolean fullscreen)

@@ -66,6 +66,19 @@ typedef struct {
 static void set_layout_mode(AppState *state, ContentMode mode);
 static void show_window_overlay(AppState *state);
 
+static void remove_source_if_active(guint *source_id)
+{
+    if (*source_id == 0) {
+        return;
+    }
+
+    GSource *source = g_main_context_find_source_by_id(NULL, *source_id);
+    if (source != NULL) {
+        g_source_destroy(source);
+    }
+    *source_id = 0;
+}
+
 static void draw_settings_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
 {
     (void)area;
@@ -224,9 +237,7 @@ static gboolean hide_window_overlay(gpointer user_data)
 
 static void schedule_window_overlay_hide(AppState *state)
 {
-    if (state->overlay_hide_source != 0) {
-        g_source_remove(state->overlay_hide_source);
-    }
+    remove_source_if_active(&state->overlay_hide_source);
 
     state->overlay_hide_source = g_timeout_add(OVERLAY_HIDE_DELAY_MS, hide_window_overlay, state);
 }
@@ -370,8 +381,6 @@ static void on_content_fullscreen_requested(gpointer user_data)
 
 static void destroy_active_content(AppState *state)
 {
-    gtk_overlay_set_child(GTK_OVERLAY(state->root_overlay), NULL);
-
     if (state->single_player != NULL) {
         single_player_free(state->single_player);
         state->single_player = NULL;
@@ -379,6 +388,10 @@ static void destroy_active_content(AppState *state)
     if (state->grid_player != NULL) {
         grid_player_free(state->grid_player);
         state->grid_player = NULL;
+    }
+
+    if (GTK_IS_OVERLAY(state->root_overlay)) {
+        gtk_overlay_set_child(GTK_OVERLAY(state->root_overlay), NULL);
     }
 }
 
@@ -929,10 +942,7 @@ static void destroy_state(gpointer user_data)
     AppState *state = user_data;
     state->closing = TRUE;
 
-    if (state->overlay_hide_source != 0) {
-        g_source_remove(state->overlay_hide_source);
-        state->overlay_hide_source = 0;
-    }
+    remove_source_if_active(&state->overlay_hide_source);
 
     destroy_active_content(state);
     g_clear_pointer(&state->single_target, g_free);
@@ -961,10 +971,12 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_window_set_icon_name(GTK_WINDOW(state->window), APP_ID);
 
     state->root_overlay = gtk_overlay_new();
+    g_object_add_weak_pointer(G_OBJECT(state->root_overlay), (gpointer *)&state->root_overlay);
     gtk_window_set_child(GTK_WINDOW(state->window), state->root_overlay);
     add_resize_handles(GTK_OVERLAY(state->root_overlay), state);
 
     state->top_left_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    g_object_add_weak_pointer(G_OBJECT(state->top_left_controls), (gpointer *)&state->top_left_controls);
     gtk_widget_add_css_class(state->top_left_controls, "top-overlay-controls");
     gtk_widget_set_halign(state->top_left_controls, GTK_ALIGN_START);
     gtk_widget_set_valign(state->top_left_controls, GTK_ALIGN_START);
@@ -981,6 +993,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     g_signal_connect(state->layout_button, "clicked", G_CALLBACK(on_layout_clicked), state);
 
     state->top_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    g_object_add_weak_pointer(G_OBJECT(state->top_controls), (gpointer *)&state->top_controls);
     gtk_widget_add_css_class(state->top_controls, "top-overlay-controls");
     gtk_widget_set_halign(state->top_controls, GTK_ALIGN_END);
     gtk_widget_set_valign(state->top_controls, GTK_ALIGN_START);

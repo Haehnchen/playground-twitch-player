@@ -85,6 +85,19 @@ static void check_mpv(int status, const char *action)
     }
 }
 
+static void remove_source_if_active(guint *source_id)
+{
+    if (*source_id == 0) {
+        return;
+    }
+
+    GSource *source = g_main_context_find_source_by_id(NULL, *source_id);
+    if (source != NULL) {
+        g_source_destroy(source);
+    }
+    *source_id = 0;
+}
+
 static void *get_proc_address(void *ctx, const char *name)
 {
     (void)ctx;
@@ -564,9 +577,7 @@ static gboolean hide_footers(gpointer user_data)
 
 static void schedule_footer_hide(GridAppState *state)
 {
-    if (state->footer_hide_source != 0) {
-        g_source_remove(state->footer_hide_source);
-    }
+    remove_source_if_active(&state->footer_hide_source);
 
     state->footer_hide_source = g_timeout_add(1800, hide_footers, state);
 }
@@ -971,6 +982,7 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
     tile->url = target_to_url(target);
 
     tile->container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    g_object_add_weak_pointer(G_OBJECT(tile->container), (gpointer *)&tile->container);
     gtk_widget_add_css_class(tile->container, "tile-container");
     if (index % 2 == 0) {
         gtk_widget_add_css_class(tile->container, "tile-left");
@@ -982,11 +994,13 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
     gtk_widget_set_vexpand(tile->container, TRUE);
 
     tile->overlay = gtk_overlay_new();
+    g_object_add_weak_pointer(G_OBJECT(tile->overlay), (gpointer *)&tile->overlay);
     gtk_widget_set_hexpand(tile->overlay, TRUE);
     gtk_widget_set_vexpand(tile->overlay, TRUE);
     gtk_box_append(GTK_BOX(tile->container), tile->overlay);
 
     tile->gl_area = gtk_gl_area_new();
+    g_object_add_weak_pointer(G_OBJECT(tile->gl_area), (gpointer *)&tile->gl_area);
     gtk_gl_area_set_auto_render(GTK_GL_AREA(tile->gl_area), FALSE);
     gtk_widget_set_hexpand(tile->gl_area, TRUE);
     gtk_widget_set_vexpand(tile->gl_area, TRUE);
@@ -1194,10 +1208,7 @@ void grid_player_free(GridPlayer *player)
 
     state->closing = TRUE;
 
-    if (state->footer_hide_source != 0) {
-        g_source_remove(state->footer_hide_source);
-        state->footer_hide_source = 0;
-    }
+    remove_source_if_active(&state->footer_hide_source);
 
     for (guint i = 0; i < MAX_TILES; i++) {
         StreamTile *tile = &state->tiles[i];
@@ -1256,11 +1267,13 @@ GridPlayer *grid_player_new(
     state->settings = settings;
 
     state->root_overlay = gtk_overlay_new();
+    g_object_add_weak_pointer(G_OBJECT(state->root_overlay), (gpointer *)&state->root_overlay);
     gtk_widget_add_css_class(state->root_overlay, "grid-root");
     gtk_widget_set_hexpand(state->root_overlay, TRUE);
     gtk_widget_set_vexpand(state->root_overlay, TRUE);
 
     state->grid = gtk_grid_new();
+    g_object_add_weak_pointer(G_OBJECT(state->grid), (gpointer *)&state->grid);
     gtk_widget_add_css_class(state->grid, "stream-grid");
     gtk_widget_set_hexpand(state->grid, TRUE);
     gtk_widget_set_vexpand(state->grid, TRUE);
