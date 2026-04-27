@@ -2,7 +2,7 @@
 
 #include "chat_assets.h"
 
-#define CHAT_EMOTE_SIZE 18
+#define CHAT_EMOTE_SIZE 14
 
 struct ChatAssets {
     GHashTable *image_cache;
@@ -64,7 +64,7 @@ static GtkWidget *create_inline_image(ChatAssets *assets, const char *url)
     gtk_widget_set_focusable(picture, FALSE);
     gtk_widget_set_size_request(picture, CHAT_EMOTE_SIZE, CHAT_EMOTE_SIZE);
     gtk_picture_set_content_fit(GTK_PICTURE(picture), GTK_CONTENT_FIT_CONTAIN);
-    gtk_picture_set_can_shrink(GTK_PICTURE(picture), FALSE);
+    gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
 
     GdkPaintable *cached = g_hash_table_lookup(assets->image_cache, url);
     if (cached != NULL) {
