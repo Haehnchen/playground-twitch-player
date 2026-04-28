@@ -27,6 +27,7 @@ executable(
   'twitch-player',
   [
     'src/main.c',
+    'src/player_session.c',
     'src/single_player.c',
     'src/grid_player.c',
     'src/player_motion.c',

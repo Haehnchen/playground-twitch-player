@@ -4,9 +4,7 @@
 #include <gtk/gtk.h>
 #include <epoxy/egl.h>
 #include <epoxy/gl.h>
-#include <mpv/client.h>
 #include <mpv/render_gl.h>
-#include <locale.h>
 #include <math.h>
 #include <string.h>
 
@@ -43,7 +41,7 @@ struct _SinglePlayer {
     GtkWidget *status_label;
     StreamEntry *streams;
     guint stream_count;
-    mpv_handle *mpv;
+    PlayerSession *session;
     mpv_render_context *mpv_gl;
     ChatPanel *chat_panel;
     AppSettings *settings;
@@ -53,6 +51,8 @@ struct _SinglePlayer {
     int last_render_width;
     int last_render_height;
     gint render_queued;
+    guint render_warmup_source;
+    int render_warmup_frames;
     guint active_stream;
     gboolean chat_visible;
     guint footer_hide_source;
@@ -215,6 +215,11 @@ static void check_mpv(int status, const char *action)
     }
 }
 
+static mpv_handle *get_mpv(SinglePlayer *state)
+{
+    return player_session_get_mpv(state->session);
+}
+
 static void remove_source_if_active(guint *source_id)
 {
     if (*source_id == 0) {
@@ -247,6 +252,27 @@ static gboolean queue_mpv_render(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
+static gboolean warmup_video_render(gpointer user_data)
+{
+    SinglePlayer *state = user_data;
+
+    if (state->closing || state->gl_area == NULL || state->render_warmup_frames <= 0) {
+        state->render_warmup_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    state->render_warmup_frames--;
+    gtk_gl_area_queue_render(GTK_GL_AREA(state->gl_area));
+    return G_SOURCE_CONTINUE;
+}
+
+static void start_render_warmup(SinglePlayer *state)
+{
+    remove_source_if_active(&state->render_warmup_source);
+    state->render_warmup_frames = 90;
+    state->render_warmup_source = g_timeout_add(16, warmup_video_render, state);
+}
+
 static void on_mpv_render_update(void *ctx)
 {
     SinglePlayer *state = ctx;
@@ -260,12 +286,13 @@ static gboolean process_mpv_events(gpointer user_data)
 {
     SinglePlayer *state = user_data;
 
-    if (state->closing || state->mpv == NULL) {
+    mpv_handle *mpv = get_mpv(state);
+    if (state->closing || mpv == NULL) {
         return G_SOURCE_REMOVE;
     }
 
     while (true) {
-        mpv_event *event = mpv_wait_event(state->mpv, 0);
+        mpv_event *event = mpv_wait_event(mpv, 0);
 
         if (event->event_id == MPV_EVENT_NONE) {
             break;
@@ -311,27 +338,18 @@ static void on_mpv_wakeup(void *ctx)
 
 static void load_stream_url(SinglePlayer *state, const char *url, const char *label, const char *channel)
 {
-    (void)label;
-
-    const char *cmd[] = {
-        "loadfile",
-        url,
-        "replace",
-        NULL,
-    };
-
     set_status(state, PLAYER_STARTING_STREAM_STATUS);
     state->stream_playing = TRUE;
     update_stream_combo_label(state);
     reset_stream_title(state);
     start_chat(state, channel);
     request_stream_title_update(state, TRUE);
-    check_mpv(mpv_command_async(state->mpv, 0, cmd), "loadfile");
+    player_session_load_stream(state->session, url, label, channel);
 }
 
 static void play_selected_stream(SinglePlayer *state)
 {
-    if (state->mpv == NULL) {
+    if (!player_session_is_ready(state->session)) {
         g_warning("play requested, but mpv is not available");
         return;
     }
@@ -351,7 +369,7 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
     SinglePlayer *state = user_data;
     double volume = gtk_range_get_value(range);
 
-    check_mpv(mpv_set_property(state->mpv, "volume", MPV_FORMAT_DOUBLE, &volume), "set volume");
+    player_session_set_volume(state->session, volume);
 }
 
 static void change_volume(SinglePlayer *state, double delta)
@@ -364,7 +382,8 @@ static void change_volume(SinglePlayer *state, double delta)
 
 static void toggle_mute(SinglePlayer *state)
 {
-    if (state->mpv == NULL) {
+    mpv_handle *mpv = get_mpv(state);
+    if (mpv == NULL) {
         return;
     }
 
@@ -374,7 +393,7 @@ static void toggle_mute(SinglePlayer *state)
         NULL,
     };
 
-    check_mpv(mpv_command(state->mpv, cmd), "toggle mute");
+    check_mpv(mpv_command(mpv, cmd), "toggle mute");
 }
 
 static void draw_chat_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
@@ -704,7 +723,8 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
     (void)button;
     SinglePlayer *state = user_data;
 
-    if (state->mpv == NULL) {
+    mpv_handle *mpv = get_mpv(state);
+    if (mpv == NULL) {
         return;
     }
 
@@ -714,14 +734,14 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
         NULL,
     };
 
-    int status = mpv_command(state->mpv, stats_cmd);
+    int status = mpv_command(mpv, stats_cmd);
     if (status < 0) {
         const char *keypress_cmd[] = {
             "keypress",
             "i",
             NULL,
         };
-        check_mpv(mpv_command(state->mpv, keypress_cmd), "toggle stream info");
+        check_mpv(mpv_command(mpv, keypress_cmd), "toggle stream info");
     }
 
     show_footer(state);
@@ -826,8 +846,9 @@ static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer us
 
     uint64_t update_flags = mpv_render_context_update(state->mpv_gl);
     gboolean size_changed = width != state->last_render_width || height != state->last_render_height;
+    gboolean warming_up = state->render_warmup_frames > 0;
 
-    if ((update_flags & MPV_RENDER_UPDATE_FRAME) == 0 && !size_changed) {
+    if ((update_flags & MPV_RENDER_UPDATE_FRAME) == 0 && !size_changed && !warming_up) {
         return TRUE;
     }
 
@@ -864,7 +885,8 @@ static void on_gl_realize(GtkGLArea *area, gpointer user_data)
 {
     SinglePlayer *state = user_data;
 
-    if (state->mpv == NULL) {
+    mpv_handle *mpv = get_mpv(state);
+    if (mpv == NULL) {
         g_debug("GL realize skipped: mpv is not available");
         return;
     }
@@ -889,7 +911,7 @@ static void on_gl_realize(GtkGLArea *area, gpointer user_data)
         {MPV_RENDER_PARAM_INVALID, NULL},
     };
 
-    int status = mpv_render_context_create(&state->mpv_gl, state->mpv, params);
+    int status = mpv_render_context_create(&state->mpv_gl, mpv, params);
     if (status < 0) {
         g_warning("mpv render context: %s", mpv_error_string(status));
         set_status(state, "mpv rendering could not be started");
@@ -897,6 +919,27 @@ static void on_gl_realize(GtkGLArea *area, gpointer user_data)
     }
 
     mpv_render_context_set_update_callback(state->mpv_gl, on_mpv_render_update, state);
+    player_session_reenable_video(state->session);
+    start_render_warmup(state);
+    gtk_gl_area_queue_render(area);
+}
+
+static void clear_mpv_render_context(SinglePlayer *state)
+{
+    if (state->gl_area != NULL && gtk_widget_get_realized(state->gl_area)) {
+        gtk_gl_area_make_current(GTK_GL_AREA(state->gl_area));
+    }
+
+    if (state->mpv_gl != NULL) {
+        mpv_render_context_set_update_callback(state->mpv_gl, NULL, NULL);
+        mpv_render_context_free(state->mpv_gl);
+        state->mpv_gl = NULL;
+    }
+    remove_source_if_active(&state->render_warmup_source);
+
+    state->last_render_width = 0;
+    state->last_render_height = 0;
+    state->render_warmup_frames = 0;
 }
 
 static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
@@ -904,14 +947,7 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
     SinglePlayer *state = user_data;
 
     gtk_gl_area_make_current(area);
-
-    if (state->mpv_gl != NULL) {
-        mpv_render_context_free(state->mpv_gl);
-        state->mpv_gl = NULL;
-    }
-
-    state->last_render_width = 0;
-    state->last_render_height = 0;
+    clear_mpv_render_context(state);
 }
 
 static GtkWidget *create_controls(SinglePlayer *state)
@@ -943,7 +979,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_label_set_single_line_mode(GTK_LABEL(state->stream_title_label), TRUE);
 
     state->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 130, 1);
-    gtk_range_set_value(GTK_RANGE(state->volume_scale), 80);
+    gtk_range_set_value(GTK_RANGE(state->volume_scale), player_session_get_volume(state->session));
     gtk_widget_set_size_request(state->volume_scale, 140, -1);
     gtk_scale_set_draw_value(GTK_SCALE(state->volume_scale), FALSE);
 
@@ -966,42 +1002,6 @@ static GtkWidget *create_controls(SinglePlayer *state)
     g_signal_connect(state->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), state);
 
     return box;
-}
-
-static gboolean init_mpv(SinglePlayer *state)
-{
-    if (setlocale(LC_NUMERIC, "C") == NULL) {
-        g_warning("LC_NUMERIC could not be set to C; libmpv may refuse to start");
-    }
-
-    state->mpv = mpv_create();
-    if (state->mpv == NULL) {
-        g_warning("mpv_create returned NULL");
-        set_status(state, "mpv could not be created");
-        return FALSE;
-    }
-
-    check_mpv(mpv_set_option_string(state->mpv, "terminal", "no"), "set terminal");
-    check_mpv(mpv_set_option_string(state->mpv, "config", "no"), "set config");
-    check_mpv(mpv_set_option_string(state->mpv, "vo", "libmpv"), "set vo");
-    check_mpv(mpv_set_option_string(state->mpv, "ytdl", "yes"), "set ytdl");
-    check_mpv(mpv_set_option_string(state->mpv, "hwdec", PLAYER_DEFAULT_MPV_HWDEC), "set hwdec");
-    check_mpv(mpv_set_option_string(state->mpv, "cache", PLAYER_DEFAULT_MPV_CACHE), "set cache");
-    check_mpv(mpv_set_option_string(state->mpv, "cache-pause-initial", PLAYER_DEFAULT_MPV_CACHE_PAUSE_INITIAL), "set cache pause initial");
-    check_mpv(mpv_set_option_string(state->mpv, "cache-pause-wait", PLAYER_DEFAULT_MPV_CACHE_PAUSE_WAIT), "set cache pause wait");
-    check_mpv(mpv_set_option_string(state->mpv, "demuxer-readahead-secs", PLAYER_DEFAULT_MPV_DEMUXER_READAHEAD_SECS), "set demuxer readahead");
-    check_mpv(mpv_set_option_string(state->mpv, "stream-buffer-size", PLAYER_DEFAULT_MPV_STREAM_BUFFER_SIZE), "set stream buffer size");
-    check_mpv(mpv_set_option_string(state->mpv, "video-sync", PLAYER_DEFAULT_MPV_VIDEO_SYNC), "set video sync");
-    check_mpv(mpv_set_option_string(state->mpv, "volume", "80"), "set volume");
-    int status = mpv_initialize(state->mpv);
-    if (status < 0) {
-        g_warning("mpv init: %s", mpv_error_string(status));
-        set_status(state, "mpv could not be initialized");
-        return FALSE;
-    }
-
-    mpv_set_wakeup_callback(state->mpv, on_mpv_wakeup, state);
-    return TRUE;
 }
 
 static char *extract_twitch_channel(const char *target)
@@ -1186,18 +1186,12 @@ static void single_player_destroy(SinglePlayer *state)
     }
 
     remove_source_if_active(&state->chat_position_source);
+    remove_source_if_active(&state->render_warmup_source);
 
-    if (state->mpv_gl != NULL) {
-        mpv_render_context_set_update_callback(state->mpv_gl, NULL, NULL);
-        mpv_render_context_free(state->mpv_gl);
-        state->mpv_gl = NULL;
-    }
+    clear_mpv_render_context(state);
 
-    if (state->mpv != NULL) {
-        mpv_set_wakeup_callback(state->mpv, NULL, NULL);
-        mpv_terminate_destroy(state->mpv);
-        state->mpv = NULL;
-    }
+    player_session_set_wakeup_callback(state->session, NULL, NULL);
+    state->session = NULL;
 
     if (GTK_IS_PANED(state->main_area)) {
         state->chat_paned_position = gtk_paned_get_position(GTK_PANED(state->main_area));
@@ -1222,6 +1216,7 @@ static void single_player_destroy(SinglePlayer *state)
 SinglePlayer *single_player_new(
     GtkWindow *window,
     AppSettings *settings,
+    PlayerSession *session,
     const char *startup_target,
     gboolean auto_start,
     int chat_paned_position,
@@ -1231,6 +1226,7 @@ SinglePlayer *single_player_new(
 {
     SinglePlayer *state = g_new0(SinglePlayer, 1);
     state->startup_target = startup_target;
+    state->session = session;
     state->window = GTK_WIDGET(window);
     state->chat_width = DEFAULT_CHAT_WIDTH;
     state->chat_paned_position = chat_paned_position > 0 ? chat_paned_position : DEFAULT_CHAT_PANED_POSITION;
@@ -1239,7 +1235,9 @@ SinglePlayer *single_player_new(
     state->settings = settings;
     state->fullscreen_callback = fullscreen_callback;
     state->fullscreen_user_data = fullscreen_user_data;
-    init_streams(state, state->startup_target);
+    const char *session_target = player_session_get_url(state->session);
+    init_streams(state, session_target != NULL && session_target[0] != '\0' ? session_target : state->startup_target);
+    state->stream_playing = player_session_is_playing(state->session);
 
     state->main_area = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     g_object_add_weak_pointer(G_OBJECT(state->main_area), (gpointer *)&state->main_area);
@@ -1296,8 +1294,11 @@ SinglePlayer *single_player_new(
     g_signal_connect(video_motion, "motion", G_CALLBACK(on_video_motion), state);
     gtk_widget_add_controller(state->video_overlay, video_motion);
 
-    if (!init_mpv(state)) {
+    if (!player_session_is_ready(state->session)) {
+        set_status(state, "mpv could not be initialized");
         gtk_widget_set_sensitive(state->stream_combo, FALSE);
+    } else {
+        player_session_set_wakeup_callback(state->session, on_mpv_wakeup, state);
     }
 
     g_signal_connect(state->gl_area, "realize", G_CALLBACK(on_gl_realize), state);
@@ -1306,7 +1307,12 @@ SinglePlayer *single_player_new(
 
     schedule_footer_hide(state);
 
-    if (state->mpv != NULL && auto_start) {
+    if (player_session_is_playing(state->session)) {
+        update_stream_combo_label(state);
+        set_status(state, "Playback running");
+        start_chat(state, get_active_stream_channel(state));
+        request_stream_title_update(state, TRUE);
+    } else if (player_session_is_ready(state->session) && auto_start) {
         maybe_start_initial_stream(state);
     }
 
@@ -1320,12 +1326,11 @@ GtkWidget *single_player_get_widget(SinglePlayer *player)
 
 char *single_player_dup_current_target(SinglePlayer *player)
 {
-    if (player == NULL || !player->stream_playing || player->active_stream >= player->stream_count) {
+    if (player == NULL || !player_session_is_playing(player->session)) {
         return NULL;
     }
 
-    const char *url = player->streams[player->active_stream].url;
-    return url != NULL && url[0] != '\0' ? g_strdup(url) : NULL;
+    return player_session_dup_url(player->session);
 }
 
 int single_player_get_chat_paned_position(SinglePlayer *player)

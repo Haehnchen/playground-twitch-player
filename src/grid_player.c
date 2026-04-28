@@ -3,9 +3,7 @@
 #include <gtk/gtk.h>
 #include <epoxy/egl.h>
 #include <epoxy/gl.h>
-#include <mpv/client.h>
 #include <mpv/render_gl.h>
-#include <locale.h>
 #include <math.h>
 #include <string.h>
 
@@ -32,9 +30,14 @@ typedef struct {
     GtkWidget *empty_label;
     GtkWidget *stream_info_button;
     GtkWidget *volume_scale;
-    mpv_handle *mpv;
+    PlayerSession *session;
     mpv_render_context *mpv_gl;
+    int last_render_width;
+    int last_render_height;
     gint render_queued;
+    guint render_warmup_source;
+    int render_warmup_frames;
+    gboolean owns_session;
 } StreamTile;
 
 struct _GridAppState {
@@ -46,6 +49,7 @@ struct _GridAppState {
     GtkWidget *grid_items[MAX_TILES];
     GtkWidget *top_controls;
     StreamTile tiles[MAX_TILES];
+    PlayerSession *primary_session;
     AppSettings *settings;
     StreamTile *visible_footer_tile;
     guint footer_hide_source;
@@ -66,7 +70,6 @@ typedef enum {
     WINDOW_ICON_CLOSE,
 } WindowIconKind;
 
-static gboolean init_mpv(StreamTile *tile);
 static gboolean create_mpv_render_context(StreamTile *tile);
 static void schedule_footer_hide(GridAppState *state);
 static void show_tile_overlay(StreamTile *tile);
@@ -82,6 +85,11 @@ static void check_mpv(int status, const char *action)
     if (status < 0) {
         g_warning("%s: %s", action, mpv_error_string(status));
     }
+}
+
+static mpv_handle *tile_mpv(StreamTile *tile)
+{
+    return player_session_get_mpv(tile->session);
 }
 
 static void remove_source_if_active(guint *source_id)
@@ -116,6 +124,27 @@ static gboolean queue_mpv_render(gpointer user_data)
     return G_SOURCE_REMOVE;
 }
 
+static gboolean warmup_tile_render(gpointer user_data)
+{
+    StreamTile *tile = user_data;
+
+    if (tile->app->closing || tile->gl_area == NULL || tile->render_warmup_frames <= 0) {
+        tile->render_warmup_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    tile->render_warmup_frames--;
+    gtk_gl_area_queue_render(GTK_GL_AREA(tile->gl_area));
+    return G_SOURCE_CONTINUE;
+}
+
+static void start_render_warmup(StreamTile *tile)
+{
+    remove_source_if_active(&tile->render_warmup_source);
+    tile->render_warmup_frames = 90;
+    tile->render_warmup_source = g_timeout_add(16, warmup_tile_render, tile);
+}
+
 static void on_mpv_render_update(void *ctx)
 {
     StreamTile *tile = ctx;
@@ -129,12 +158,13 @@ static gboolean process_mpv_events(gpointer user_data)
 {
     StreamTile *tile = user_data;
 
-    if (tile->app->closing || tile->mpv == NULL) {
+    mpv_handle *mpv = tile_mpv(tile);
+    if (tile->app->closing || mpv == NULL) {
         return G_SOURCE_REMOVE;
     }
 
     while (TRUE) {
-        mpv_event *event = mpv_wait_event(tile->mpv, 0);
+        mpv_event *event = mpv_wait_event(mpv, 0);
 
         if (event->event_id == MPV_EVENT_NONE) {
             break;
@@ -233,6 +263,21 @@ static void update_tile_channel_label(StreamTile *tile)
     gtk_widget_set_tooltip_text(tile->channel_label, tile->label != NULL && tile->label[0] != '\0' ? tile->label : NULL);
 }
 
+static void sync_tile_from_session(StreamTile *tile)
+{
+    if (!player_session_is_playing(tile->session)) {
+        return;
+    }
+
+    const char *label = player_session_get_label(tile->session);
+    const char *url = player_session_get_url(tile->session);
+
+    g_free(tile->label);
+    g_free(tile->url);
+    tile->label = g_strdup(label != NULL && label[0] != '\0' ? label : url);
+    tile->url = g_strdup(url);
+}
+
 static void update_tile_empty_state(StreamTile *tile)
 {
     gboolean has_stream = tile->url != NULL && tile->url[0] != '\0';
@@ -244,10 +289,10 @@ static void update_tile_empty_state(StreamTile *tile)
         gtk_widget_set_sensitive(tile->close_button, has_stream);
     }
     if (tile->stream_info_button != NULL) {
-        gtk_widget_set_sensitive(tile->stream_info_button, has_stream && tile->mpv != NULL);
+        gtk_widget_set_sensitive(tile->stream_info_button, has_stream && player_session_is_ready(tile->session));
     }
     if (tile->volume_scale != NULL) {
-        gtk_widget_set_sensitive(tile->volume_scale, has_stream && tile->mpv != NULL);
+        gtk_widget_set_sensitive(tile->volume_scale, has_stream && player_session_is_ready(tile->session));
     }
 
     update_tile_channel_label(tile);
@@ -255,22 +300,15 @@ static void update_tile_empty_state(StreamTile *tile)
 
 static void load_tile_stream(StreamTile *tile)
 {
-    if (tile->mpv == NULL || tile->url == NULL) {
+    if (!player_session_is_ready(tile->session) || tile->url == NULL) {
         return;
     }
 
-    const char *cmd[] = {
-        "loadfile",
-        tile->url,
-        "replace",
-        NULL,
-    };
-
     set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
-    check_mpv(mpv_command_async(tile->mpv, 0, cmd), "loadfile");
+    player_session_load_stream(tile->session, tile->url, tile->label, NULL);
 }
 
-static void clear_tile_mpv(StreamTile *tile)
+static void clear_tile_render_context(StreamTile *tile)
 {
     if (tile->gl_area != NULL && gtk_widget_get_realized(tile->gl_area)) {
         gtk_gl_area_make_current(GTK_GL_AREA(tile->gl_area));
@@ -281,17 +319,27 @@ static void clear_tile_mpv(StreamTile *tile)
         mpv_render_context_free(tile->mpv_gl);
         tile->mpv_gl = NULL;
     }
+    remove_source_if_active(&tile->render_warmup_source);
+    tile->last_render_width = 0;
+    tile->last_render_height = 0;
+    tile->render_warmup_frames = 0;
+}
 
-    if (tile->mpv != NULL) {
-        mpv_set_wakeup_callback(tile->mpv, NULL, NULL);
-        mpv_terminate_destroy(tile->mpv);
-        tile->mpv = NULL;
+static void reset_owned_tile_session(StreamTile *tile)
+{
+    clear_tile_render_context(tile);
+    player_session_set_wakeup_callback(tile->session, NULL, NULL);
+    if (tile->owns_session) {
+        player_session_free(tile->session);
+        tile->session = player_session_new();
+    } else {
+        player_session_stop(tile->session);
     }
 }
 
 static void stop_tile_stream(StreamTile *tile)
 {
-    clear_tile_mpv(tile);
+    reset_owned_tile_session(tile);
     g_clear_pointer(&tile->label, g_free);
     g_clear_pointer(&tile->url, g_free);
     update_tile_empty_state(tile);
@@ -301,17 +349,19 @@ static void stop_tile_stream(StreamTile *tile)
     }
 }
 
-static gboolean ensure_tile_mpv(StreamTile *tile)
+static gboolean ensure_tile_session(StreamTile *tile)
 {
-    if (tile->mpv != NULL) {
-        return TRUE;
+    if (tile->session == NULL) {
+        tile->session = player_session_new();
+        tile->owns_session = TRUE;
     }
 
-    if (!init_mpv(tile)) {
+    if (!player_session_is_ready(tile->session)) {
         update_tile_empty_state(tile);
         return FALSE;
     }
 
+    player_session_set_wakeup_callback(tile->session, on_mpv_wakeup, tile);
     if (tile->gl_area != NULL && gtk_widget_get_realized(tile->gl_area) && !create_mpv_render_context(tile)) {
         update_tile_empty_state(tile);
         return FALSE;
@@ -327,13 +377,12 @@ static void set_tile_channel(StreamTile *tile, const AppSettingsChannel *channel
         return;
     }
 
-    clear_tile_mpv(tile);
     g_free(tile->label);
     g_free(tile->url);
     tile->label = g_strdup(channel->label);
     tile->url = g_strdup(channel->url);
 
-    if (!ensure_tile_mpv(tile)) {
+    if (!ensure_tile_session(tile)) {
         return;
     }
 
@@ -345,9 +394,7 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
     StreamTile *tile = user_data;
     double volume = gtk_range_get_value(range);
 
-    if (tile->mpv != NULL) {
-        check_mpv(mpv_set_property(tile->mpv, "volume", MPV_FORMAT_DOUBLE, &volume), "set volume");
-    }
+    player_session_set_volume(tile->session, volume);
 }
 
 static void draw_info_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
@@ -447,7 +494,8 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
     (void)button;
     StreamTile *tile = user_data;
 
-    if (tile->mpv == NULL) {
+    mpv_handle *mpv = tile_mpv(tile);
+    if (mpv == NULL) {
         return;
     }
 
@@ -457,14 +505,14 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
         NULL,
     };
 
-    int status = mpv_command(tile->mpv, stats_cmd);
+    int status = mpv_command(mpv, stats_cmd);
     if (status < 0) {
         const char *keypress_cmd[] = {
             "keypress",
             "i",
             NULL,
         };
-        check_mpv(mpv_command(tile->mpv, keypress_cmd), "toggle stream info");
+        check_mpv(mpv_command(mpv, keypress_cmd), "toggle stream info");
     }
 
     show_tile_overlay(tile);
@@ -793,6 +841,14 @@ static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer us
         return TRUE;
     }
 
+    uint64_t update_flags = mpv_render_context_update(tile->mpv_gl);
+    gboolean size_changed = width != tile->last_render_width || height != tile->last_render_height;
+    gboolean warming_up = tile->render_warmup_frames > 0;
+
+    if ((update_flags & MPV_RENDER_UPDATE_FRAME) == 0 && !size_changed && !warming_up) {
+        return TRUE;
+    }
+
     gtk_gl_area_attach_buffers(area);
 
     GLint current_fbo = 0;
@@ -814,6 +870,9 @@ static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer us
     int status = mpv_render_context_render(tile->mpv_gl, params);
     if (status < 0) {
         g_warning("mpv render: %s", mpv_error_string(status));
+    } else {
+        tile->last_render_width = width;
+        tile->last_render_height = height;
     }
 
     return TRUE;
@@ -821,7 +880,8 @@ static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer us
 
 static gboolean create_mpv_render_context(StreamTile *tile)
 {
-    if (tile->mpv == NULL || tile->gl_area == NULL) {
+    mpv_handle *mpv = tile_mpv(tile);
+    if (mpv == NULL || tile->gl_area == NULL) {
         return FALSE;
     }
 
@@ -842,19 +902,24 @@ static gboolean create_mpv_render_context(StreamTile *tile)
         .get_proc_address = get_proc_address,
         .get_proc_address_ctx = NULL,
     };
+    int advanced_control = 1;
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE, (void *)MPV_RENDER_API_TYPE_OPENGL},
         {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params},
+        {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced_control},
         {MPV_RENDER_PARAM_INVALID, NULL},
     };
 
-    int status = mpv_render_context_create(&tile->mpv_gl, tile->mpv, params);
+    int status = mpv_render_context_create(&tile->mpv_gl, mpv, params);
     if (status < 0) {
         g_warning("mpv render context: %s", mpv_error_string(status));
         return FALSE;
     }
 
     mpv_render_context_set_update_callback(tile->mpv_gl, on_mpv_render_update, tile);
+    player_session_reenable_video(tile->session);
+    start_render_warmup(tile);
+    gtk_gl_area_queue_render(GTK_GL_AREA(tile->gl_area));
     return TRUE;
 }
 
@@ -863,7 +928,7 @@ static void on_gl_realize(GtkGLArea *area, gpointer user_data)
     (void)area;
     StreamTile *tile = user_data;
 
-    if (tile->mpv != NULL && !create_mpv_render_context(tile)) {
+    if (tile_mpv(tile) != NULL && !create_mpv_render_context(tile)) {
         set_tile_status(tile, "Render error");
     }
 }
@@ -879,44 +944,6 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
         mpv_render_context_free(tile->mpv_gl);
         tile->mpv_gl = NULL;
     }
-}
-
-static gboolean init_mpv(StreamTile *tile)
-{
-    if (setlocale(LC_NUMERIC, "C") == NULL) {
-        g_warning("LC_NUMERIC could not be set to C; libmpv may refuse to start");
-    }
-
-    tile->mpv = mpv_create();
-    if (tile->mpv == NULL) {
-        set_tile_status(tile, "mpv error");
-        return FALSE;
-    }
-
-    check_mpv(mpv_set_option_string(tile->mpv, "terminal", "no"), "set terminal");
-    check_mpv(mpv_set_option_string(tile->mpv, "config", "no"), "set config");
-    check_mpv(mpv_set_option_string(tile->mpv, "vo", "libmpv"), "set vo");
-    check_mpv(mpv_set_option_string(tile->mpv, "ytdl", "yes"), "set ytdl");
-    check_mpv(mpv_set_option_string(tile->mpv, "hwdec", PLAYER_DEFAULT_MPV_HWDEC), "set hwdec");
-    check_mpv(mpv_set_option_string(tile->mpv, "cache", PLAYER_DEFAULT_MPV_CACHE), "set cache");
-    check_mpv(mpv_set_option_string(tile->mpv, "cache-pause-initial", PLAYER_DEFAULT_MPV_CACHE_PAUSE_INITIAL), "set cache pause initial");
-    check_mpv(mpv_set_option_string(tile->mpv, "cache-pause-wait", PLAYER_DEFAULT_MPV_CACHE_PAUSE_WAIT), "set cache pause wait");
-    check_mpv(mpv_set_option_string(tile->mpv, "demuxer-readahead-secs", PLAYER_DEFAULT_MPV_DEMUXER_READAHEAD_SECS), "set demuxer readahead");
-    check_mpv(mpv_set_option_string(tile->mpv, "stream-buffer-size", PLAYER_DEFAULT_MPV_STREAM_BUFFER_SIZE), "set stream buffer size");
-    check_mpv(mpv_set_option_string(tile->mpv, "video-sync", PLAYER_DEFAULT_MPV_VIDEO_SYNC), "set video sync");
-    check_mpv(mpv_set_option_string(tile->mpv, "volume", "80"), "set volume");
-
-    int status = mpv_initialize(tile->mpv);
-    if (status < 0) {
-        g_warning("mpv init: %s", mpv_error_string(status));
-        set_tile_status(tile, "mpv init error");
-        mpv_terminate_destroy(tile->mpv);
-        tile->mpv = NULL;
-        return FALSE;
-    }
-
-    mpv_set_wakeup_callback(tile->mpv, on_mpv_wakeup, tile);
-    return TRUE;
 }
 
 static GtkWidget *create_tile_footer(StreamTile *tile)
@@ -947,7 +974,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_set_hexpand(spacer, TRUE);
 
     tile->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 130, 1);
-    gtk_range_set_value(GTK_RANGE(tile->volume_scale), 80);
+    gtk_range_set_value(GTK_RANGE(tile->volume_scale), player_session_get_volume(tile->session));
     gtk_scale_set_draw_value(GTK_SCALE(tile->volume_scale), FALSE);
     gtk_widget_set_size_request(tile->volume_scale, 120, -1);
     g_signal_connect(tile->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), tile);
@@ -972,6 +999,13 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
     tile->index = index;
     tile->label = target_to_label(target);
     tile->url = target_to_url(target);
+    if (index == 0 && state->primary_session != NULL) {
+        tile->session = state->primary_session;
+    } else if (tile->url != NULL && tile->url[0] != '\0') {
+        tile->session = player_session_new();
+    }
+    tile->owns_session = tile->session != NULL && tile->session != state->primary_session;
+    sync_tile_from_session(tile);
 
     tile->container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     g_object_add_weak_pointer(G_OBJECT(tile->container), (gpointer *)&tile->container);
@@ -1205,17 +1239,12 @@ void grid_player_free(GridPlayer *player)
     for (guint i = 0; i < MAX_TILES; i++) {
         StreamTile *tile = &state->tiles[i];
 
-        if (tile->mpv_gl != NULL) {
-            mpv_render_context_set_update_callback(tile->mpv_gl, NULL, NULL);
-            mpv_render_context_free(tile->mpv_gl);
-            tile->mpv_gl = NULL;
+        clear_tile_render_context(tile);
+        player_session_set_wakeup_callback(tile->session, NULL, NULL);
+        if (tile->owns_session) {
+            player_session_free(tile->session);
         }
-
-        if (tile->mpv != NULL) {
-            mpv_set_wakeup_callback(tile->mpv, NULL, NULL);
-            mpv_terminate_destroy(tile->mpv);
-            tile->mpv = NULL;
-        }
+        tile->session = NULL;
 
         g_clear_pointer(&tile->label, g_free);
         g_clear_pointer(&tile->url, g_free);
@@ -1237,6 +1266,7 @@ void grid_player_free(GridPlayer *player)
 
     state->root_overlay = NULL;
     state->grid = NULL;
+    state->primary_session = NULL;
     state->settings = NULL;
     /* mpv may already have queued idle callbacks that still carry tile pointers. */
 }
@@ -1244,6 +1274,7 @@ void grid_player_free(GridPlayer *player)
 GridPlayer *grid_player_new(
     GtkWindow *window,
     AppSettings *settings,
+    PlayerSession *primary_session,
     const char * const *targets,
     guint target_count
 )
@@ -1252,6 +1283,7 @@ GridPlayer *grid_player_new(
 
     GridAppState *state = g_new0(GridAppState, 1);
     state->window = GTK_WIDGET(window);
+    state->primary_session = primary_session;
     state->target_count = targets != NULL ? MIN(target_count, (guint)MAX_TILES) : 0;
     for (guint i = 0; i < state->target_count; i++) {
         state->targets[i] = g_strdup(targets[i]);
@@ -1311,6 +1343,29 @@ char *grid_player_dup_first_target(GridPlayer *player)
     return NULL;
 }
 
+PlayerSession *grid_player_take_first_session(GridPlayer *player)
+{
+    if (player == NULL) {
+        return NULL;
+    }
+
+    for (guint i = 0; i < MAX_TILES; i++) {
+        StreamTile *tile = &player->tiles[i];
+        if (!player_session_is_playing(tile->session)) {
+            continue;
+        }
+
+        PlayerSession *session = tile->session;
+        clear_tile_render_context(tile);
+        player_session_set_wakeup_callback(session, NULL, NULL);
+        tile->session = NULL;
+        tile->owns_session = FALSE;
+        return session;
+    }
+
+    return NULL;
+}
+
 void grid_player_start(GridPlayer *player)
 {
     if (player == NULL || player->started) {
@@ -1318,9 +1373,19 @@ void grid_player_start(GridPlayer *player)
     }
 
     player->started = TRUE;
-    guint target_count = get_target_count(player);
-    for (guint i = 0; i < target_count; i++) {
-        if (ensure_tile_mpv(&player->tiles[i])) {
+    for (guint i = 0; i < MAX_TILES; i++) {
+        StreamTile *tile = &player->tiles[i];
+        if ((tile->url == NULL || tile->url[0] == '\0') && !player_session_is_playing(tile->session)) {
+            continue;
+        }
+
+        if (ensure_tile_session(tile)) {
+            if (player_session_is_playing(tile->session)) {
+                sync_tile_from_session(tile);
+                update_tile_empty_state(tile);
+                set_tile_status(tile, "Playback running");
+                continue;
+            }
             load_tile_stream(&player->tiles[i]);
         }
     }

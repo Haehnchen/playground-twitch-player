@@ -2,6 +2,7 @@
 
 #include <gtk/gtk.h>
 
+#include "player_session.h"
 #include "settings.h"
 
 typedef struct _SinglePlayer SinglePlayer;
@@ -11,6 +12,7 @@ typedef void (*SinglePlayerFullscreenCallback)(gpointer user_data);
 SinglePlayer *single_player_new(
     GtkWindow *window,
     AppSettings *settings,
+    PlayerSession *session,
     const char *startup_target,
     gboolean auto_start,
     int chat_paned_position,

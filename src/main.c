@@ -7,6 +7,7 @@
 
 #include "settings.h"
 #include "player_defaults.h"
+#include "player_session.h"
 #include "single_player.h"
 #include "grid_player.h"
 #include "settings_window.h"
@@ -42,6 +43,7 @@ typedef struct {
     GtkWidget *settings_button;
     GtkWidget *layout_button;
     AppSettings *settings;
+    PlayerSession *primary_session;
     SinglePlayer *single_player;
     GridPlayer *grid_player;
     const char *startup_target;
@@ -413,8 +415,18 @@ static void capture_grid_handoff(AppState *state)
         return;
     }
 
+    PlayerSession *handoff_session = grid_player_take_first_session(state->grid_player);
+    if (handoff_session != NULL && handoff_session != state->primary_session) {
+        g_clear_pointer(&state->primary_session, player_session_free);
+        state->primary_session = handoff_session;
+    }
+
     g_clear_pointer(&state->single_target, g_free);
-    state->single_target = grid_player_dup_first_target(state->grid_player);
+    if (player_session_is_playing(state->primary_session)) {
+        state->single_target = player_session_dup_url(state->primary_session);
+    } else {
+        state->single_target = grid_player_dup_first_target(state->grid_player);
+    }
     state->has_single_target_handoff = TRUE;
 }
 
@@ -425,6 +437,7 @@ static void create_single_content(AppState *state)
     state->single_player = single_player_new(
         GTK_WINDOW(state->window),
         state->settings,
+        state->primary_session,
         target,
         target != NULL && target[0] != '\0',
         state->single_chat_paned_position,
@@ -462,6 +475,7 @@ static void create_grid_content(AppState *state)
     state->grid_player = grid_player_new(
         GTK_WINDOW(state->window),
         state->settings,
+        state->primary_session,
         targets,
         target_count
     );
@@ -946,6 +960,7 @@ static void destroy_state(gpointer user_data)
 
     destroy_active_content(state);
     g_clear_pointer(&state->single_target, g_free);
+    g_clear_pointer(&state->primary_session, player_session_free);
     app_settings_free(state->settings);
     state->settings = NULL;
 }
@@ -963,6 +978,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     state->grid_targets = config != NULL ? config->grid_targets : NULL;
     state->grid_target_count = config != NULL ? config->grid_target_count : 0;
     state->settings = app_settings_load();
+    state->primary_session = player_session_new();
 
     state->window = gtk_application_window_new(application);
     gtk_window_set_title(GTK_WINDOW(state->window), "Twitch Player");
