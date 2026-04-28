@@ -1,0 +1,112 @@
+name: Nightly Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    name: Build and publish nightly release
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('meson.build', 'src/**', 'tests/**', 'data/**') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ccache \
+            libepoxy-dev \
+            libgtk-4-dev \
+            libjson-glib-dev \
+            libmpv-dev \
+            libsoup-3.0-dev \
+            meson \
+            mpv \
+            ninja-build \
+            pkg-config \
+            xvfb \
+            yt-dlp \
+            zip
+
+      - name: Verify dependencies
+        run: bash scripts/check-deps.sh
+
+      - name: Configure
+        env:
+          CC: ccache gcc
+        run: meson setup build
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Test
+        run: xvfb-run -a meson test -C build --print-errorlogs
+
+      - name: Set build metadata
+        id: metadata
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          {
+            echo "short_sha=$short_sha"
+            echo "archive=twitch-player-linux-amd64-${short_sha}.zip"
+            echo "tag=nightly-$short_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Package binary
+        shell: bash
+        run: |
+          archive="${{ steps.metadata.outputs.archive }}"
+
+          strip build/twitch-player
+          zip -j "$archive" build/twitch-player
+
+      - name: Create nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.metadata.outputs.tag }}"
+          archive="${{ steps.metadata.outputs.archive }}"
+          short_sha="${{ steps.metadata.outputs.short_sha }}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$archive" --clobber
+          else
+            gh release create "$tag" "$archive" \
+              --title "Nightly $short_sha" \
+              --notes "Automated nightly build for commit $GITHUB_SHA." \
+              --target "$GITHUB_SHA" \
+              --prerelease
+          fi
+
+      - name: Keep last 10 nightly releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq '. | map(select(.tagName | startswith("nightly-"))) | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            gh release delete "$tag" --cleanup-tag --yes
+          done
