@@ -1,11 +1,16 @@
 # Twitch Player
 
-Simple Linux/Wayland Twitch player using GTK4, libmpv, and a read-only Twitch
-chat panel.
+A lightweight desktop app for watching Twitch streams with chat, fullscreen
+controls, and an optional 2x2 stream grid.
 
-The player embeds mpv through `libmpv` instead of trying to reparent an external mpv
-window. That matters on Wayland, where `mpv --wid` style embedding is not a reliable
-application model.
+<p align="center">
+  <img src="docs/icon.webp" alt="Twitch Player icon" width="46">
+  <br>
+  <img src="docs/screenshot.webp" alt="Twitch Player GTK interface" width="720">
+</p>
+
+Use it for focused Twitch viewing on Linux, whether you want one channel with
+chat beside it or several channels visible at once.
 
 ## Streams
 
