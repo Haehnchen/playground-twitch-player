@@ -311,6 +311,12 @@ static gboolean process_mpv_events(gpointer user_data)
             }
             break;
         }
+        case MPV_EVENT_VIDEO_RECONFIG:
+            /* After a Twitch ad the stream resumes with a huge PTS jump, causing
+             * an internal mpv playback reset. The video output needs a warmup so
+             * the GL renderer actively polls for new frames again. */
+            start_render_warmup(state);
+            break;
         case MPV_EVENT_LOG_MESSAGE: {
             mpv_event_log_message *log = event->data;
             if (log != NULL && log->prefix != NULL && log->text != NULL) {
