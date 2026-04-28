@@ -32,6 +32,7 @@ executable(
     'src/grid_player.c',
     'src/player_icons.c',
     'src/player_motion.c',
+    'src/player_volume.c',
     'src/settings.c',
     'src/chat_assets.c',
     'src/chat_panel.c',

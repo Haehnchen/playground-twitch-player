@@ -14,6 +14,7 @@
 #include "player_defaults.h"
 #include "player_icons.h"
 #include "player_motion.h"
+#include "player_volume.h"
 #include "twitch_stream_info.h"
 
 #define STREAM_TITLE_REFRESH_SECONDS 60
@@ -363,17 +364,8 @@ static void play_selected_stream(SinglePlayer *state)
 static void on_volume_changed(GtkRange *range, gpointer user_data)
 {
     SinglePlayer *state = user_data;
-    double volume = gtk_range_get_value(range);
 
-    player_session_set_volume(state->session, volume);
-}
-
-static void change_volume(SinglePlayer *state, double delta)
-{
-    double volume = gtk_range_get_value(GTK_RANGE(state->volume_scale));
-
-    volume = CLAMP(volume + delta, 0.0, 130.0);
-    gtk_range_set_value(GTK_RANGE(state->volume_scale), volume);
+    player_volume_sync_session_from_range(state->session, range);
 }
 
 static void toggle_mute(SinglePlayer *state)
@@ -571,11 +563,10 @@ static gboolean on_video_scroll(GtkEventControllerScroll *controller, double dx,
     (void)controller;
     SinglePlayer *state = user_data;
 
-    if (fabs(dy) < fabs(dx) || dy == 0.0) {
+    if (!player_volume_apply_scroll(state->volume_scale, dx, dy)) {
         return GDK_EVENT_PROPAGATE;
     }
 
-    change_volume(state, -dy * 5.0);
     show_footer(state);
 
     return GDK_EVENT_STOP;
@@ -871,7 +862,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_label_set_ellipsize(GTK_LABEL(state->stream_title_label), PANGO_ELLIPSIZE_END);
     gtk_label_set_single_line_mode(GTK_LABEL(state->stream_title_label), TRUE);
 
-    state->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 130, 1);
+    state->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX, 1);
     gtk_range_set_value(GTK_RANGE(state->volume_scale), player_session_get_volume(state->session));
     gtk_widget_set_size_request(state->volume_scale, 140, -1);
     gtk_scale_set_draw_value(GTK_SCALE(state->volume_scale), FALSE);

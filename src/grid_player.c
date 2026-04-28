@@ -11,6 +11,7 @@
 #include "player_icons.h"
 #include "player_motion.h"
 #include "player_defaults.h"
+#include "player_volume.h"
 
 #define MAX_TILES GRID_PLAYER_MAX_TILES
 typedef struct _GridAppState GridAppState;
@@ -395,9 +396,8 @@ static void set_tile_channel(StreamTile *tile, const AppSettingsChannel *channel
 static void on_volume_changed(GtkRange *range, gpointer user_data)
 {
     StreamTile *tile = user_data;
-    double volume = gtk_range_get_value(range);
 
-    player_session_set_volume(tile->session, volume);
+    player_volume_sync_session_from_range(tile->session, range);
 }
 
 static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
@@ -847,6 +847,22 @@ static gboolean on_video_legacy_event(GtkEventControllerLegacy *controller, GdkE
     return GDK_EVENT_STOP;
 }
 
+static gboolean on_tile_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer user_data)
+{
+    (void)controller;
+    StreamTile *tile = user_data;
+
+    if (tile->volume_scale == NULL ||
+        !gtk_widget_get_sensitive(tile->volume_scale) ||
+        !player_volume_apply_scroll(tile->volume_scale, dx, dy)) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    show_tile_overlay(tile);
+
+    return GDK_EVENT_STOP;
+}
+
 static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer user_data)
 {
     (void)context;
@@ -997,7 +1013,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(spacer, TRUE);
 
-    tile->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 130, 1);
+    tile->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX, 1);
     gtk_range_set_value(GTK_RANGE(tile->volume_scale), player_session_get_volume(tile->session));
     gtk_scale_set_draw_value(GTK_SCALE(tile->volume_scale), FALSE);
     gtk_widget_set_size_request(tile->volume_scale, 120, -1);
@@ -1085,6 +1101,11 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
     gtk_event_controller_set_propagation_phase(video_motion, GTK_PHASE_CAPTURE);
     g_signal_connect(video_motion, "motion", G_CALLBACK(on_tile_motion), tile);
     gtk_widget_add_controller(tile->overlay, video_motion);
+
+    GtkEventController *tile_scroll = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
+    gtk_event_controller_set_propagation_phase(tile_scroll, GTK_PHASE_CAPTURE);
+    g_signal_connect(tile_scroll, "scroll", G_CALLBACK(on_tile_scroll), tile);
+    gtk_widget_add_controller(tile->overlay, tile_scroll);
 
     g_signal_connect(tile->gl_area, "realize", G_CALLBACK(on_gl_realize), tile);
     g_signal_connect(tile->gl_area, "unrealize", G_CALLBACK(on_gl_unrealize), tile);
