@@ -7,6 +7,7 @@
 
 #include "settings.h"
 #include "player_defaults.h"
+#include "player_motion.h"
 #include "player_session.h"
 #include "single_player.h"
 #include "grid_player.h"
@@ -54,6 +55,7 @@ typedef struct {
     int single_chat_paned_position;
     ContentMode content_mode;
     guint overlay_hide_source;
+    PlayerMotionTracker motion_tracker;
     gboolean closing;
     gboolean fullscreen;
 } AppState;
@@ -572,9 +574,13 @@ static void on_close_clicked(GtkButton *button, gpointer user_data)
 static void on_root_motion(GtkEventControllerMotion *controller, double x, double y, gpointer user_data)
 {
     (void)controller;
-    (void)x;
-    (void)y;
-    show_window_overlay(user_data);
+    AppState *state = user_data;
+
+    if (player_motion_tracker_ignore_stationary(&state->motion_tracker, state, x, y)) {
+        return;
+    }
+
+    show_window_overlay(state);
 }
 
 static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType modifiers, gpointer user_data)
