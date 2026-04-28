@@ -8,11 +8,11 @@
 #include <string.h>
 
 #include "grid_player.h"
+#include "player_icons.h"
 #include "player_motion.h"
 #include "player_defaults.h"
 
 #define MAX_TILES GRID_PLAYER_MAX_TILES
-
 typedef struct _GridAppState GridAppState;
 
 typedef struct {
@@ -28,6 +28,7 @@ typedef struct {
     GtkWidget *channel_label;
     GtkWidget *close_button;
     GtkWidget *empty_label;
+    GtkWidget *focus_button;
     GtkWidget *stream_info_button;
     GtkWidget *volume_scale;
     PlayerSession *session;
@@ -53,22 +54,24 @@ struct _GridAppState {
     AppSettings *settings;
     StreamTile *visible_footer_tile;
     guint footer_hide_source;
+    guint video_fullscreen_focus_source;
     guint focused_tile;
+    guint video_fullscreen_pending_tile;
     PlayerMotionTracker motion_tracker;
+    GridPlayerFullscreenCallback fullscreen_callback;
+    gpointer fullscreen_user_data;
     double move_press_x;
     double move_press_y;
     gboolean move_pressed;
     gboolean closing;
     gboolean fullscreen;
     gboolean tile_focused;
+    gboolean video_fullscreen_active;
+    gboolean video_fullscreen_restore_app_fullscreen;
+    gboolean video_fullscreen_restore_tile_focused;
+    guint video_fullscreen_restore_focused_tile;
     gboolean started;
 };
-
-typedef enum {
-    WINDOW_ICON_MINIMIZE,
-    WINDOW_ICON_FULLSCREEN,
-    WINDOW_ICON_CLOSE,
-} WindowIconKind;
 
 static gboolean create_mpv_render_context(StreamTile *tile);
 static void schedule_footer_hide(GridAppState *state);
@@ -397,80 +400,6 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
     player_session_set_volume(tile->session, volume);
 }
 
-static void draw_info_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
-{
-    (void)area;
-    (void)user_data;
-    double size = MIN(width, height);
-    double x = width / 2.0;
-    double y = height / 2.0;
-    double radius = size * 0.38;
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
-    cairo_set_line_width(cr, MAX(1.7, size * 0.08));
-    cairo_arc(cr, x, y, radius, 0, 2 * G_PI);
-    cairo_stroke(cr);
-
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    cairo_move_to(cr, x, y - radius * 0.05);
-    cairo_line_to(cr, x, y + radius * 0.50);
-    cairo_stroke(cr);
-
-    cairo_arc(cr, x, y - radius * 0.50, size * 0.045, 0, 2 * G_PI);
-    cairo_fill(cr);
-}
-
-static GtkWidget *create_info_icon(void)
-{
-    GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_info_icon, NULL, NULL);
-    return icon;
-}
-
-static void draw_window_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
-{
-    (void)area;
-    WindowIconKind kind = GPOINTER_TO_INT(user_data);
-    double size = MIN(width, height);
-    double x = (width - size) / 2.0;
-    double y = (height - size) / 2.0;
-    double left = x + size * 0.25;
-    double right = x + size * 0.75;
-    double top = y + size * 0.25;
-    double bottom = y + size * 0.75;
-    double center_y = y + size * 0.55;
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
-    cairo_set_line_width(cr, MAX(1.8, size * 0.10));
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-
-    if (kind == WINDOW_ICON_MINIMIZE) {
-        cairo_move_to(cr, left, center_y);
-        cairo_line_to(cr, right, center_y);
-    } else if (kind == WINDOW_ICON_FULLSCREEN) {
-        double inset = size * 0.06;
-        cairo_rectangle(cr, left + inset, top + inset, right - left - inset * 2, bottom - top - inset * 2);
-    } else {
-        cairo_move_to(cr, left, top);
-        cairo_line_to(cr, right, bottom);
-        cairo_move_to(cr, right, top);
-        cairo_line_to(cr, left, bottom);
-    }
-
-    cairo_stroke(cr);
-}
-
-static GtkWidget *create_window_icon(WindowIconKind kind)
-{
-    GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 16);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 16);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_window_icon, GINT_TO_POINTER(kind), NULL);
-    return icon;
-}
-
 static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
 {
     GtkWidget *button = gtk_button_new();
@@ -690,6 +619,30 @@ static void restore_grid_layout(GridAppState *state)
     state->tile_focused = FALSE;
 }
 
+static gboolean is_tile_focused(StreamTile *tile)
+{
+    GridAppState *state = tile->app;
+
+    return state->tile_focused && state->focused_tile == tile->index;
+}
+
+static void update_tile_focus_buttons(GridAppState *state)
+{
+    for (guint i = 0; i < MAX_TILES; i++) {
+        StreamTile *tile = &state->tiles[i];
+        if (tile->focus_button == NULL) {
+            continue;
+        }
+
+        gboolean focused = is_tile_focused(tile);
+        gtk_button_set_child(
+            GTK_BUTTON(tile->focus_button),
+            player_tile_focus_icon_new(focused ? PLAYER_TILE_FOCUS_ICON_RESTORE : PLAYER_TILE_FOCUS_ICON_EXPAND)
+        );
+        gtk_widget_set_tooltip_text(tile->focus_button, focused ? "Restore grid" : "Focus tile");
+    }
+}
+
 static void focus_tile(StreamTile *tile)
 {
     GridAppState *state = tile->app;
@@ -715,7 +668,81 @@ static void toggle_tile_focus(StreamTile *tile)
         focus_tile(tile);
     }
 
+    update_tile_focus_buttons(state);
     show_tile_overlay(tile);
+}
+
+static gboolean apply_pending_video_fullscreen_focus(gpointer user_data)
+{
+    GridAppState *state = user_data;
+
+    state->video_fullscreen_focus_source = 0;
+
+    if (state->closing || state->video_fullscreen_pending_tile >= MAX_TILES) {
+        return G_SOURCE_REMOVE;
+    }
+
+    StreamTile *tile = &state->tiles[state->video_fullscreen_pending_tile];
+    if (!is_tile_focused(tile)) {
+        focus_tile(tile);
+        update_tile_focus_buttons(state);
+    }
+    show_tile_overlay(tile);
+
+    return G_SOURCE_REMOVE;
+}
+
+static void schedule_video_fullscreen_focus(StreamTile *tile)
+{
+    GridAppState *state = tile->app;
+
+    remove_source_if_active(&state->video_fullscreen_focus_source);
+    state->video_fullscreen_pending_tile = tile->index;
+    state->video_fullscreen_focus_source = g_timeout_add(50, apply_pending_video_fullscreen_focus, state);
+}
+
+static void request_tile_fullscreen_toggle(StreamTile *tile)
+{
+    GridAppState *state = tile->app;
+
+    if (state->video_fullscreen_active) {
+        remove_source_if_active(&state->video_fullscreen_focus_source);
+
+        if (!state->video_fullscreen_restore_app_fullscreen &&
+            state->fullscreen &&
+            state->fullscreen_callback != NULL) {
+            state->fullscreen_callback(state->fullscreen_user_data);
+        }
+
+        if (state->video_fullscreen_restore_tile_focused &&
+            state->video_fullscreen_restore_focused_tile < MAX_TILES &&
+            state->grid_items[state->video_fullscreen_restore_focused_tile] != NULL) {
+            focus_tile(&state->tiles[state->video_fullscreen_restore_focused_tile]);
+        } else {
+            restore_grid_layout(state);
+        }
+        state->video_fullscreen_active = FALSE;
+        update_tile_focus_buttons(state);
+        show_tile_overlay(tile);
+        return;
+    }
+
+    state->video_fullscreen_restore_app_fullscreen = state->fullscreen;
+    state->video_fullscreen_restore_tile_focused = state->tile_focused;
+    state->video_fullscreen_restore_focused_tile = state->focused_tile;
+    state->video_fullscreen_active = TRUE;
+
+    if (!state->fullscreen && state->fullscreen_callback != NULL) {
+        state->fullscreen_callback(state->fullscreen_user_data);
+    }
+
+    schedule_video_fullscreen_focus(tile);
+}
+
+static void on_tile_focus_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    toggle_tile_focus(user_data);
 }
 
 static gboolean get_toplevel_event_data_from_event(GtkWidget *window, GdkEvent *event, GdkToplevel **toplevel, GdkDevice **device, double *x, double *y, guint32 *timestamp)
@@ -771,8 +798,7 @@ static void on_video_pressed(GtkGestureClick *gesture, int n_press, double x, do
     (void)y;
 
     if (n_press == 2) {
-        StreamTile *tile = user_data;
-        toggle_tile_focus(tile);
+        request_tile_fullscreen_toggle(user_data);
     }
 }
 
@@ -966,7 +992,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
 
     rebuild_tile_channel_popover(tile);
 
-    tile->close_button = create_overlay_button(create_window_icon(WINDOW_ICON_CLOSE), "Clear slot");
+    tile->close_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE), "Clear slot");
     gtk_widget_add_css_class(tile->close_button, "tile-close-button");
     g_signal_connect(tile->close_button, "clicked", G_CALLBACK(on_tile_close_clicked), tile);
 
@@ -979,13 +1005,17 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_set_size_request(tile->volume_scale, 120, -1);
     g_signal_connect(tile->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), tile);
 
-    tile->stream_info_button = create_overlay_button(create_info_icon(), PLAYER_STREAM_INFO_TOOLTIP);
+    tile->focus_button = create_overlay_button(player_tile_focus_icon_new(PLAYER_TILE_FOCUS_ICON_EXPAND), "Focus tile");
+    g_signal_connect(tile->focus_button, "clicked", G_CALLBACK(on_tile_focus_clicked), tile);
+
+    tile->stream_info_button = create_overlay_button(player_info_icon_new(), PLAYER_STREAM_INFO_TOOLTIP);
     g_signal_connect(tile->stream_info_button, "clicked", G_CALLBACK(on_stream_info_clicked), tile);
 
     gtk_box_append(GTK_BOX(box), tile->channel_combo);
     gtk_box_append(GTK_BOX(box), tile->close_button);
     gtk_box_append(GTK_BOX(box), spacer);
     gtk_box_append(GTK_BOX(box), tile->volume_scale);
+    gtk_box_append(GTK_BOX(box), tile->focus_button);
     gtk_box_append(GTK_BOX(box), tile->stream_info_button);
     update_tile_empty_state(tile);
 
@@ -1235,6 +1265,7 @@ void grid_player_free(GridPlayer *player)
     state->closing = TRUE;
 
     remove_source_if_active(&state->footer_hide_source);
+    remove_source_if_active(&state->video_fullscreen_focus_source);
 
     for (guint i = 0; i < MAX_TILES; i++) {
         StreamTile *tile = &state->tiles[i];
@@ -1276,7 +1307,9 @@ GridPlayer *grid_player_new(
     AppSettings *settings,
     PlayerSession *primary_session,
     const char * const *targets,
-    guint target_count
+    guint target_count,
+    GridPlayerFullscreenCallback fullscreen_callback,
+    gpointer fullscreen_user_data
 )
 {
     install_css();
@@ -1289,6 +1322,8 @@ GridPlayer *grid_player_new(
         state->targets[i] = g_strdup(targets[i]);
     }
     state->settings = settings;
+    state->fullscreen_callback = fullscreen_callback;
+    state->fullscreen_user_data = fullscreen_user_data;
 
     state->root_overlay = gtk_overlay_new();
     g_object_add_weak_pointer(G_OBJECT(state->root_overlay), (gpointer *)&state->root_overlay);
@@ -1395,6 +1430,10 @@ void grid_player_set_fullscreen(GridPlayer *player, gboolean fullscreen)
 {
     if (player != NULL) {
         player->fullscreen = fullscreen;
+        if (!fullscreen) {
+            player->video_fullscreen_active = FALSE;
+            remove_source_if_active(&player->video_fullscreen_focus_source);
+        }
     }
 }
 

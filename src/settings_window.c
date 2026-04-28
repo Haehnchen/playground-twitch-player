@@ -1,6 +1,7 @@
 #define G_LOG_DOMAIN "twitch-player-settings-window"
 
 #include "settings_window.h"
+#include "player_icons.h"
 
 typedef struct {
     GtkWidget *window;
@@ -81,51 +82,6 @@ static gboolean is_valid_channel_name(const char *channel)
     return TRUE;
 }
 
-static void draw_trash_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
-{
-    (void)area;
-    (void)user_data;
-    double size = MIN(width, height);
-    double x = (width - size) / 2.0;
-    double y = (height - size) / 2.0;
-
-    cairo_set_source_rgba(cr, 0.94, 0.94, 0.95, 0.82);
-    cairo_set_line_width(cr, MAX(1.0, size * 0.065));
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-
-    cairo_move_to(cr, x + size * 0.27, y + size * 0.34);
-    cairo_line_to(cr, x + size * 0.73, y + size * 0.34);
-    cairo_stroke(cr);
-
-    cairo_move_to(cr, x + size * 0.39, y + size * 0.34);
-    cairo_line_to(cr, x + size * 0.39, y + size * 0.27);
-    cairo_line_to(cr, x + size * 0.61, y + size * 0.27);
-    cairo_line_to(cr, x + size * 0.61, y + size * 0.34);
-    cairo_stroke(cr);
-
-    cairo_move_to(cr, x + size * 0.33, y + size * 0.43);
-    cairo_line_to(cr, x + size * 0.38, y + size * 0.76);
-    cairo_line_to(cr, x + size * 0.62, y + size * 0.76);
-    cairo_line_to(cr, x + size * 0.67, y + size * 0.43);
-    cairo_stroke(cr);
-
-    cairo_move_to(cr, x + size * 0.45, y + size * 0.51);
-    cairo_line_to(cr, x + size * 0.45, y + size * 0.67);
-    cairo_move_to(cr, x + size * 0.55, y + size * 0.51);
-    cairo_line_to(cr, x + size * 0.55, y + size * 0.67);
-    cairo_stroke(cr);
-}
-
-static GtkWidget *create_trash_icon(void)
-{
-    GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 15);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 15);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_trash_icon, NULL, NULL);
-    return icon;
-}
-
 static GtkWidget *create_channel_row(SettingsWindow *view, const char *channel)
 {
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -143,7 +99,7 @@ static GtkWidget *create_channel_row(SettingsWindow *view, const char *channel)
     gtk_box_append(GTK_BOX(row), row_data->channel_entry);
 
     GtkWidget *remove_button = gtk_button_new();
-    gtk_button_set_child(GTK_BUTTON(remove_button), create_trash_icon());
+    gtk_button_set_child(GTK_BUTTON(remove_button), player_trash_icon_new());
     gtk_button_set_has_frame(GTK_BUTTON(remove_button), FALSE);
     gtk_widget_add_css_class(remove_button, "settings-remove-button");
     gtk_widget_set_tooltip_text(remove_button, "Remove");

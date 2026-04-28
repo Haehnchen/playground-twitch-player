@@ -9,12 +9,16 @@
 
 typedef struct _GridAppState GridPlayer;
 
+typedef void (*GridPlayerFullscreenCallback)(gpointer user_data);
+
 GridPlayer *grid_player_new(
     GtkWindow *window,
     AppSettings *settings,
     PlayerSession *primary_session,
     const char * const *targets,
-    guint target_count
+    guint target_count,
+    GridPlayerFullscreenCallback fullscreen_callback,
+    gpointer fullscreen_user_data
 );
 GtkWidget *grid_player_get_widget(GridPlayer *player);
 char *grid_player_dup_first_target(GridPlayer *player);

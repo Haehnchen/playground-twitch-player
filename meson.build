@@ -30,6 +30,7 @@ executable(
     'src/player_session.c',
     'src/single_player.c',
     'src/grid_player.c',
+    'src/player_icons.c',
     'src/player_motion.c',
     'src/settings.c',
     'src/chat_assets.c',

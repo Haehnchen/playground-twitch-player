@@ -2,11 +2,11 @@
 
 #include <gio/gio.h>
 #include <gtk/gtk.h>
-#include <math.h>
 #include <string.h>
 
 #include "settings.h"
 #include "player_defaults.h"
+#include "player_icons.h"
 #include "player_motion.h"
 #include "player_session.h"
 #include "single_player.h"
@@ -18,22 +18,12 @@
 #define APP_ICON_RESOURCE_THEME_PATH "/local/twitch-player/icons"
 
 #define OVERLAY_HIDE_DELAY_MS 1800
+#define MAXIMIZE_RESTORE_ATTEMPTS 12
 
 typedef enum {
     CONTENT_MODE_SINGLE,
     CONTENT_MODE_GRID,
 } ContentMode;
-
-typedef enum {
-    WINDOW_ICON_MINIMIZE,
-    WINDOW_ICON_FULLSCREEN,
-    WINDOW_ICON_CLOSE,
-} WindowIconKind;
-
-typedef enum {
-    LAYOUT_ICON_SINGLE,
-    LAYOUT_ICON_GRID,
-} LayoutIconKind;
 
 typedef struct {
     GtkApplication *application;
@@ -55,9 +45,16 @@ typedef struct {
     int single_chat_paned_position;
     ContentMode content_mode;
     guint overlay_hide_source;
+    guint maximize_restore_source;
+    guint maximize_restore_attempts;
     PlayerMotionTracker motion_tracker;
     gboolean closing;
     gboolean fullscreen;
+    gboolean window_maximized;
+    gboolean was_maximized_before_fullscreen;
+    gboolean restore_maximized_after_fullscreen;
+    int restore_window_width;
+    int restore_window_height;
 } AppState;
 
 typedef struct {
@@ -81,140 +78,6 @@ static void remove_source_if_active(guint *source_id)
         g_source_destroy(source);
     }
     *source_id = 0;
-}
-
-static void draw_settings_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
-{
-    (void)area;
-    (void)user_data;
-    double size = MIN(width, height);
-    double gear = size * 0.56;
-    double cx = width / 2.0;
-    double cy = height / 2.0;
-    double outer = gear * 0.39;
-    double inner = gear * 0.20;
-    static const double dirs[][2] = {
-        {1.0, 0.0},
-        {0.7071, 0.7071},
-        {0.0, 1.0},
-        {-0.7071, 0.7071},
-        {-1.0, 0.0},
-        {-0.7071, -0.7071},
-        {0.0, -1.0},
-        {0.7071, -0.7071},
-    };
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-    cairo_set_line_width(cr, MAX(1.2, gear * 0.10));
-
-    for (guint i = 0; i < G_N_ELEMENTS(dirs); i++) {
-        double sx = cx + dirs[i][0] * gear * 0.31;
-        double sy = cy + dirs[i][1] * gear * 0.31;
-        double ex = cx + dirs[i][0] * outer;
-        double ey = cy + dirs[i][1] * outer;
-
-        cairo_move_to(cr, sx, sy);
-        cairo_line_to(cr, ex, ey);
-    }
-    cairo_stroke(cr);
-
-    cairo_set_line_width(cr, MAX(1.1, gear * 0.09));
-    cairo_arc(cr, cx, cy, gear * 0.29, 0, 2 * G_PI);
-    cairo_stroke(cr);
-
-    cairo_arc(cr, cx, cy, inner, 0, 2 * G_PI);
-    cairo_stroke(cr);
-}
-
-static GtkWidget *create_settings_icon(void)
-{
-    GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_settings_icon, NULL, NULL);
-    return icon;
-}
-
-static void draw_layout_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
-{
-    (void)area;
-    LayoutIconKind kind = GPOINTER_TO_INT(user_data);
-    double size = MIN(width, height) * 0.68;
-    double x = (width - size) / 2.0 + size * 0.17;
-    double y = (height - size) / 2.0 + size * 0.17;
-    double extent = size * 0.66;
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
-    cairo_set_line_width(cr, MAX(1.6, size * 0.08));
-    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-
-    if (kind == LAYOUT_ICON_SINGLE) {
-        cairo_rectangle(cr, x, y, extent, extent);
-        cairo_stroke(cr);
-        return;
-    }
-
-    double gap = size * 0.08;
-    double cell = (extent - gap) / 2.0;
-    for (int row = 0; row < 2; row++) {
-        for (int col = 0; col < 2; col++) {
-            cairo_rectangle(cr, x + col * (cell + gap), y + row * (cell + gap), cell, cell);
-        }
-    }
-    cairo_stroke(cr);
-}
-
-static GtkWidget *create_layout_icon(LayoutIconKind kind)
-{
-    GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_layout_icon, GINT_TO_POINTER(kind), NULL);
-    return icon;
-}
-
-static void draw_window_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
-{
-    (void)area;
-    WindowIconKind kind = GPOINTER_TO_INT(user_data);
-    double size = MIN(width, height);
-    double x = (width - size) / 2.0;
-    double y = (height - size) / 2.0;
-    double left = x + size * 0.25;
-    double right = x + size * 0.75;
-    double top = y + size * 0.25;
-    double bottom = y + size * 0.75;
-    double center_y = y + size * 0.55;
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
-    cairo_set_line_width(cr, MAX(1.8, size * 0.10));
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-
-    if (kind == WINDOW_ICON_MINIMIZE) {
-        cairo_move_to(cr, left, center_y);
-        cairo_line_to(cr, right, center_y);
-    } else if (kind == WINDOW_ICON_FULLSCREEN) {
-        double inset = size * 0.06;
-        cairo_rectangle(cr, left + inset, top + inset, right - left - inset * 2, bottom - top - inset * 2);
-    } else {
-        cairo_move_to(cr, left, top);
-        cairo_line_to(cr, right, bottom);
-        cairo_move_to(cr, right, top);
-        cairo_line_to(cr, left, bottom);
-    }
-
-    cairo_stroke(cr);
-}
-
-static GtkWidget *create_window_icon(WindowIconKind kind)
-{
-    GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 16);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 16);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_window_icon, GINT_TO_POINTER(kind), NULL);
-    return icon;
 }
 
 static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
@@ -350,6 +213,54 @@ static void add_resize_handles(GtkOverlay *overlay, AppState *state)
     gtk_overlay_add_overlay(overlay, create_resize_handle(state, GDK_SURFACE_EDGE_SOUTH_EAST, GTK_ALIGN_END, GTK_ALIGN_END, 12, 12, "se-resize"));
 }
 
+static gboolean restore_maximized_after_fullscreen(gpointer user_data)
+{
+    AppState *state = user_data;
+    GtkWindow *window = GTK_IS_WINDOW(state->window) ? GTK_WINDOW(state->window) : NULL;
+
+    if (state->closing || window == NULL || !state->restore_maximized_after_fullscreen) {
+        state->maximize_restore_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    if (gtk_window_is_fullscreen(window)) {
+        return G_SOURCE_CONTINUE;
+    }
+
+    if (state->restore_window_width > 0 && state->restore_window_height > 0) {
+        gtk_window_set_default_size(window, state->restore_window_width, state->restore_window_height);
+    }
+
+    gtk_window_maximize(window);
+    if (gtk_window_is_maximized(window)) {
+        state->window_maximized = TRUE;
+        state->restore_maximized_after_fullscreen = FALSE;
+        state->maximize_restore_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    state->maximize_restore_attempts++;
+    if (state->maximize_restore_attempts >= MAXIMIZE_RESTORE_ATTEMPTS) {
+        state->restore_maximized_after_fullscreen = FALSE;
+        state->maximize_restore_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    return G_SOURCE_CONTINUE;
+}
+
+static void schedule_maximized_restore_after_fullscreen(AppState *state)
+{
+    remove_source_if_active(&state->maximize_restore_source);
+
+    if (!state->restore_maximized_after_fullscreen) {
+        return;
+    }
+
+    state->maximize_restore_attempts = 0;
+    state->maximize_restore_source = g_timeout_add(50, restore_maximized_after_fullscreen, state);
+}
+
 static void set_fullscreen(AppState *state, gboolean fullscreen)
 {
     if (state->fullscreen == fullscreen) {
@@ -358,9 +269,18 @@ static void set_fullscreen(AppState *state, gboolean fullscreen)
 
     state->fullscreen = fullscreen;
     if (fullscreen) {
+        state->was_maximized_before_fullscreen =
+            state->window_maximized || gtk_window_is_maximized(GTK_WINDOW(state->window));
+        state->restore_window_width = gtk_widget_get_width(state->window);
+        state->restore_window_height = gtk_widget_get_height(state->window);
+        state->restore_maximized_after_fullscreen = FALSE;
+        remove_source_if_active(&state->maximize_restore_source);
         gtk_window_fullscreen(GTK_WINDOW(state->window));
     } else {
+        state->restore_maximized_after_fullscreen = state->was_maximized_before_fullscreen;
         gtk_window_unfullscreen(GTK_WINDOW(state->window));
+        schedule_maximized_restore_after_fullscreen(state);
+        state->was_maximized_before_fullscreen = FALSE;
     }
 
     if (state->single_player != NULL) {
@@ -371,6 +291,28 @@ static void set_fullscreen(AppState *state, gboolean fullscreen)
     }
 
     show_window_overlay(state);
+}
+
+static void on_window_fullscreen_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    (void)object;
+    (void)pspec;
+
+    schedule_maximized_restore_after_fullscreen(user_data);
+}
+
+static void on_window_maximized_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    (void)object;
+    (void)pspec;
+    AppState *state = user_data;
+
+    if (state->fullscreen || state->window == NULL ||
+        gtk_window_is_fullscreen(GTK_WINDOW(state->window))) {
+        return;
+    }
+
+    state->window_maximized = gtk_window_is_maximized(GTK_WINDOW(state->window));
 }
 
 static void toggle_fullscreen(AppState *state)
@@ -450,7 +392,7 @@ static void create_single_content(AppState *state)
     gtk_overlay_set_child(GTK_OVERLAY(state->root_overlay), single_player_get_widget(state->single_player));
     state->content_mode = CONTENT_MODE_SINGLE;
     gtk_widget_set_tooltip_text(state->layout_button, "Switch to grid player");
-    gtk_button_set_child(GTK_BUTTON(state->layout_button), create_layout_icon(LAYOUT_ICON_GRID));
+    gtk_button_set_child(GTK_BUTTON(state->layout_button), player_layout_icon_new(PLAYER_LAYOUT_ICON_GRID));
 }
 
 static void create_grid_content(AppState *state)
@@ -479,14 +421,16 @@ static void create_grid_content(AppState *state)
         state->settings,
         state->primary_session,
         targets,
-        target_count
+        target_count,
+        on_content_fullscreen_requested,
+        state
     );
     grid_player_set_fullscreen(state->grid_player, state->fullscreen);
     gtk_overlay_set_child(GTK_OVERLAY(state->root_overlay), grid_player_get_widget(state->grid_player));
     grid_player_start(state->grid_player);
     state->content_mode = CONTENT_MODE_GRID;
     gtk_widget_set_tooltip_text(state->layout_button, "Switch to single player");
-    gtk_button_set_child(GTK_BUTTON(state->layout_button), create_layout_icon(LAYOUT_ICON_SINGLE));
+    gtk_button_set_child(GTK_BUTTON(state->layout_button), player_layout_icon_new(PLAYER_LAYOUT_ICON_SINGLE));
 }
 
 static void set_layout_mode(AppState *state, ContentMode mode)
@@ -963,6 +907,7 @@ static void destroy_state(gpointer user_data)
     state->closing = TRUE;
 
     remove_source_if_active(&state->overlay_hide_source);
+    remove_source_if_active(&state->maximize_restore_source);
 
     destroy_active_content(state);
     g_clear_pointer(&state->single_target, g_free);
@@ -991,6 +936,8 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_window_set_default_size(GTK_WINDOW(state->window), 1100, 680);
     gtk_window_set_decorated(GTK_WINDOW(state->window), FALSE);
     gtk_window_set_icon_name(GTK_WINDOW(state->window), APP_ID);
+    g_signal_connect(state->window, "notify::fullscreened", G_CALLBACK(on_window_fullscreen_changed), state);
+    g_signal_connect(state->window, "notify::maximized", G_CALLBACK(on_window_maximized_changed), state);
 
     state->root_overlay = gtk_overlay_new();
     g_object_add_weak_pointer(G_OBJECT(state->root_overlay), (gpointer *)&state->root_overlay);
@@ -1004,12 +951,12 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_widget_set_valign(state->top_left_controls, GTK_ALIGN_START);
     gtk_overlay_add_overlay(GTK_OVERLAY(state->root_overlay), state->top_left_controls);
 
-    state->settings_button = create_overlay_button(create_settings_icon(), "Settings");
+    state->settings_button = create_overlay_button(player_settings_icon_new(), "Settings");
     gtk_widget_add_css_class(state->settings_button, "settings-overlay-button");
     gtk_box_append(GTK_BOX(state->top_left_controls), state->settings_button);
     g_signal_connect(state->settings_button, "clicked", G_CALLBACK(on_settings_clicked), state);
 
-    state->layout_button = create_overlay_button(create_layout_icon(LAYOUT_ICON_GRID), "Switch to grid player");
+    state->layout_button = create_overlay_button(player_layout_icon_new(PLAYER_LAYOUT_ICON_GRID), "Switch to grid player");
     gtk_widget_add_css_class(state->layout_button, "settings-overlay-button");
     gtk_box_append(GTK_BOX(state->top_left_controls), state->layout_button);
     g_signal_connect(state->layout_button, "clicked", G_CALLBACK(on_layout_clicked), state);
@@ -1021,15 +968,15 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_widget_set_valign(state->top_controls, GTK_ALIGN_START);
     gtk_overlay_add_overlay(GTK_OVERLAY(state->root_overlay), state->top_controls);
 
-    GtkWidget *minimize_button = create_overlay_button(create_window_icon(WINDOW_ICON_MINIMIZE), "Minimize");
+    GtkWidget *minimize_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_MINIMIZE), "Minimize");
     gtk_box_append(GTK_BOX(state->top_controls), minimize_button);
     g_signal_connect(minimize_button, "clicked", G_CALLBACK(on_minimize_clicked), state);
 
-    GtkWidget *fullscreen_button = create_overlay_button(create_window_icon(WINDOW_ICON_FULLSCREEN), "Fullscreen");
+    GtkWidget *fullscreen_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_FULLSCREEN), "Fullscreen");
     gtk_box_append(GTK_BOX(state->top_controls), fullscreen_button);
     g_signal_connect(fullscreen_button, "clicked", G_CALLBACK(on_fullscreen_clicked), state);
 
-    GtkWidget *close_button = create_overlay_button(create_window_icon(WINDOW_ICON_CLOSE), "Close");
+    GtkWidget *close_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE), "Close");
     gtk_widget_add_css_class(close_button, "close-button");
     gtk_box_append(GTK_BOX(state->top_controls), close_button);
     g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), state);

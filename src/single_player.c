@@ -12,6 +12,7 @@
 
 #include "chat_panel.h"
 #include "player_defaults.h"
+#include "player_icons.h"
 #include "player_motion.h"
 #include "twitch_stream_info.h"
 
@@ -75,11 +76,6 @@ typedef struct {
     SinglePlayer *state;
     guint generation;
 } StreamTitleCallbackData;
-
-typedef enum {
-    CHAT_ICON_OPEN,
-    CHAT_ICON_CLOSE,
-} ChatIconKind;
 
 static void init_streams(SinglePlayer *state, const char *target);
 static void free_streams(SinglePlayer *state);
@@ -396,107 +392,6 @@ static void toggle_mute(SinglePlayer *state)
     check_mpv(mpv_command(mpv, cmd), "toggle mute");
 }
 
-static void draw_chat_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
-{
-    (void)area;
-    ChatIconKind kind = GPOINTER_TO_INT(user_data);
-    double size = MIN(width, height);
-    double x = (width - size) / 2.0;
-    double y = (height - size) / 2.0;
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
-    cairo_set_line_width(cr, MAX(1.8, size * 0.09));
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-
-    double bx = x + size * 0.12;
-    double by = y + size * 0.18;
-    double bw = size * 0.62;
-    double bh = size * 0.44;
-    double r = size * 0.12;
-
-    cairo_new_sub_path(cr);
-    cairo_arc(cr, bx + bw - r, by + r, r, -G_PI / 2, 0);
-    cairo_arc(cr, bx + bw - r, by + bh - r, r, 0, G_PI / 2);
-    cairo_arc(cr, bx + r, by + bh - r, r, G_PI / 2, G_PI);
-    cairo_arc(cr, bx + r, by + r, r, G_PI, 3 * G_PI / 2);
-    cairo_close_path(cr);
-    cairo_stroke(cr);
-
-    cairo_move_to(cr, bx + size * 0.16, by + bh);
-    cairo_line_to(cr, bx + size * 0.08, by + size * 0.72);
-    cairo_line_to(cr, bx + size * 0.30, by + bh);
-    cairo_stroke(cr);
-
-    for (int i = 0; i < 3; i++) {
-        double dot_x = bx + bw * (0.32 + i * 0.18);
-        double dot_y = by + bh * 0.50;
-        cairo_arc(cr, dot_x, dot_y, size * 0.030, 0, 2 * G_PI);
-        cairo_fill(cr);
-    }
-
-    double badge_x = x + size * 0.68;
-    double badge_y = y + size * 0.62;
-    double badge_r = size * 0.20;
-
-    cairo_set_source_rgba(cr, 0.05, 0.05, 0.05, 0.95);
-    cairo_arc(cr, badge_x, badge_y, badge_r, 0, 2 * G_PI);
-    cairo_fill_preserve(cr);
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.95);
-    cairo_set_line_width(cr, MAX(1.7, size * 0.08));
-    cairo_stroke(cr);
-
-    cairo_move_to(cr, badge_x - badge_r * 0.48, badge_y);
-    cairo_line_to(cr, badge_x + badge_r * 0.48, badge_y);
-    if (kind == CHAT_ICON_OPEN) {
-        cairo_move_to(cr, badge_x, badge_y - badge_r * 0.48);
-        cairo_line_to(cr, badge_x, badge_y + badge_r * 0.48);
-    }
-    cairo_stroke(cr);
-}
-
-static GtkWidget *create_chat_icon(ChatIconKind kind)
-{
-    GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_chat_icon, GINT_TO_POINTER(kind), NULL);
-    return icon;
-}
-
-static void draw_info_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
-{
-    (void)area;
-    (void)user_data;
-    double size = MIN(width, height);
-    double x = width / 2.0;
-    double y = height / 2.0;
-    double radius = size * 0.38;
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.94);
-    cairo_set_line_width(cr, MAX(1.7, size * 0.08));
-    cairo_arc(cr, x, y, radius, 0, 2 * G_PI);
-    cairo_stroke(cr);
-
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    cairo_move_to(cr, x, y - radius * 0.05);
-    cairo_line_to(cr, x, y + radius * 0.50);
-    cairo_stroke(cr);
-
-    cairo_arc(cr, x, y - radius * 0.50, size * 0.045, 0, 2 * G_PI);
-    cairo_fill(cr);
-}
-
-static GtkWidget *create_info_icon(void)
-{
-    GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_info_icon, NULL, NULL);
-    return icon;
-}
-
 static void schedule_footer_hide(SinglePlayer *state);
 
 static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
@@ -706,7 +601,7 @@ static void set_chat_visible(SinglePlayer *state, gboolean visible)
     gtk_widget_set_tooltip_text(state->chat_toggle_button, visible ? "Close chat" : "Open chat");
     gtk_button_set_child(
         GTK_BUTTON(state->chat_toggle_button),
-        create_chat_icon(visible ? CHAT_ICON_CLOSE : CHAT_ICON_OPEN)
+        player_chat_icon_new(visible ? PLAYER_CHAT_ICON_CLOSE : PLAYER_CHAT_ICON_OPEN)
     );
 }
 
@@ -990,10 +885,10 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_box_append(GTK_BOX(box), state->footer_spacer);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
-    GtkWidget *stream_info_button = create_overlay_button(create_info_icon(), PLAYER_STREAM_INFO_TOOLTIP);
+    GtkWidget *stream_info_button = create_overlay_button(player_info_icon_new(), PLAYER_STREAM_INFO_TOOLTIP);
     gtk_box_append(GTK_BOX(box), stream_info_button);
 
-    state->chat_toggle_button = create_overlay_button(create_chat_icon(CHAT_ICON_OPEN), "Open chat");
+    state->chat_toggle_button = create_overlay_button(player_chat_icon_new(PLAYER_CHAT_ICON_OPEN), "Open chat");
     gtk_widget_add_css_class(state->chat_toggle_button, "chat-toggle");
     gtk_box_append(GTK_BOX(box), state->chat_toggle_button);
 
