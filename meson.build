@@ -29,6 +29,7 @@ executable(
     'src/main.c',
     'src/single_player.c',
     'src/grid_player.c',
+    'src/player_motion.c',
     'src/settings.c',
     'src/chat_assets.c',
     'src/chat_panel.c',

@@ -14,6 +14,7 @@
 
 #include "chat_panel.h"
 #include "player_defaults.h"
+#include "player_motion.h"
 #include "twitch_stream_info.h"
 
 #define STREAM_TITLE_REFRESH_SECONDS 60
@@ -58,11 +59,9 @@ struct _SinglePlayer {
     guint title_refresh_source;
     guint chat_position_source;
     guint title_generation;
-    double last_motion_x;
-    double last_motion_y;
+    PlayerMotionTracker motion_tracker;
     double move_press_x;
     double move_press_y;
-    gboolean has_last_motion;
     gboolean move_pressed;
     gboolean closing;
     gboolean fullscreen;
@@ -583,15 +582,9 @@ static void on_video_motion(GtkEventControllerMotion *controller, double x, doub
     (void)controller;
     SinglePlayer *state = user_data;
 
-    if (state->has_last_motion &&
-        fabs(x - state->last_motion_x) < 0.5 &&
-        fabs(y - state->last_motion_y) < 0.5) {
+    if (player_motion_tracker_ignore_stationary(&state->motion_tracker, state, x, y)) {
         return;
     }
-
-    state->last_motion_x = x;
-    state->last_motion_y = y;
-    state->has_last_motion = TRUE;
 
     show_footer(state);
 }

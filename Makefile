@@ -1,3 +1,6 @@
+PREFIX ?= $(HOME)/.local
+BINDIR ?= $(PREFIX)/bin
+
 .PHONY: setup build run run-grid install clean
 
 setup:
@@ -12,8 +15,9 @@ run:
 run-grid:
 	./build/twitch-player --grid papaplatte rumathra
 
-install:
-	meson install -C build
+install: build
+	install -d "$(BINDIR)"
+	install -m 755 build/twitch-player "$(BINDIR)/twitch-player"
 
 clean:
 	rm -rf build
