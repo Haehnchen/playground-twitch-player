@@ -928,11 +928,9 @@ static gboolean create_mpv_render_context(StreamTile *tile)
         .get_proc_address = get_proc_address,
         .get_proc_address_ctx = NULL,
     };
-    int advanced_control = 1;
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE, (void *)MPV_RENDER_API_TYPE_OPENGL},
         {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params},
-        {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced_control},
         {MPV_RENDER_PARAM_INVALID, NULL},
     };
 
