@@ -15,13 +15,13 @@ SinglePlayer *single_player_new(
     PlayerSession *session,
     const char *startup_target,
     gboolean auto_start,
-    int chat_paned_position,
+    double chat_position_fraction,
     SinglePlayerFullscreenCallback fullscreen_callback,
     gpointer fullscreen_user_data
 );
 GtkWidget *single_player_get_widget(SinglePlayer *player);
 char *single_player_dup_current_target(SinglePlayer *player);
-int single_player_get_chat_paned_position(SinglePlayer *player);
+double single_player_get_chat_position_fraction(SinglePlayer *player);
 void single_player_set_fullscreen(SinglePlayer *player, gboolean fullscreen);
 void single_player_show_overlay(SinglePlayer *player);
 gboolean single_player_handle_key(
