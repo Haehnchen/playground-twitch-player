@@ -20,6 +20,9 @@
 #define STREAM_TITLE_REFRESH_SECONDS 60
 #define STREAM_DROPDOWN_WIDTH 170
 #define DEFAULT_CHAT_WIDTH 360
+#define DEFAULT_VIDEO_WIDTH_FRACTION 0.70
+#define MIN_VIDEO_WIDTH_FRACTION 0.55
+#define MAX_VIDEO_WIDTH_FRACTION 0.85
 #define MIN_VIDEO_WIDTH 320
 #define MPV_MAINLOOP_PRIORITY G_PRIORITY_HIGH
 
@@ -91,35 +94,34 @@ static gboolean has_chat_position_fraction(SinglePlayer *state)
     return state->chat_position_fraction > 0.0 && state->chat_position_fraction < 1.0;
 }
 
-static int clamp_chat_paned_position(SinglePlayer *state, int position, int width)
+static int clamp_chat_paned_position(int position, int width)
 {
     if (width <= 1) {
         return position;
     }
 
-    int min_chat_width = MAX(1, state->chat_width / 2);
-    int min_position = MIN(MIN_VIDEO_WIDTH, MAX(1, width - min_chat_width));
-    int max_position = MAX(min_position, width - min_chat_width);
+    int min_position = MAX(MIN_VIDEO_WIDTH, (int)(width * MIN_VIDEO_WIDTH_FRACTION + 0.5));
+    int max_position = (int)(width * MAX_VIDEO_WIDTH_FRACTION + 0.5);
+    if (min_position > max_position) {
+        min_position = max_position;
+    }
+
     return CLAMP(position, min_position, max_position);
 }
 
-static int get_default_chat_paned_position(SinglePlayer *state, int width)
+static int get_default_chat_paned_position(int width)
 {
-    if (width > state->chat_width + MIN_VIDEO_WIDTH) {
-        return width - state->chat_width;
-    }
-
-    return clamp_chat_paned_position(state, width / 2, width);
+    return clamp_chat_paned_position((int)(width * DEFAULT_VIDEO_WIDTH_FRACTION + 0.5), width);
 }
 
 static int get_chat_paned_position_for_width(SinglePlayer *state, int width)
 {
     if (!has_chat_position_fraction(state)) {
-        return get_default_chat_paned_position(state, width);
+        return get_default_chat_paned_position(width);
     }
 
     int position = (int)(width * state->chat_position_fraction + 0.5);
-    return clamp_chat_paned_position(state, position, width);
+    return clamp_chat_paned_position(position, width);
 }
 
 static void update_chat_position_fraction(SinglePlayer *state)
