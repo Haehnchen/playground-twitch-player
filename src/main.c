@@ -19,6 +19,8 @@
 
 #define OVERLAY_HIDE_DELAY_MS 1800
 #define MAXIMIZE_RESTORE_ATTEMPTS 12
+#define DEFAULT_WINDOW_WIDTH 1100
+#define DEFAULT_WINDOW_HEIGHT ((DEFAULT_WINDOW_WIDTH * 9 + 8) / 16)
 
 typedef enum {
     CONTENT_MODE_SINGLE,
@@ -933,7 +935,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
 
     state->window = gtk_application_window_new(application);
     gtk_window_set_title(GTK_WINDOW(state->window), "Twitch Player");
-    gtk_window_set_default_size(GTK_WINDOW(state->window), 1100, 680);
+    gtk_window_set_default_size(GTK_WINDOW(state->window), DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
     gtk_window_set_decorated(GTK_WINDOW(state->window), FALSE);
     gtk_window_set_icon_name(GTK_WINDOW(state->window), APP_ID);
     g_signal_connect(state->window, "notify::fullscreened", G_CALLBACK(on_window_fullscreen_changed), state);
