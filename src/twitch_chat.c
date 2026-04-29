@@ -8,13 +8,19 @@
 #define CHAT_CONNECT_TIMEOUT_SECONDS 15
 #define CHAT_RECONNECT_DELAY_MS 3000
 #define CHAT_RECONNECT_POLL_MS 100
+#define CHAT_MAINLOOP_PRIORITY G_PRIORITY_LOW
+#define CHAT_MAX_PENDING_MAIN_LINES 128
 
 struct TwitchChatClient {
     TwitchChatLineFunc line_func;
     gpointer user_data;
     GThread *thread;
     GCancellable *cancel;
+    GMutex mutex;
+    gint ref_count;
+    gint pending_lines;
     guint generation;
+    gboolean closed;
 };
 
 typedef struct {
@@ -25,8 +31,8 @@ typedef struct {
 } ChatWorkerData;
 
 typedef struct {
-    TwitchChatLineFunc line_func;
-    gpointer user_data;
+    TwitchChatClient *client;
+    guint generation;
     TwitchChatLine line;
     char *display_name;
     char *message;
@@ -34,6 +40,7 @@ typedef struct {
     char *emotes;
     char *reply_display_name;
     char *reply_message;
+    gboolean counted_pending;
 } ChatLineData;
 
 typedef struct {
@@ -45,18 +52,19 @@ typedef struct {
     char *reply_message;
 } ParsedPrivmsg;
 
-static gboolean emit_line_on_main(gpointer user_data)
-{
-    ChatLineData *data = user_data;
+static void twitch_chat_client_unref(TwitchChatClient *client);
+static gboolean emit_line_on_main(gpointer user_data);
 
-    if (data->line_func != NULL) {
-        data->line.display_name = data->display_name;
-        data->line.message = data->message;
-        data->line.color = data->color;
-        data->line.emotes = data->emotes;
-        data->line.reply_display_name = data->reply_display_name;
-        data->line.reply_message = data->reply_message;
-        data->line_func(&data->line, data->user_data);
+static TwitchChatClient *twitch_chat_client_ref(TwitchChatClient *client)
+{
+    g_atomic_int_inc(&client->ref_count);
+    return client;
+}
+
+static void chat_line_data_free(ChatLineData *data)
+{
+    if (data == NULL) {
+        return;
     }
 
     g_free(data->display_name);
@@ -65,30 +73,70 @@ static gboolean emit_line_on_main(gpointer user_data)
     g_free(data->emotes);
     g_free(data->reply_display_name);
     g_free(data->reply_message);
+    if (data->counted_pending) {
+        g_atomic_int_add(&data->client->pending_lines, -1);
+    }
+    twitch_chat_client_unref(data->client);
     g_free(data);
+}
+
+static void queue_line_on_main(ChatLineData *data)
+{
+    int previous_pending = g_atomic_int_add(&data->client->pending_lines, 1);
+    data->counted_pending = TRUE;
+
+    if (previous_pending >= CHAT_MAX_PENDING_MAIN_LINES) {
+        chat_line_data_free(data);
+        return;
+    }
+
+    g_main_context_invoke_full(NULL, CHAT_MAINLOOP_PRIORITY, emit_line_on_main, data, (GDestroyNotify)chat_line_data_free);
+}
+
+static gboolean emit_line_on_main(gpointer user_data)
+{
+    ChatLineData *data = user_data;
+    TwitchChatLineFunc line_func = NULL;
+    gpointer line_user_data = NULL;
+
+    g_mutex_lock(&data->client->mutex);
+    if (!data->client->closed &&
+        data->generation == data->client->generation &&
+        data->client->line_func != NULL) {
+        line_func = data->client->line_func;
+        line_user_data = data->client->user_data;
+    }
+    g_mutex_unlock(&data->client->mutex);
+
+    if (line_func != NULL) {
+        data->line.display_name = data->display_name;
+        data->line.message = data->message;
+        data->line.color = data->color;
+        data->line.emotes = data->emotes;
+        data->line.reply_display_name = data->reply_display_name;
+        data->line.reply_message = data->reply_message;
+        line_func(&data->line, line_user_data);
+    }
+
     return G_SOURCE_REMOVE;
 }
 
 static void emit_status(TwitchChatClient *client, guint generation, const char *message)
 {
-    (void)generation;
-
     ChatLineData *data = g_new0(ChatLineData, 1);
-    data->line_func = client->line_func;
-    data->user_data = client->user_data;
+    data->client = twitch_chat_client_ref(client);
+    data->generation = generation;
     data->line.kind = TWITCH_CHAT_LINE_STATUS;
     data->message = g_strdup(message);
 
-    g_main_context_invoke(NULL, emit_line_on_main, data);
+    queue_line_on_main(data);
 }
 
 static void emit_message(TwitchChatClient *client, guint generation, ParsedPrivmsg *message)
 {
-    (void)generation;
-
     ChatLineData *data = g_new0(ChatLineData, 1);
-    data->line_func = client->line_func;
-    data->user_data = client->user_data;
+    data->client = twitch_chat_client_ref(client);
+    data->generation = generation;
     data->line.kind = TWITCH_CHAT_LINE_MESSAGE;
     data->display_name = g_strdup(message->display_name);
     data->message = g_strdup(message->message);
@@ -97,7 +145,7 @@ static void emit_message(TwitchChatClient *client, guint generation, ParsedPrivm
     data->reply_display_name = g_strdup(message->reply_display_name);
     data->reply_message = g_strdup(message->reply_message);
 
-    g_main_context_invoke(NULL, emit_line_on_main, data);
+    queue_line_on_main(data);
 }
 
 static gboolean write_irc_line(GOutputStream *output, const char *line, GCancellable *cancel, GError **error)
@@ -389,8 +437,42 @@ static gpointer chat_worker(gpointer user_data)
 
     g_clear_object(&data->cancel);
     g_free(data->channel);
+    twitch_chat_client_unref(data->client);
     g_free(data);
     return NULL;
+}
+
+static void twitch_chat_client_cancel_current(TwitchChatClient *client)
+{
+    GThread *thread = NULL;
+    GCancellable *cancel = NULL;
+
+    g_mutex_lock(&client->mutex);
+    thread = g_steal_pointer(&client->thread);
+    cancel = g_steal_pointer(&client->cancel);
+    g_mutex_unlock(&client->mutex);
+
+    if (cancel != NULL) {
+        g_cancellable_cancel(cancel);
+        g_object_unref(cancel);
+    }
+    if (thread != NULL) {
+        g_thread_unref(thread);
+    }
+}
+
+static void twitch_chat_client_unref(TwitchChatClient *client)
+{
+    if (client == NULL || !g_atomic_int_dec_and_test(&client->ref_count)) {
+        return;
+    }
+
+    if (client->thread != NULL) {
+        g_thread_unref(client->thread);
+    }
+    g_clear_object(&client->cancel);
+    g_mutex_clear(&client->mutex);
+    g_free(client);
 }
 
 TwitchChatClient *twitch_chat_client_new(TwitchChatLineFunc line_func, gpointer user_data)
@@ -398,6 +480,8 @@ TwitchChatClient *twitch_chat_client_new(TwitchChatLineFunc line_func, gpointer 
     TwitchChatClient *client = g_new0(TwitchChatClient, 1);
     client->line_func = line_func;
     client->user_data = user_data;
+    client->ref_count = 1;
+    g_mutex_init(&client->mutex);
     return client;
 }
 
@@ -407,17 +491,27 @@ void twitch_chat_client_start(TwitchChatClient *client, const char *channel)
         return;
     }
 
-    twitch_chat_client_stop(client);
-    client->generation++;
-    client->cancel = g_cancellable_new();
+    twitch_chat_client_cancel_current(client);
 
     ChatWorkerData *data = g_new0(ChatWorkerData, 1);
-    data->client = client;
+    data->client = twitch_chat_client_ref(client);
     data->channel = g_ascii_strdown(channel, -1);
+
+    g_mutex_lock(&client->mutex);
+    if (client->closed) {
+        g_mutex_unlock(&client->mutex);
+        g_free(data->channel);
+        twitch_chat_client_unref(data->client);
+        g_free(data);
+        return;
+    }
+
+    client->generation++;
+    client->cancel = g_cancellable_new();
     data->generation = client->generation;
     data->cancel = g_object_ref(client->cancel);
-
     client->thread = g_thread_new("twitch-chat", chat_worker, data);
+    g_mutex_unlock(&client->mutex);
 }
 
 void twitch_chat_client_stop(TwitchChatClient *client)
@@ -426,16 +520,11 @@ void twitch_chat_client_stop(TwitchChatClient *client)
         return;
     }
 
-    if (client->cancel != NULL) {
-        g_cancellable_cancel(client->cancel);
-    }
+    g_mutex_lock(&client->mutex);
+    client->generation++;
+    g_mutex_unlock(&client->mutex);
 
-    if (client->thread != NULL) {
-        g_thread_join(client->thread);
-        client->thread = NULL;
-    }
-
-    g_clear_object(&client->cancel);
+    twitch_chat_client_cancel_current(client);
 }
 
 void twitch_chat_client_free(TwitchChatClient *client)
@@ -444,6 +533,13 @@ void twitch_chat_client_free(TwitchChatClient *client)
         return;
     }
 
-    twitch_chat_client_stop(client);
-    g_free(client);
+    g_mutex_lock(&client->mutex);
+    client->closed = TRUE;
+    client->line_func = NULL;
+    client->user_data = NULL;
+    client->generation++;
+    g_mutex_unlock(&client->mutex);
+
+    twitch_chat_client_cancel_current(client);
+    twitch_chat_client_unref(client);
 }

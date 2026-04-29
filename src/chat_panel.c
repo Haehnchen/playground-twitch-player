@@ -4,6 +4,7 @@
 #include "chat_panel.h"
 
 #define MAX_CHAT_LINES 200
+#define CHAT_UI_PRIORITY G_PRIORITY_LOW
 
 struct ChatPanelPrivate {
     GtkWidget *scroller;
@@ -147,7 +148,7 @@ static void queue_scroll_to_end(ChatPanel *panel)
 
     remove_source_if_active(&priv->scroll_source);
 
-    priv->scroll_source = g_idle_add(scroll_to_end_idle, panel);
+    priv->scroll_source = g_idle_add_full(CHAT_UI_PRIORITY, scroll_to_end_idle, panel, NULL);
 }
 
 static gboolean update_scroll_state_idle(gpointer user_data)
@@ -169,7 +170,7 @@ static void queue_scroll_state_update(ChatPanel *panel)
     ChatPanelPrivate *priv = panel->priv;
 
     if (priv->scroll_state_source == 0) {
-        priv->scroll_state_source = g_idle_add(update_scroll_state_idle, panel);
+        priv->scroll_state_source = g_idle_add_full(CHAT_UI_PRIORITY, update_scroll_state_idle, panel, NULL);
     }
 }
 
@@ -288,7 +289,6 @@ static void on_chat_line(const TwitchChatLine *line, gpointer user_data)
 
     if (!priv->closing) {
         if (line->kind == TWITCH_CHAT_LINE_MESSAGE) {
-            g_debug("%s: %s", line->display_name, line->message);
             append_message(panel, line);
         } else {
             g_debug("%s", line->message);
@@ -376,9 +376,6 @@ void chat_panel_free(ChatPanel *panel)
 
     twitch_chat_client_free(panel->client);
     panel->client = NULL;
-
-    while (g_main_context_iteration(NULL, FALSE)) {
-    }
 
     if (panel->priv != NULL) {
         remove_source_if_active(&panel->priv->scroll_source);

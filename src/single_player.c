@@ -21,6 +21,7 @@
 #define STREAM_DROPDOWN_WIDTH 170
 #define DEFAULT_CHAT_WIDTH 360
 #define DEFAULT_CHAT_PANED_POSITION 740
+#define MPV_MAINLOOP_PRIORITY G_PRIORITY_HIGH
 
 typedef struct {
     const char *label;
@@ -53,6 +54,7 @@ struct _SinglePlayer {
     int last_render_width;
     int last_render_height;
     gint render_queued;
+    gint event_queued;
     guint render_warmup_source;
     int render_warmup_frames;
     guint active_stream;
@@ -275,13 +277,15 @@ static void on_mpv_render_update(void *ctx)
     SinglePlayer *state = ctx;
 
     if (g_atomic_int_compare_and_exchange(&state->render_queued, 0, 1)) {
-        g_idle_add(queue_mpv_render, state);
+        g_idle_add_full(MPV_MAINLOOP_PRIORITY, queue_mpv_render, state, NULL);
     }
 }
 
 static gboolean process_mpv_events(gpointer user_data)
 {
     SinglePlayer *state = user_data;
+
+    g_atomic_int_set(&state->event_queued, 0);
 
     mpv_handle *mpv = get_mpv(state);
     if (state->closing || mpv == NULL) {
@@ -336,7 +340,11 @@ static gboolean process_mpv_events(gpointer user_data)
 
 static void on_mpv_wakeup(void *ctx)
 {
-    g_idle_add(process_mpv_events, ctx);
+    SinglePlayer *state = ctx;
+
+    if (g_atomic_int_compare_and_exchange(&state->event_queued, 0, 1)) {
+        g_idle_add_full(MPV_MAINLOOP_PRIORITY, process_mpv_events, state, NULL);
+    }
 }
 
 static void load_stream_url(SinglePlayer *state, const char *url, const char *label, const char *channel)

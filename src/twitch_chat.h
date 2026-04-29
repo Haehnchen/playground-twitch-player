@@ -54,7 +54,7 @@ void twitch_chat_client_start(TwitchChatClient *client, const char *channel);
  * twitch_chat_client_stop:
  * @client: A Twitch chat client.
  *
- * Cancels the active connection and waits for the worker thread to exit.
+ * Cancels the active connection without waiting for the worker thread to exit.
  */
 void twitch_chat_client_stop(TwitchChatClient *client);
 

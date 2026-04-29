@@ -14,6 +14,7 @@
 #include "player_volume.h"
 
 #define MAX_TILES GRID_PLAYER_MAX_TILES
+#define MPV_MAINLOOP_PRIORITY G_PRIORITY_HIGH
 typedef struct _GridAppState GridAppState;
 
 typedef struct {
@@ -37,6 +38,7 @@ typedef struct {
     int last_render_width;
     int last_render_height;
     gint render_queued;
+    gint event_queued;
     guint render_warmup_source;
     int render_warmup_frames;
     gboolean owns_session;
@@ -154,13 +156,15 @@ static void on_mpv_render_update(void *ctx)
     StreamTile *tile = ctx;
 
     if (g_atomic_int_compare_and_exchange(&tile->render_queued, 0, 1)) {
-        g_idle_add(queue_mpv_render, tile);
+        g_idle_add_full(MPV_MAINLOOP_PRIORITY, queue_mpv_render, tile, NULL);
     }
 }
 
 static gboolean process_mpv_events(gpointer user_data)
 {
     StreamTile *tile = user_data;
+
+    g_atomic_int_set(&tile->event_queued, 0);
 
     mpv_handle *mpv = tile_mpv(tile);
     if (tile->app->closing || mpv == NULL) {
@@ -215,7 +219,11 @@ static gboolean process_mpv_events(gpointer user_data)
 
 static void on_mpv_wakeup(void *ctx)
 {
-    g_idle_add(process_mpv_events, ctx);
+    StreamTile *tile = ctx;
+
+    if (g_atomic_int_compare_and_exchange(&tile->event_queued, 0, 1)) {
+        g_idle_add_full(MPV_MAINLOOP_PRIORITY, process_mpv_events, tile, NULL);
+    }
 }
 
 static char *target_to_label(const char *target)
