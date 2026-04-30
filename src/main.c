@@ -44,7 +44,7 @@ typedef struct {
     guint grid_target_count;
     char *single_target;
     gboolean has_single_target_handoff;
-    double single_chat_position_fraction;
+    int single_chat_paned_position;
     ContentMode content_mode;
     guint overlay_hide_source;
     guint maximize_restore_source;
@@ -352,7 +352,7 @@ static void capture_single_handoff(AppState *state)
     g_clear_pointer(&state->single_target, g_free);
     state->single_target = single_player_dup_current_target(state->single_player);
     state->has_single_target_handoff = TRUE;
-    state->single_chat_position_fraction = single_player_get_chat_position_fraction(state->single_player);
+    state->single_chat_paned_position = single_player_get_chat_paned_position(state->single_player);
 }
 
 static void capture_grid_handoff(AppState *state)
@@ -386,7 +386,7 @@ static void create_single_content(AppState *state)
         state->primary_session,
         target,
         target != NULL && target[0] != '\0',
-        state->single_chat_position_fraction,
+        state->single_chat_paned_position,
         on_content_fullscreen_requested,
         state
     );

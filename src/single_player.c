@@ -19,9 +19,8 @@
 
 #define STREAM_TITLE_REFRESH_SECONDS 60
 #define STREAM_DROPDOWN_WIDTH 170
-#define DEFAULT_VIDEO_WIDTH_FRACTION 0.70
-#define MIN_VIDEO_WIDTH_FRACTION 0.50
-#define MAX_VIDEO_WIDTH_FRACTION 0.85
+#define DEFAULT_CHAT_WIDTH 280
+#define MIN_CHAT_WIDTH 180
 #define MIN_VIDEO_WIDTH 320
 #define MPV_MAINLOOP_PRIORITY G_PRIORITY_HIGH
 
@@ -51,8 +50,7 @@ struct _SinglePlayer {
     ChatPanel *chat_panel;
     AppSettings *settings;
     GCancellable *title_cancel;
-    double chat_position_fraction;
-    int last_chat_layout_width;
+    int chat_paned_position;
     int last_render_width;
     int last_render_height;
     gint render_queued;
@@ -63,17 +61,14 @@ struct _SinglePlayer {
     gboolean chat_visible;
     guint footer_hide_source;
     guint title_refresh_source;
-    gulong chat_position_handler_id;
-    gulong chat_resize_handler_id;
+    guint chat_position_source;
     guint title_generation;
     PlayerMotionTracker motion_tracker;
     double move_press_x;
     double move_press_y;
     gboolean move_pressed;
-    gboolean chat_drag_active;
     gboolean closing;
     gboolean fullscreen;
-    gboolean applying_chat_position;
     SinglePlayerFullscreenCallback fullscreen_callback;
     gpointer fullscreen_user_data;
     gboolean stream_playing;
@@ -90,158 +85,49 @@ static void free_streams(SinglePlayer *state);
 static void rebuild_stream_menu(SinglePlayer *state);
 static void update_stream_combo_label(SinglePlayer *state);
 
-static gboolean has_chat_position_fraction(SinglePlayer *state)
-{
-    return state->chat_position_fraction > 0.0 && state->chat_position_fraction < 1.0;
-}
-
-static double clamp_chat_position_fraction(double fraction)
-{
-    return CLAMP(fraction, MIN_VIDEO_WIDTH_FRACTION, MAX_VIDEO_WIDTH_FRACTION);
-}
-
-static int get_chat_layout_width(SinglePlayer *state)
-{
-    int width = GTK_IS_WIDGET(state->main_area) ? gtk_widget_get_width(state->main_area) : 0;
-    if (width > 1) {
-        return width;
-    }
-
-    return GTK_IS_WIDGET(state->window) ? gtk_widget_get_width(state->window) : 0;
-}
-
 static int clamp_chat_paned_position(int position, int width)
 {
     if (width <= 1) {
         return position;
     }
 
-    int min_position = MAX(MIN_VIDEO_WIDTH, (int)(width * MIN_VIDEO_WIDTH_FRACTION + 0.5));
-    int max_position = (int)(width * MAX_VIDEO_WIDTH_FRACTION + 0.5);
-    if (min_position > max_position) {
-        min_position = max_position;
-    }
-
+    int min_position = MIN(MIN_VIDEO_WIDTH, MAX(1, width - MIN_CHAT_WIDTH));
+    int max_position = MAX(min_position, width - MIN_CHAT_WIDTH);
     return CLAMP(position, min_position, max_position);
 }
 
 static int get_default_chat_paned_position(int width)
 {
-    return clamp_chat_paned_position((int)(width * DEFAULT_VIDEO_WIDTH_FRACTION + 0.5), width);
+    return width > 1 ? width - DEFAULT_CHAT_WIDTH : 0;
 }
 
 static int get_chat_paned_position_for_width(SinglePlayer *state, int width)
 {
-    if (!has_chat_position_fraction(state)) {
-        return get_default_chat_paned_position(width);
-    }
-
-    int position = (int)(width * state->chat_position_fraction + 0.5);
+    int position = state->chat_paned_position > 0
+        ? state->chat_paned_position
+        : get_default_chat_paned_position(width);
     return clamp_chat_paned_position(position, width);
 }
 
-static void set_chat_paned_position_for_width(SinglePlayer *state, int width)
+static gboolean apply_chat_position(gpointer user_data)
 {
-    if (!GTK_IS_PANED(state->main_area) || width <= 1) {
-        return;
-    }
-
-    state->applying_chat_position = TRUE;
-    gtk_paned_set_position(GTK_PANED(state->main_area), get_chat_paned_position_for_width(state, width));
-    state->last_chat_layout_width = width;
-    state->applying_chat_position = FALSE;
-}
-
-static void update_chat_position_fraction(SinglePlayer *state)
-{
-    if (!state->chat_visible || !GTK_IS_PANED(state->main_area)) {
-        return;
-    }
-
-    int width = get_chat_layout_width(state);
-    int position = gtk_paned_get_position(GTK_PANED(state->main_area));
-    if (width <= 1 || position <= 0) {
-        return;
-    }
-
-    position = clamp_chat_paned_position(position, width);
-    state->chat_position_fraction = clamp_chat_position_fraction((double)position / (double)width);
-    state->last_chat_layout_width = width;
-}
-
-static void on_chat_position_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
-{
-    (void)object;
-    (void)pspec;
     SinglePlayer *state = user_data;
 
-    if (state->applying_chat_position || !GTK_IS_PANED(state->main_area)) {
-        return;
+    if (state->closing || state->main_area == NULL) {
+        state->chat_position_source = 0;
+        return G_SOURCE_REMOVE;
     }
 
-    int width = get_chat_layout_width(state);
-    if (state->chat_visible && state->last_chat_layout_width > 1 && width != state->last_chat_layout_width) {
-        set_chat_paned_position_for_width(state, width);
-        return;
-    }
-
+    int width = gtk_widget_get_width(state->main_area);
     if (width <= 1) {
-        return;
+        return G_SOURCE_CONTINUE;
     }
 
-    if (state->chat_drag_active) {
-        update_chat_position_fraction(state);
-    } else if (state->chat_visible) {
-        set_chat_paned_position_for_width(state, width);
-    }
-}
+    state->chat_paned_position = get_chat_paned_position_for_width(state, width);
+    gtk_paned_set_position(GTK_PANED(state->main_area), state->chat_paned_position);
+    state->chat_position_source = 0;
 
-static void on_chat_layout_resized(GObject *object, GParamSpec *pspec, gpointer user_data)
-{
-    (void)object;
-    (void)pspec;
-    SinglePlayer *state = user_data;
-
-    if (!state->chat_visible || state->applying_chat_position || !GTK_IS_PANED(state->main_area)) {
-        return;
-    }
-
-    int width = get_chat_layout_width(state);
-    if (width > 1 && width != state->last_chat_layout_width) {
-        set_chat_paned_position_for_width(state, width);
-    }
-}
-
-static gboolean chat_separator_contains_x(SinglePlayer *state, double x)
-{
-    if (!state->chat_visible || !GTK_IS_PANED(state->main_area)) {
-        return FALSE;
-    }
-
-    int position = gtk_paned_get_position(GTK_PANED(state->main_area));
-    return fabs(x - position) <= 8.0;
-}
-
-static void on_chat_separator_drag_begin(GtkGestureDrag *gesture, double x, double y, gpointer user_data)
-{
-    (void)gesture;
-    (void)y;
-    SinglePlayer *state = user_data;
-
-    state->chat_drag_active = chat_separator_contains_x(state, x);
-}
-
-static void on_chat_separator_drag_end(GtkGestureDrag *gesture, double offset_x, double offset_y, gpointer user_data)
-{
-    (void)gesture;
-    (void)offset_x;
-    (void)offset_y;
-    SinglePlayer *state = user_data;
-
-    if (state->chat_drag_active) {
-        update_chat_position_fraction(state);
-    }
-    state->chat_drag_active = FALSE;
+    return G_SOURCE_REMOVE;
 }
 
 static void set_status(SinglePlayer *state, const char *message)
@@ -754,11 +640,20 @@ static void set_chat_visible(SinglePlayer *state, gboolean visible)
     if (visible) {
         state->chat_visible = TRUE;
         gtk_paned_set_end_child(GTK_PANED(state->main_area), state->chat_panel->widget);
-        set_chat_paned_position_for_width(state, get_chat_layout_width(state));
+        int width = gtk_widget_get_width(state->main_area);
+        if (width > 1) {
+            state->chat_paned_position = get_chat_paned_position_for_width(state, width);
+            gtk_paned_set_position(GTK_PANED(state->main_area), state->chat_paned_position);
+        } else if (state->chat_position_source == 0) {
+            state->chat_position_source = g_timeout_add(50, apply_chat_position, state);
+        }
     } else {
-        update_chat_position_fraction(state);
+        remove_source_if_active(&state->chat_position_source);
+        int position = gtk_paned_get_position(GTK_PANED(state->main_area));
+        if (position > 0) {
+            state->chat_paned_position = position;
+        }
         state->chat_visible = FALSE;
-        state->chat_drag_active = FALSE;
         g_object_ref(state->chat_panel->widget);
         gtk_paned_set_end_child(GTK_PANED(state->main_area), NULL);
     }
@@ -1217,16 +1112,8 @@ static void single_player_destroy(SinglePlayer *state)
         g_clear_object(&state->title_cancel);
     }
 
+    remove_source_if_active(&state->chat_position_source);
     remove_source_if_active(&state->render_warmup_source);
-
-    if (state->main_area != NULL && state->chat_position_handler_id != 0) {
-        g_signal_handler_disconnect(state->main_area, state->chat_position_handler_id);
-        state->chat_position_handler_id = 0;
-    }
-    if (state->main_area != NULL && state->chat_resize_handler_id != 0) {
-        g_signal_handler_disconnect(state->main_area, state->chat_resize_handler_id);
-        state->chat_resize_handler_id = 0;
-    }
 
     clear_mpv_render_context(state);
 
@@ -1234,7 +1121,10 @@ static void single_player_destroy(SinglePlayer *state)
     state->session = NULL;
 
     if (GTK_IS_PANED(state->main_area)) {
-        update_chat_position_fraction(state);
+        int position = gtk_paned_get_position(GTK_PANED(state->main_area));
+        if (position > 0) {
+            state->chat_paned_position = position;
+        }
         gtk_paned_set_end_child(GTK_PANED(state->main_area), NULL);
     }
 
@@ -1259,7 +1149,7 @@ SinglePlayer *single_player_new(
     PlayerSession *session,
     const char *startup_target,
     gboolean auto_start,
-    double chat_position_fraction,
+    int chat_paned_position,
     SinglePlayerFullscreenCallback fullscreen_callback,
     gpointer fullscreen_user_data
 )
@@ -1268,9 +1158,7 @@ SinglePlayer *single_player_new(
     state->startup_target = startup_target;
     state->session = session;
     state->window = GTK_WIDGET(window);
-    state->chat_position_fraction = chat_position_fraction > 0.0 && chat_position_fraction < 1.0
-        ? clamp_chat_position_fraction(chat_position_fraction)
-        : 0.0;
+    state->chat_paned_position = chat_paned_position;
     state->active_stream = 0;
     state->chat_visible = FALSE;
     state->settings = settings;
@@ -1285,29 +1173,11 @@ SinglePlayer *single_player_new(
     gtk_widget_add_css_class(state->main_area, "main-area");
     gtk_widget_set_hexpand(state->main_area, TRUE);
     gtk_widget_set_vexpand(state->main_area, TRUE);
-    state->chat_position_handler_id = g_signal_connect(
-        state->main_area,
-        "notify::position",
-        G_CALLBACK(on_chat_position_changed),
-        state
-    );
-    state->chat_resize_handler_id = g_signal_connect(
-        state->main_area,
-        "notify::width",
-        G_CALLBACK(on_chat_layout_resized),
-        state
-    );
-    GtkGesture *chat_separator_drag = gtk_gesture_drag_new();
-    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(chat_separator_drag), GTK_PHASE_CAPTURE);
-    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(chat_separator_drag), GDK_BUTTON_PRIMARY);
-    g_signal_connect(chat_separator_drag, "drag-begin", G_CALLBACK(on_chat_separator_drag_begin), state);
-    g_signal_connect(chat_separator_drag, "drag-end", G_CALLBACK(on_chat_separator_drag_end), state);
-    gtk_widget_add_controller(state->main_area, GTK_EVENT_CONTROLLER(chat_separator_drag));
     gtk_paned_set_wide_handle(GTK_PANED(state->main_area), FALSE);
     gtk_paned_set_resize_start_child(GTK_PANED(state->main_area), TRUE);
     gtk_paned_set_shrink_start_child(GTK_PANED(state->main_area), FALSE);
     gtk_paned_set_resize_end_child(GTK_PANED(state->main_area), FALSE);
-    gtk_paned_set_shrink_end_child(GTK_PANED(state->main_area), TRUE);
+    gtk_paned_set_shrink_end_child(GTK_PANED(state->main_area), FALSE);
 
     state->gl_area = gtk_gl_area_new();
     g_object_add_weak_pointer(G_OBJECT(state->gl_area), (gpointer *)&state->gl_area);
@@ -1322,7 +1192,7 @@ SinglePlayer *single_player_new(
     gtk_overlay_set_child(GTK_OVERLAY(state->video_overlay), state->gl_area);
     gtk_paned_set_start_child(GTK_PANED(state->main_area), state->video_overlay);
 
-    state->chat_panel = chat_panel_new(1);
+    state->chat_panel = chat_panel_new(DEFAULT_CHAT_WIDTH);
 
     GtkGesture *video_click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(video_click), GDK_BUTTON_PRIMARY);
@@ -1388,24 +1258,26 @@ char *single_player_dup_current_target(SinglePlayer *player)
     return player_session_dup_url(player->session);
 }
 
-double single_player_get_chat_position_fraction(SinglePlayer *player)
+int single_player_get_chat_paned_position(SinglePlayer *player)
 {
     if (player == NULL) {
-        return 0.0;
+        return 0;
     }
 
-    update_chat_position_fraction(player);
+    if (GTK_IS_PANED(player->main_area)) {
+        int position = gtk_paned_get_position(GTK_PANED(player->main_area));
+        if (position > 0) {
+            player->chat_paned_position = position;
+        }
+    }
 
-    return player->chat_position_fraction;
+    return player->chat_paned_position;
 }
 
 void single_player_set_fullscreen(SinglePlayer *player, gboolean fullscreen)
 {
     if (player != NULL) {
         player->fullscreen = fullscreen;
-        if (player->chat_visible) {
-            set_chat_paned_position_for_width(player, get_chat_layout_width(player));
-        }
     }
 }
 
