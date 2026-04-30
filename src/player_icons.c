@@ -106,6 +106,28 @@ static void draw_trash_icon(GtkDrawingArea *area, cairo_t *cr, int width, int he
     cairo_stroke(cr);
 }
 
+static void draw_plus_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
+{
+    (void)area;
+    (void)user_data;
+    double size = MIN(width, height);
+    double x = width / 2.0;
+    double y = height / 2.0;
+    double radius = size * 0.34;
+
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.50);
+    cairo_set_line_width(cr, MAX(1.6, size * 0.08));
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_arc(cr, x, y, radius, 0, 2 * G_PI);
+    cairo_stroke(cr);
+
+    cairo_move_to(cr, x - radius * 0.48, y);
+    cairo_line_to(cr, x + radius * 0.48, y);
+    cairo_move_to(cr, x, y - radius * 0.48);
+    cairo_line_to(cr, x, y + radius * 0.48);
+    cairo_stroke(cr);
+}
+
 static void draw_window_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
 {
     (void)area;
@@ -343,6 +365,15 @@ GtkWidget *player_trash_icon_new(void)
     gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 15);
     gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 15);
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_trash_icon, NULL, NULL);
+    return icon;
+}
+
+GtkWidget *player_plus_icon_new(void)
+{
+    GtkWidget *icon = gtk_drawing_area_new();
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 30);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 30);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_plus_icon, NULL, NULL);
     return icon;
 }
 

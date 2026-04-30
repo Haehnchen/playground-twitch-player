@@ -467,6 +467,15 @@ static void on_tile_close_clicked(GtkButton *button, gpointer user_data)
     show_tile_overlay(tile);
 }
 
+static void on_empty_tile_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    StreamTile *tile = user_data;
+
+    channel_switcher_overlay_show_at(tile->channel_switcher, 0, 0);
+    show_tile_overlay(tile);
+}
+
 static void on_mute_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
@@ -1165,10 +1174,18 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
     gtk_widget_set_vexpand(tile->gl_area, TRUE);
     gtk_overlay_set_child(GTK_OVERLAY(tile->overlay), tile->gl_area);
 
-    tile->empty_label = gtk_label_new("Empty");
-    gtk_widget_add_css_class(tile->empty_label, "empty-label");
+    tile->empty_label = gtk_button_new();
+    GtkWidget *empty_icon_frame = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(empty_icon_frame, "empty-stream-button-visible");
+    gtk_widget_set_halign(empty_icon_frame, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(empty_icon_frame, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(empty_icon_frame), player_plus_icon_new());
+    gtk_button_set_child(GTK_BUTTON(tile->empty_label), empty_icon_frame);
+    gtk_widget_add_css_class(tile->empty_label, "empty-stream-button");
+    gtk_widget_set_tooltip_text(tile->empty_label, "Select channel");
     gtk_widget_set_halign(tile->empty_label, GTK_ALIGN_CENTER);
     gtk_widget_set_valign(tile->empty_label, GTK_ALIGN_CENTER);
+    g_signal_connect(tile->empty_label, "clicked", G_CALLBACK(on_empty_tile_clicked), tile);
     gtk_overlay_add_overlay(GTK_OVERLAY(tile->overlay), tile->empty_label);
 
     tile->footer = create_tile_footer(tile);
@@ -1238,9 +1255,25 @@ static void install_css(void)
         ".tile-top {"
         "  border-bottom: 1px solid rgba(255, 255, 255, 0.12);"
         "}"
-        ".empty-label {"
-        "  color: rgba(255, 255, 255, 0.35);"
-        "  font-size: 18px;"
+        ".empty-stream-button {"
+        "  background: transparent;"
+        "  color: rgba(255, 255, 255, 0.50);"
+        "  border-color: transparent;"
+        "  outline-color: transparent;"
+        "  box-shadow: none;"
+        "  min-width: 52px;"
+        "  min-height: 52px;"
+        "  padding: 0;"
+        "  opacity: 0.50;"
+        "}"
+        ".empty-stream-button:hover {"
+        "  background: transparent;"
+        "  color: rgba(255, 255, 255, 0.65);"
+        "  opacity: 0.65;"
+        "}"
+        ".empty-stream-button-visible {"
+        "  min-width: 30px;"
+        "  min-height: 30px;"
         "}"
         ".tile-footer {"
         "  background: rgba(0, 0, 0, 0.62);"

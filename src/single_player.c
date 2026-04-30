@@ -42,6 +42,7 @@ struct _SinglePlayer {
     GtkWidget *footer_spacer;
     GtkWidget *stream_combo;
     GtkWidget *stream_title_label;
+    GtkWidget *empty_button;
     GtkWidget *mute_button;
     GtkWidget *volume_scale;
     GtkWidget *status_label;
@@ -88,6 +89,13 @@ static void free_streams(SinglePlayer *state);
 static void rebuild_stream_menu(SinglePlayer *state);
 static void update_stream_combo_label(SinglePlayer *state);
 static void show_footer(SinglePlayer *state);
+
+static void update_empty_button(SinglePlayer *state)
+{
+    if (state->empty_button != NULL) {
+        gtk_widget_set_visible(state->empty_button, !state->stream_playing);
+    }
+}
 
 static int clamp_chat_paned_position(int position, int width)
 {
@@ -357,6 +365,8 @@ static gboolean process_mpv_events(gpointer user_data)
             break;
         case MPV_EVENT_END_FILE: {
             mpv_event_end_file *end = event->data;
+            state->stream_playing = FALSE;
+            update_empty_button(state);
             if (end != NULL && end->reason == MPV_END_FILE_REASON_ERROR) {
                 set_status(state, "Stream could not be played");
             } else {
@@ -400,6 +410,7 @@ static void load_stream_url(SinglePlayer *state, const char *url, const char *la
 {
     set_status(state, PLAYER_STARTING_STREAM_STATUS);
     state->stream_playing = TRUE;
+    update_empty_button(state);
     update_stream_combo_label(state);
     reset_stream_title(state);
     start_chat(state, channel);
@@ -683,6 +694,15 @@ static void on_context_pressed(GtkGestureClick *gesture, int n_press, double x, 
 
     SinglePlayer *state = user_data;
     channel_switcher_overlay_show_at(state->channel_switcher, x, y);
+    show_footer(state);
+}
+
+static void on_empty_button_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    SinglePlayer *state = user_data;
+
+    channel_switcher_overlay_show_at(state->channel_switcher, 0, 0);
     show_footer(state);
 }
 
@@ -1208,6 +1228,7 @@ static void single_player_destroy(SinglePlayer *state)
     state->bottom_panel = NULL;
     state->stream_combo = NULL;
     state->stream_title_label = NULL;
+    state->empty_button = NULL;
     state->mute_button = NULL;
     state->volume_scale = NULL;
     state->status_label = NULL;
@@ -1286,6 +1307,22 @@ SinglePlayer *single_player_new(
     gtk_event_controller_set_propagation_phase(video_scroll, GTK_PHASE_CAPTURE);
     g_signal_connect(video_scroll, "scroll", G_CALLBACK(on_video_scroll), state);
     gtk_widget_add_controller(state->video_overlay, video_scroll);
+
+    state->empty_button = gtk_button_new();
+    g_object_add_weak_pointer(G_OBJECT(state->empty_button), (gpointer *)&state->empty_button);
+    GtkWidget *empty_icon_frame = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(empty_icon_frame, "empty-stream-button-visible");
+    gtk_widget_set_halign(empty_icon_frame, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(empty_icon_frame, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(empty_icon_frame), player_plus_icon_new());
+    gtk_button_set_child(GTK_BUTTON(state->empty_button), empty_icon_frame);
+    gtk_widget_add_css_class(state->empty_button, "empty-stream-button");
+    gtk_widget_set_tooltip_text(state->empty_button, "Select channel");
+    gtk_widget_set_halign(state->empty_button, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(state->empty_button, GTK_ALIGN_CENTER);
+    g_signal_connect(state->empty_button, "clicked", G_CALLBACK(on_empty_button_clicked), state);
+    gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->empty_button);
+    update_empty_button(state);
 
     state->bottom_panel = create_controls(state);
     gtk_widget_set_halign(state->bottom_panel, GTK_ALIGN_FILL);

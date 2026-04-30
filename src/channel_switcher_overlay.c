@@ -61,7 +61,7 @@ static void install_css(void)
     gtk_css_provider_load_from_string(
         provider,
         ".channel-switcher-panel {"
-        "  background: rgba(12, 12, 14, 0.78);"
+        "  background: rgba(12, 12, 14, 0.88);"
         "  color: #ffffff;"
         "  padding: 8px 8px 10px 8px;"
         "  border-radius: 6px;"
