@@ -41,6 +41,7 @@ struct _SinglePlayer {
     GtkWidget *footer_spacer;
     GtkWidget *stream_combo;
     GtkWidget *stream_title_label;
+    GtkWidget *mute_button;
     GtkWidget *volume_scale;
     GtkWidget *status_label;
     StreamEntry *streams;
@@ -427,20 +428,29 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
     player_volume_sync_session_from_range(state->session, range);
 }
 
-static void toggle_mute(SinglePlayer *state)
+static void update_mute_button(SinglePlayer *state)
 {
-    mpv_handle *mpv = get_mpv(state);
-    if (mpv == NULL) {
+    if (state->mute_button == NULL) {
         return;
     }
 
-    const char *cmd[] = {
-        "cycle",
-        "mute",
-        NULL,
-    };
+    gboolean muted = player_session_get_muted(state->session);
+    gtk_button_set_child(
+        GTK_BUTTON(state->mute_button),
+        player_volume_icon_new(muted ? PLAYER_VOLUME_ICON_MUTED : PLAYER_VOLUME_ICON_SOUND)
+    );
+}
 
-    check_mpv(mpv_command(mpv, cmd), "toggle mute");
+static void set_mute(SinglePlayer *state, gboolean muted)
+{
+    player_session_set_muted(state->session, muted);
+    update_mute_button(state);
+}
+
+static void toggle_mute(SinglePlayer *state)
+{
+    player_session_toggle_muted(state->session);
+    update_mute_button(state);
 }
 
 static void schedule_footer_hide(SinglePlayer *state);
@@ -626,6 +636,10 @@ static gboolean on_video_scroll(GtkEventControllerScroll *controller, double dx,
         return GDK_EVENT_PROPAGATE;
     }
 
+    if (player_session_get_muted(state->session)) {
+        set_mute(state, FALSE);
+    }
+
     show_footer(state);
 
     return GDK_EVENT_STOP;
@@ -670,6 +684,14 @@ static void on_chat_toggle_clicked(GtkButton *button, gpointer user_data)
     (void)button;
     SinglePlayer *state = user_data;
     set_chat_visible(state, !state->chat_visible);
+    show_footer(state);
+}
+
+static void on_mute_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    SinglePlayer *state = user_data;
+    toggle_mute(state);
     show_footer(state);
 }
 
@@ -935,12 +957,19 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_range_set_value(GTK_RANGE(state->volume_scale), player_session_get_volume(state->session));
     gtk_widget_set_size_request(state->volume_scale, 140, -1);
     gtk_scale_set_draw_value(GTK_SCALE(state->volume_scale), FALSE);
+    state->mute_button = create_overlay_button(
+        player_volume_icon_new(
+            player_session_get_muted(state->session) ? PLAYER_VOLUME_ICON_MUTED : PLAYER_VOLUME_ICON_SOUND
+        ),
+        NULL
+    );
 
     gtk_box_append(GTK_BOX(box), state->stream_combo);
     gtk_box_append(GTK_BOX(box), state->stream_title_label);
     state->footer_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(state->footer_spacer, FALSE);
     gtk_box_append(GTK_BOX(box), state->footer_spacer);
+    gtk_box_append(GTK_BOX(box), state->mute_button);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
     GtkWidget *stream_info_button = create_overlay_button(player_info_icon_new(), PLAYER_STREAM_INFO_TOOLTIP);
@@ -951,6 +980,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_box_append(GTK_BOX(box), state->chat_toggle_button);
 
     g_signal_connect(stream_info_button, "clicked", G_CALLBACK(on_stream_info_clicked), state);
+    g_signal_connect(state->mute_button, "clicked", G_CALLBACK(on_mute_clicked), state);
     g_signal_connect(state->chat_toggle_button, "clicked", G_CALLBACK(on_chat_toggle_clicked), state);
     g_signal_connect(state->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), state);
 
@@ -1137,6 +1167,7 @@ static void single_player_destroy(SinglePlayer *state)
     state->bottom_panel = NULL;
     state->stream_combo = NULL;
     state->stream_title_label = NULL;
+    state->mute_button = NULL;
     state->volume_scale = NULL;
     state->status_label = NULL;
     free_streams(state);

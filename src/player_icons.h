@@ -19,6 +19,11 @@ typedef enum {
 } PlayerChatIconKind;
 
 typedef enum {
+    PLAYER_VOLUME_ICON_SOUND,
+    PLAYER_VOLUME_ICON_MUTED,
+} PlayerVolumeIconKind;
+
+typedef enum {
     PLAYER_TILE_FOCUS_ICON_EXPAND,
     PLAYER_TILE_FOCUS_ICON_RESTORE,
 } PlayerTileFocusIconKind;
@@ -29,4 +34,5 @@ GtkWidget *player_trash_icon_new(void);
 GtkWidget *player_window_icon_new(PlayerWindowIconKind kind);
 GtkWidget *player_layout_icon_new(PlayerLayoutIconKind kind);
 GtkWidget *player_chat_icon_new(PlayerChatIconKind kind);
+GtkWidget *player_volume_icon_new(PlayerVolumeIconKind kind);
 GtkWidget *player_tile_focus_icon_new(PlayerTileFocusIconKind kind);

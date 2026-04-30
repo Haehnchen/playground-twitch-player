@@ -12,6 +12,7 @@ struct _PlayerSession {
     char *channel;
     char *url;
     double volume;
+    gboolean muted;
     gboolean playing;
 };
 
@@ -137,6 +138,26 @@ void player_session_set_volume(PlayerSession *session, double volume)
 
     session->volume = volume;
     check_mpv(mpv_set_property(session->mpv, "volume", MPV_FORMAT_DOUBLE, &volume), "set volume");
+}
+
+gboolean player_session_get_muted(PlayerSession *session)
+{
+    return session != NULL ? session->muted : FALSE;
+}
+
+void player_session_set_muted(PlayerSession *session, gboolean muted)
+{
+    if (!player_session_is_ready(session)) {
+        return;
+    }
+
+    session->muted = muted;
+    check_mpv(mpv_set_property_string(session->mpv, "mute", muted ? "yes" : "no"), muted ? "mute" : "unmute");
+}
+
+void player_session_toggle_muted(PlayerSession *session)
+{
+    player_session_set_muted(session, !player_session_get_muted(session));
 }
 
 void player_session_set_wakeup_callback(PlayerSession *session, void (*callback)(void *), void *data)

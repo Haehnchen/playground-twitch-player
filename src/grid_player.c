@@ -32,6 +32,7 @@ typedef struct {
     GtkWidget *empty_label;
     GtkWidget *focus_button;
     GtkWidget *stream_info_button;
+    GtkWidget *mute_button;
     GtkWidget *volume_scale;
     PlayerSession *session;
     mpv_render_context *mpv_gl;
@@ -79,6 +80,7 @@ struct _GridAppState {
 static gboolean create_mpv_render_context(StreamTile *tile);
 static void schedule_footer_hide(GridAppState *state);
 static void show_tile_overlay(StreamTile *tile);
+static void update_tile_mute_button(StreamTile *tile);
 
 static void set_tile_status(StreamTile *tile, const char *message)
 {
@@ -309,6 +311,10 @@ static void update_tile_empty_state(StreamTile *tile)
     if (tile->stream_info_button != NULL) {
         gtk_widget_set_sensitive(tile->stream_info_button, has_stream && player_session_is_ready(tile->session));
     }
+    if (tile->mute_button != NULL) {
+        gtk_widget_set_sensitive(tile->mute_button, has_stream && player_session_is_ready(tile->session));
+        update_tile_mute_button(tile);
+    }
     if (tile->volume_scale != NULL) {
         gtk_widget_set_sensitive(tile->volume_scale, has_stream && player_session_is_ready(tile->session));
     }
@@ -414,6 +420,25 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
     player_volume_sync_session_from_range(tile->session, range);
 }
 
+static void update_tile_mute_button(StreamTile *tile)
+{
+    if (tile->mute_button == NULL) {
+        return;
+    }
+
+    gboolean muted = player_session_get_muted(tile->session);
+    gtk_button_set_child(
+        GTK_BUTTON(tile->mute_button),
+        player_volume_icon_new(muted ? PLAYER_VOLUME_ICON_MUTED : PLAYER_VOLUME_ICON_SOUND)
+    );
+}
+
+static void set_tile_mute(StreamTile *tile, gboolean muted)
+{
+    player_session_set_muted(tile->session, muted);
+    update_tile_mute_button(tile);
+}
+
 static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
 {
     GtkWidget *button = gtk_button_new();
@@ -429,6 +454,16 @@ static void on_tile_close_clicked(GtkButton *button, gpointer user_data)
     StreamTile *tile = user_data;
 
     stop_tile_stream(tile);
+    show_tile_overlay(tile);
+}
+
+static void on_mute_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    StreamTile *tile = user_data;
+
+    player_session_toggle_muted(tile->session);
+    update_tile_mute_button(tile);
     show_tile_overlay(tile);
 }
 
@@ -872,6 +907,10 @@ static gboolean on_tile_scroll(GtkEventControllerScroll *controller, double dx, 
         return GDK_EVENT_PROPAGATE;
     }
 
+    if (player_session_get_muted(tile->session)) {
+        set_tile_mute(tile, FALSE);
+    }
+
     show_tile_overlay(tile);
 
     return GDK_EVENT_STOP;
@@ -1033,6 +1072,14 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_set_size_request(tile->volume_scale, 120, -1);
     g_signal_connect(tile->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), tile);
 
+    tile->mute_button = create_overlay_button(
+        player_volume_icon_new(
+            player_session_get_muted(tile->session) ? PLAYER_VOLUME_ICON_MUTED : PLAYER_VOLUME_ICON_SOUND
+        ),
+        NULL
+    );
+    g_signal_connect(tile->mute_button, "clicked", G_CALLBACK(on_mute_clicked), tile);
+
     tile->focus_button = create_overlay_button(player_tile_focus_icon_new(PLAYER_TILE_FOCUS_ICON_EXPAND), "Focus tile");
     g_signal_connect(tile->focus_button, "clicked", G_CALLBACK(on_tile_focus_clicked), tile);
 
@@ -1042,6 +1089,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_box_append(GTK_BOX(box), tile->channel_combo);
     gtk_box_append(GTK_BOX(box), tile->close_button);
     gtk_box_append(GTK_BOX(box), spacer);
+    gtk_box_append(GTK_BOX(box), tile->mute_button);
     gtk_box_append(GTK_BOX(box), tile->volume_scale);
     gtk_box_append(GTK_BOX(box), tile->focus_button);
     gtk_box_append(GTK_BOX(box), tile->stream_info_button);
@@ -1321,6 +1369,7 @@ void grid_player_free(GridPlayer *player)
         tile->close_button = NULL;
         tile->empty_label = NULL;
         tile->stream_info_button = NULL;
+        tile->mute_button = NULL;
         tile->volume_scale = NULL;
     }
 
