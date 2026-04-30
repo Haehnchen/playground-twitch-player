@@ -1,7 +1,7 @@
 # Twitch Player
 
-A lightweight desktop app for watching Twitch streams with chat, fullscreen
-controls, and an optional 2x2 stream grid.
+A lightweight mpv-based desktop app for watching Twitch streams with Twitch account login,
+chat, fullscreen controls, and an optional 2x2 stream grid.
 
 <p align="center">
   <img src="docs/icon.webp" alt="Twitch Player icon" width="46">
@@ -9,8 +9,6 @@ controls, and an optional 2x2 stream grid.
   <img src="docs/screenshot.webp" alt="Twitch Player GTK interface" width="720">
 </p>
 
-Use it for focused Twitch viewing on Linux, whether you want one channel with
-chat beside it or several channels visible at once.
 
 ## Streams
 
@@ -25,7 +23,7 @@ in the top-left overlay.
 
 Open Settings > Channels and use "Connect Twitch" to authorize the app. The app
 uses Twitch's device-code flow and stores the resulting user token in the
-settings file. A client secret is not used by this desktop app.
+settings file.
 
 ## Dependencies
 
@@ -44,15 +42,13 @@ Check the local machine:
 ## Build
 
 ```bash
-meson setup build
-meson compile -C build
+make build
 ```
 
-Or use the Makefile wrapper:
+Or build and copy to `~/.local/bin`
 
 ```bash
-make setup
-make build
+make install
 ```
 
 ## Run
