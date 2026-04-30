@@ -121,6 +121,14 @@ static void *get_proc_address(void *ctx, const char *name)
     return (void *)eglGetProcAddress(name);
 }
 
+static void configure_gl_area_for_opengl(GtkGLArea *area)
+{
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    gtk_gl_area_set_use_es(area, FALSE);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    gtk_gl_area_set_auto_render(area, FALSE);
+}
+
 static gboolean queue_mpv_render(gpointer user_data)
 {
     StreamTile *tile = user_data;
@@ -1115,7 +1123,7 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
 
     tile->gl_area = gtk_gl_area_new();
     g_object_add_weak_pointer(G_OBJECT(tile->gl_area), (gpointer *)&tile->gl_area);
-    gtk_gl_area_set_auto_render(GTK_GL_AREA(tile->gl_area), FALSE);
+    configure_gl_area_for_opengl(GTK_GL_AREA(tile->gl_area));
     gtk_widget_set_hexpand(tile->gl_area, TRUE);
     gtk_widget_set_vexpand(tile->gl_area, TRUE);
     gtk_overlay_set_child(GTK_OVERLAY(tile->overlay), tile->gl_area);
