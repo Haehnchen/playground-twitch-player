@@ -1145,7 +1145,7 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
     gtk_widget_set_visible(tile->footer, FALSE);
     gtk_overlay_add_overlay(GTK_OVERLAY(tile->overlay), tile->footer);
     tile->channel_switcher = channel_switcher_overlay_new(
-        GTK_OVERLAY(tile->overlay),
+        GTK_OVERLAY(state->root_overlay),
         state->settings,
         activate_tile_context_channel,
         tile,

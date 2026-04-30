@@ -12,14 +12,17 @@
 #define PANEL_EXTRA_VERTICAL_SPACE 36
 #define LIVE_CHANNELS_CACHE_SECONDS 10
 #define PANEL_MIN_WIDTH 430
-#define PANEL_MAX_WIDTH 1200
-#define PANEL_MIN_HEIGHT 150
-#define PANEL_MAX_HEIGHT 520
+#define PANEL_MAX_WIDTH 1300
+#define PANEL_MAX_COLUMNS 4
+#define PANEL_HORIZONTAL_PADDING 16
+#define PANEL_SCROLLBAR_RESERVE_WIDTH 18
 #define CARD_WIDTH 226
+#define CARD_HORIZONTAL_PADDING 14
 #define CARD_SPACING 6
 #define PREVIEW_WIDTH 210
 #define PREVIEW_HEIGHT 118
 #define AVATAR_SIZE 24
+#define CARD_OUTER_WIDTH (CARD_WIDTH + CARD_HORIZONTAL_PADDING)
 
 struct _ChannelSwitcherOverlay {
     GtkOverlay *overlay;
@@ -142,16 +145,12 @@ static void install_css(void)
         "  border-radius: 4px;"
         "  min-width: 210px;"
         "  min-height: 118px;"
-        "  max-width: 210px;"
-        "  max-height: 118px;"
         "}"
         ".channel-switcher-avatar {"
         "  background: rgba(0, 0, 0, 0.55);"
         "  border-radius: 999px;"
         "  min-width: 24px;"
         "  min-height: 24px;"
-        "  max-width: 24px;"
-        "  max-height: 24px;"
         "  margin: 0;"
         "}"
         ".channel-switcher-name {"
@@ -294,16 +293,36 @@ static void clear_grid(ChannelSwitcherOverlay *switcher)
     }
 }
 
+static int calculate_panel_width(int overlay_width)
+{
+    int available_width = MAX(1, overlay_width - PANEL_MARGIN * 2);
+    int max_panel_width = MIN(PANEL_MAX_WIDTH, available_width);
+    int max_grid_width = MAX(1, max_panel_width - PANEL_HORIZONTAL_PADDING - PANEL_SCROLLBAR_RESERVE_WIDTH);
+    guint columns = MIN(
+        (guint)PANEL_MAX_COLUMNS,
+        MAX(1, (guint)((max_grid_width + CARD_SPACING) / (CARD_OUTER_WIDTH + CARD_SPACING)))
+    );
+    int fitted_grid_width = (int)(columns * CARD_OUTER_WIDTH + (columns - 1) * CARD_SPACING);
+    int fitted_width = fitted_grid_width + PANEL_HORIZONTAL_PADDING + PANEL_SCROLLBAR_RESERVE_WIDTH;
+
+    return CLAMP(fitted_width, MIN(PANEL_MIN_WIDTH, available_width), max_panel_width);
+}
+
 static guint get_grid_columns(ChannelSwitcherOverlay *switcher)
 {
-    int panel_width = switcher->panel != NULL ? gtk_widget_get_width(switcher->panel) : 0;
-    if (panel_width <= 1 && switcher->overlay != NULL) {
-        int overlay_width = gtk_widget_get_width(GTK_WIDGET(switcher->overlay));
-        panel_width = CLAMP(overlay_width - PANEL_MARGIN * 2, PANEL_MIN_WIDTH, PANEL_MAX_WIDTH);
+    int panel_width = 0;
+
+    if (switcher->overlay != NULL) {
+        panel_width = calculate_panel_width(gtk_widget_get_width(GTK_WIDGET(switcher->overlay)));
+    } else if (switcher->panel != NULL) {
+        panel_width = gtk_widget_get_width(switcher->panel);
     }
 
-    int content_width = MAX(1, panel_width - 16);
-    return MAX(1, (guint)((content_width + CARD_SPACING) / (CARD_WIDTH + CARD_SPACING)));
+    int grid_width = MAX(1, panel_width - PANEL_HORIZONTAL_PADDING - PANEL_SCROLLBAR_RESERVE_WIDTH);
+    return MIN(
+        (guint)PANEL_MAX_COLUMNS,
+        MAX(1, (guint)((grid_width + CARD_SPACING) / (CARD_OUTER_WIDTH + CARD_SPACING)))
+    );
 }
 
 static void show_status(ChannelSwitcherOverlay *switcher, const char *message)
@@ -344,16 +363,19 @@ static void position_panel(ChannelSwitcherOverlay *switcher)
     int top_margin = root_y < PANEL_TOP_SAFE_MARGIN
         ? PANEL_TOP_SAFE_MARGIN - (int)root_y
         : PANEL_MARGIN;
-    int panel_width = CLAMP(overlay_width - PANEL_MARGIN * 2, PANEL_MIN_WIDTH, PANEL_MAX_WIDTH);
-    int scroller_height = CLAMP(
-        overlay_height - top_margin - PANEL_BOTTOM_MARGIN - PANEL_EXTRA_VERTICAL_SPACE,
-        PANEL_MIN_HEIGHT,
-        PANEL_MAX_HEIGHT
+    int panel_width = calculate_panel_width(overlay_width);
+    int grid_width = MAX(1, panel_width - PANEL_HORIZONTAL_PADDING - PANEL_SCROLLBAR_RESERVE_WIDTH);
+    int scroller_height = MAX(
+        1,
+        overlay_height - top_margin - PANEL_BOTTOM_MARGIN - PANEL_EXTRA_VERTICAL_SPACE
     );
 
     gtk_widget_set_size_request(switcher->panel, panel_width, -1);
+    gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(switcher->scroller), grid_width);
+    gtk_scrolled_window_set_max_content_width(GTK_SCROLLED_WINDOW(switcher->scroller), grid_width);
     gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(switcher->scroller), scroller_height);
     gtk_widget_set_margin_start(switcher->panel, PANEL_MARGIN);
+    gtk_widget_set_margin_end(switcher->panel, PANEL_MARGIN);
     gtk_widget_set_margin_top(switcher->panel, top_margin);
 }
 
@@ -837,8 +859,9 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     switcher->panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     g_object_add_weak_pointer(G_OBJECT(switcher->panel), (gpointer *)&switcher->panel);
     gtk_widget_add_css_class(switcher->panel, "channel-switcher-panel");
-    gtk_widget_set_halign(switcher->panel, GTK_ALIGN_START);
+    gtk_widget_set_halign(switcher->panel, GTK_ALIGN_CENTER);
     gtk_widget_set_valign(switcher->panel, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(switcher->panel, FALSE);
     gtk_widget_set_visible(switcher->panel, FALSE);
 
     GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -870,6 +893,7 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     g_object_add_weak_pointer(G_OBJECT(switcher->scroller), (gpointer *)&switcher->scroller);
     gtk_widget_add_css_class(switcher->scroller, "channel-switcher-scroller");
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(switcher->scroller), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(switcher->scroller), TRUE);
     gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(switcher->scroller), TRUE);
 
     switcher->grid = gtk_grid_new();

@@ -88,6 +88,7 @@ static void init_streams(SinglePlayer *state, const char *target);
 static void free_streams(SinglePlayer *state);
 static void update_stream_combo_label(SinglePlayer *state);
 static void show_footer(SinglePlayer *state);
+static gboolean target_matches_stream_values(const char *target, const char *target_channel, const char *label, const char *channel, const char *url);
 
 static void update_empty_button(SinglePlayer *state)
 {
@@ -433,6 +434,40 @@ static void load_stream_url(SinglePlayer *state, const char *url, const char *la
     player_session_load_stream(state->session, url, label, channel);
 }
 
+static void set_active_stream_from_channel(SinglePlayer *state, const AppSettingsChannel *channel)
+{
+    if (channel == NULL) {
+        return;
+    }
+
+    for (guint i = 0; i < state->stream_count; i++) {
+        if (target_matches_stream_values(
+                channel->url,
+                channel->channel,
+                state->streams[i].label,
+                state->streams[i].channel,
+                state->streams[i].url
+            )) {
+            state->active_stream = i;
+            return;
+        }
+    }
+
+    const char *label = channel->label != NULL && channel->label[0] != '\0'
+        ? channel->label
+        : channel->channel != NULL && channel->channel[0] != '\0'
+            ? channel->channel
+            : channel->url;
+    guint index = state->stream_count;
+
+    state->streams = g_renew(StreamEntry, state->streams, state->stream_count + 1);
+    state->streams[index].label = g_strdup(label);
+    state->streams[index].channel = g_strdup(channel->channel);
+    state->streams[index].url = g_strdup(channel->url);
+    state->stream_count++;
+    state->active_stream = index;
+}
+
 static void activate_context_channel(const AppSettingsChannel *channel, gpointer user_data)
 {
     SinglePlayer *state = user_data;
@@ -441,15 +476,7 @@ static void activate_context_channel(const AppSettingsChannel *channel, gpointer
         return;
     }
 
-    for (guint i = 0; i < state->stream_count; i++) {
-        if (state->streams[i].channel != NULL &&
-            channel->channel != NULL &&
-            g_ascii_strcasecmp(state->streams[i].channel, channel->channel) == 0) {
-            state->active_stream = i;
-            break;
-        }
-    }
-
+    set_active_stream_from_channel(state, channel);
     load_stream_url(state, channel->url, channel->label, channel->channel);
     show_footer(state);
 }
