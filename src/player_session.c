@@ -4,7 +4,7 @@
 
 #include <locale.h>
 
-#define PLAYER_SESSION_HWDEC "auto-safe"
+#include "player_defaults.h"
 
 struct _PlayerSession {
     mpv_handle *mpv;
@@ -35,8 +35,22 @@ static gboolean init_mpv(PlayerSession *session)
         return FALSE;
     }
 
+    check_mpv(mpv_set_option_string(session->mpv, "terminal", "no"), "set terminal");
+    check_mpv(mpv_set_option_string(session->mpv, "config", "no"), "set config");
     check_mpv(mpv_set_option_string(session->mpv, "vo", "libmpv"), "set vo");
-    check_mpv(mpv_set_option_string(session->mpv, "hwdec", "auto-safe"), "set hwdec");
+    check_mpv(mpv_set_option_string(session->mpv, "ytdl", "yes"), "set ytdl");
+    check_mpv(mpv_set_option_string(session->mpv, "hwdec", PLAYER_DEFAULT_MPV_HWDEC), "set hwdec");
+    check_mpv(mpv_set_option_string(session->mpv, "cache", PLAYER_DEFAULT_MPV_CACHE), "set cache");
+    check_mpv(mpv_set_option_string(session->mpv, "cache-pause-initial", PLAYER_DEFAULT_MPV_CACHE_PAUSE_INITIAL), "set cache pause initial");
+    check_mpv(mpv_set_option_string(session->mpv, "cache-pause-wait", PLAYER_DEFAULT_MPV_CACHE_PAUSE_WAIT), "set cache pause wait");
+    check_mpv(mpv_set_option_string(session->mpv, "cache-secs", PLAYER_DEFAULT_MPV_CACHE_SECS), "set cache seconds");
+    check_mpv(mpv_set_option_string(session->mpv, "demuxer-max-bytes", PLAYER_DEFAULT_MPV_DEMUXER_MAX_BYTES), "set demuxer max bytes");
+    check_mpv(mpv_set_option_string(session->mpv, "demuxer-readahead-secs", PLAYER_DEFAULT_MPV_DEMUXER_READAHEAD_SECS), "set demuxer readahead");
+    check_mpv(mpv_set_option_string(session->mpv, "stream-buffer-size", PLAYER_DEFAULT_MPV_STREAM_BUFFER_SIZE), "set stream buffer size");
+    check_mpv(mpv_set_option_string(session->mpv, "video-sync", PLAYER_DEFAULT_MPV_VIDEO_SYNC), "set video sync");
+    check_mpv(mpv_set_option_string(session->mpv, "video-sync-max-audio-change", PLAYER_DEFAULT_MPV_VIDEO_SYNC_MAX_AUDIO_CHANGE), "set video sync audio change");
+    check_mpv(mpv_set_option_string(session->mpv, "interpolation", PLAYER_DEFAULT_MPV_INTERPOLATION), "set interpolation");
+    check_mpv(mpv_set_option_string(session->mpv, "volume", "80"), "set volume");
 
     int status = mpv_initialize(session->mpv);
     if (status < 0) {
@@ -52,7 +66,7 @@ static gboolean init_mpv(PlayerSession *session)
 PlayerSession *player_session_new(void)
 {
     PlayerSession *session = g_new0(PlayerSession, 1);
-    session->volume = 100.0;
+    session->volume = 80.0;
     init_mpv(session);
     return session;
 }
@@ -113,7 +127,7 @@ char *player_session_dup_url(PlayerSession *session)
 
 double player_session_get_volume(PlayerSession *session)
 {
-    return session != NULL ? session->volume : 100.0;
+    return session != NULL ? session->volume : 80.0;
 }
 
 void player_session_set_volume(PlayerSession *session, double volume)
@@ -153,7 +167,7 @@ void player_session_set_hwdec_enabled(PlayerSession *session, gboolean enabled)
     }
 
     check_mpv(
-        mpv_set_property_string(session->mpv, "hwdec", enabled ? PLAYER_SESSION_HWDEC : "no"),
+        mpv_set_property_string(session->mpv, "hwdec", enabled ? PLAYER_DEFAULT_MPV_HWDEC : "no"),
         "set hwdec"
     );
 }

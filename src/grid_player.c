@@ -44,7 +44,6 @@ typedef struct {
     gint event_queued;
     guint render_warmup_source;
     int render_warmup_frames;
-    gint64 last_video_reenable_us;
     gboolean owns_session;
 } StreamTile;
 
@@ -175,16 +174,6 @@ static void on_mpv_render_update(void *ctx)
     }
 }
 
-static void recover_tile_video_after_reconfig(StreamTile *tile)
-{
-    gint64 now = g_get_monotonic_time();
-    if (now - tile->last_video_reenable_us > 2 * G_USEC_PER_SEC) {
-        tile->last_video_reenable_us = now;
-        player_session_reenable_video(tile->session);
-    }
-    start_render_warmup(tile);
-}
-
 static gboolean process_mpv_events(gpointer user_data)
 {
     StreamTile *tile = user_data;
@@ -220,7 +209,10 @@ static gboolean process_mpv_events(gpointer user_data)
             break;
         }
         case MPV_EVENT_VIDEO_RECONFIG:
-            recover_tile_video_after_reconfig(tile);
+            /* Twitch ad transitions can reconfigure the video stream while mpv
+             * has no fresh frame queued yet. Keep polling the renderer without
+             * toggling track selection, which can leave some streams black. */
+            start_render_warmup(tile);
             break;
         case MPV_EVENT_LOG_MESSAGE: {
             mpv_event_log_message *log = event->data;

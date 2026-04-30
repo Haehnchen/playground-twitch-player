@@ -61,7 +61,6 @@ struct _SinglePlayer {
     gint event_queued;
     guint render_warmup_source;
     int render_warmup_frames;
-    gint64 last_video_reenable_us;
     guint active_stream;
     gboolean chat_visible;
     guint footer_hide_source;
@@ -353,16 +352,6 @@ static void on_mpv_render_update(void *ctx)
     }
 }
 
-static void recover_video_after_reconfig(SinglePlayer *state)
-{
-    gint64 now = g_get_monotonic_time();
-    if (now - state->last_video_reenable_us > 2 * G_USEC_PER_SEC) {
-        state->last_video_reenable_us = now;
-        player_session_reenable_video(state->session);
-    }
-    start_render_warmup(state);
-}
-
 static gboolean process_mpv_events(gpointer user_data)
 {
     SinglePlayer *state = user_data;
@@ -404,7 +393,10 @@ static gboolean process_mpv_events(gpointer user_data)
             break;
         }
         case MPV_EVENT_VIDEO_RECONFIG:
-            recover_video_after_reconfig(state);
+            /* Twitch ad transitions can reconfigure the video stream while mpv
+             * has no fresh frame queued yet. Keep polling the renderer without
+             * toggling track selection, which can leave some streams black. */
+            start_render_warmup(state);
             break;
         case MPV_EVENT_LOG_MESSAGE: {
             mpv_event_log_message *log = event->data;
