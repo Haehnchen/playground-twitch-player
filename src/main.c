@@ -16,6 +16,7 @@
 #define APP_ID "local.twitchplayer"
 #define APP_ICON_RESOURCE_PATH "/local/twitch-player/icons/hicolor/scalable/apps/local.twitch-player.svg"
 #define APP_ICON_RESOURCE_THEME_PATH "/local/twitch-player/icons"
+#define APP_DEFAULT_GSK_RENDERER "gl"
 
 #define OVERLAY_HIDE_DELAY_MS 1800
 #define MAXIMIZE_RESTORE_ATTEMPTS 12
@@ -69,6 +70,13 @@ typedef struct {
 static void set_layout_mode(AppState *state, ContentMode mode);
 static void show_window_overlay(AppState *state);
 static void show_settings_window(AppState *state, SettingsWindowPage initial_page);
+
+static void configure_rendering_defaults(void)
+{
+    /* Keep GTK on its GL renderer so it does not mix Vulkan UI rendering with
+     * the libmpv OpenGL contexts used by the video grid on NVIDIA/Wayland. */
+    g_setenv("GSK_RENDERER", APP_DEFAULT_GSK_RENDERER, FALSE);
+}
 
 static void remove_source_if_active(guint *source_id)
 {
@@ -1131,6 +1139,7 @@ int main(int argc, char **argv)
         .start_in_grid = start_in_grid,
     };
 
+    configure_rendering_defaults();
     g_set_prgname(APP_ID);
     g_set_application_name("Twitch Player");
     write_user_desktop_identity(argv[0]);

@@ -301,11 +301,8 @@ static void *get_proc_address(void *ctx, const char *name)
     return (void *)eglGetProcAddress(name);
 }
 
-static void configure_gl_area_for_opengl(GtkGLArea *area)
+static void configure_gl_area(GtkGLArea *area)
 {
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    gtk_gl_area_set_use_es(area, FALSE);
-    G_GNUC_END_IGNORE_DEPRECATIONS
     gtk_gl_area_set_auto_render(area, FALSE);
 }
 
@@ -1237,7 +1234,7 @@ SinglePlayer *single_player_new(
 
     state->gl_area = gtk_gl_area_new();
     g_object_add_weak_pointer(G_OBJECT(state->gl_area), (gpointer *)&state->gl_area);
-    configure_gl_area_for_opengl(GTK_GL_AREA(state->gl_area));
+    configure_gl_area(GTK_GL_AREA(state->gl_area));
     gtk_widget_set_hexpand(state->gl_area, TRUE);
     gtk_widget_set_vexpand(state->gl_area, TRUE);
 
