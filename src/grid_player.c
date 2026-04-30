@@ -515,79 +515,18 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
     show_tile_overlay(tile);
 }
 
-static void on_channel_menu_clicked(GtkButton *button, gpointer user_data)
+static void on_channel_button_clicked(GtkButton *button, gpointer user_data)
 {
+    (void)button;
     StreamTile *tile = user_data;
-    gpointer index_data = g_object_get_data(G_OBJECT(button), "channel-index");
-    guint index = GPOINTER_TO_UINT(index_data);
-    const AppSettingsChannel *channel = app_settings_get_channel(tile->app->settings, index);
 
-    set_tile_channel(tile, channel);
-
-    GtkPopover *popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(tile->channel_combo));
-    if (popover != NULL) {
-        gtk_popover_popdown(popover);
-    }
-
+    channel_switcher_overlay_show_at(tile->channel_switcher, 0, 0);
     show_tile_overlay(tile);
-}
-
-static GtkWidget *create_channel_menu(StreamTile *tile)
-{
-    GtkWidget *menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_add_css_class(menu, "channel-menu");
-    gtk_widget_set_size_request(menu, 170, -1);
-
-    guint channel_count = app_settings_get_channel_count(tile->app->settings);
-    if (channel_count == 0) {
-        GtkWidget *item = gtk_button_new_with_label("No channels");
-        gtk_widget_add_css_class(item, "channel-menu-item");
-        gtk_widget_set_sensitive(item, FALSE);
-        gtk_box_append(GTK_BOX(menu), item);
-        return menu;
-    }
-
-    for (guint i = 0; i < channel_count; i++) {
-        const AppSettingsChannel *channel = app_settings_get_channel(tile->app->settings, i);
-        GtkWidget *item = gtk_button_new();
-        GtkWidget *item_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        GtkWidget *item_label = gtk_label_new(channel != NULL ? channel->label : "");
-
-        gtk_label_set_xalign(GTK_LABEL(item_label), 0.0);
-        gtk_widget_set_halign(item_label, GTK_ALIGN_START);
-        gtk_widget_set_hexpand(item_label, TRUE);
-        gtk_box_append(GTK_BOX(item_content), item_label);
-        gtk_button_set_child(GTK_BUTTON(item), item_content);
-        gtk_widget_add_css_class(item, "channel-menu-item");
-        gtk_widget_set_halign(item, GTK_ALIGN_FILL);
-        gtk_widget_set_hexpand(item, TRUE);
-        g_object_set_data(G_OBJECT(item), "channel-index", GUINT_TO_POINTER(i));
-        g_signal_connect(item, "clicked", G_CALLBACK(on_channel_menu_clicked), tile);
-        gtk_box_append(GTK_BOX(menu), item);
-    }
-
-    return menu;
-}
-
-static void rebuild_tile_channel_popover(StreamTile *tile)
-{
-    GtkWidget *channel_popover = gtk_popover_new();
-    gtk_widget_add_css_class(channel_popover, "channel-popover");
-    gtk_popover_set_position(GTK_POPOVER(channel_popover), GTK_POS_TOP);
-    gtk_popover_set_has_arrow(GTK_POPOVER(channel_popover), FALSE);
-    gtk_popover_set_child(GTK_POPOVER(channel_popover), create_channel_menu(tile));
-    gtk_menu_button_set_popover(GTK_MENU_BUTTON(tile->channel_combo), channel_popover);
-    gtk_widget_set_sensitive(tile->channel_combo, app_settings_get_channel_count(tile->app->settings) > 0);
 }
 
 static gboolean is_channel_menu_open(StreamTile *tile)
 {
-    if (tile->channel_combo == NULL) {
-        return FALSE;
-    }
-
-    GtkPopover *popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(tile->channel_combo));
-    return popover != NULL && gtk_widget_get_mapped(GTK_WIDGET(popover));
+    return channel_switcher_overlay_is_visible(tile->channel_switcher);
 }
 
 static gboolean hide_footers(gpointer user_data)
@@ -1080,20 +1019,17 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_add_css_class(box, "tile-footer");
 
-    tile->channel_combo = gtk_menu_button_new();
+    tile->channel_combo = gtk_button_new();
     gtk_widget_add_css_class(tile->channel_combo, "channel-dropdown");
     tile->channel_label = gtk_label_new("");
     gtk_widget_add_css_class(tile->channel_label, "channel-button-label");
     gtk_widget_set_halign(tile->channel_label, GTK_ALIGN_START);
     gtk_label_set_xalign(GTK_LABEL(tile->channel_label), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(tile->channel_label), PANGO_ELLIPSIZE_END);
-    gtk_menu_button_set_child(GTK_MENU_BUTTON(tile->channel_combo), tile->channel_label);
-    gtk_menu_button_set_direction(GTK_MENU_BUTTON(tile->channel_combo), GTK_ARROW_UP);
-    gtk_menu_button_set_always_show_arrow(GTK_MENU_BUTTON(tile->channel_combo), FALSE);
+    gtk_button_set_child(GTK_BUTTON(tile->channel_combo), tile->channel_label);
     gtk_widget_set_size_request(tile->channel_combo, 170, -1);
     gtk_widget_set_hexpand(tile->channel_combo, FALSE);
-
-    rebuild_tile_channel_popover(tile);
+    g_signal_connect(tile->channel_combo, "clicked", G_CALLBACK(on_channel_button_clicked), tile);
 
     tile->close_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE), "Clear slot");
     gtk_widget_add_css_class(tile->close_button, "tile-close-button");
@@ -1600,9 +1536,6 @@ void grid_player_set_settings(GridPlayer *player, AppSettings *settings)
 
     player->settings = settings;
     for (guint i = 0; i < MAX_TILES; i++) {
-        if (player->tiles[i].channel_combo != NULL) {
-            rebuild_tile_channel_popover(&player->tiles[i]);
-        }
         channel_switcher_overlay_set_settings(player->tiles[i].channel_switcher, settings);
     }
 }

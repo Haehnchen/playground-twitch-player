@@ -86,7 +86,6 @@ typedef struct {
 
 static void init_streams(SinglePlayer *state, const char *target);
 static void free_streams(SinglePlayer *state);
-static void rebuild_stream_menu(SinglePlayer *state);
 static void update_stream_combo_label(SinglePlayer *state);
 static void show_footer(SinglePlayer *state);
 
@@ -499,23 +498,13 @@ static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
     return button;
 }
 
-static gboolean is_stream_menu_open(SinglePlayer *state)
-{
-    if (state->stream_combo == NULL) {
-        return FALSE;
-    }
-
-    GtkPopover *popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(state->stream_combo));
-    return popover != NULL && gtk_widget_get_mapped(GTK_WIDGET(popover));
-}
-
 static gboolean hide_footer(gpointer user_data)
 {
     SinglePlayer *state = user_data;
 
     state->footer_hide_source = 0;
 
-    if (is_stream_menu_open(state)) {
+    if (channel_switcher_overlay_is_visible(state->channel_switcher)) {
         schedule_footer_hide(state);
         return G_SOURCE_REMOVE;
     }
@@ -785,23 +774,13 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
     show_footer(state);
 }
 
-static void on_stream_menu_clicked(GtkButton *button, gpointer user_data)
+static void on_stream_button_clicked(GtkButton *button, gpointer user_data)
 {
+    (void)button;
     SinglePlayer *state = user_data;
-    gpointer index_data = g_object_get_data(G_OBJECT(button), "stream-index");
 
-    state->active_stream = GPOINTER_TO_UINT(index_data);
-    GtkWidget *child = gtk_menu_button_get_child(GTK_MENU_BUTTON(state->stream_combo));
-    if (GTK_IS_LABEL(child)) {
-        gtk_label_set_text(GTK_LABEL(child), state->streams[state->active_stream].label);
-    }
-
-    GtkPopover *popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(state->stream_combo));
-    if (popover != NULL) {
-        gtk_popover_popdown(popover);
-    }
-
-    play_selected_stream(state);
+    channel_switcher_overlay_show_at(state->channel_switcher, 0, 0);
+    show_footer(state);
 }
 
 static void update_stream_combo_label(SinglePlayer *state)
@@ -810,7 +789,7 @@ static void update_stream_combo_label(SinglePlayer *state)
         return;
     }
 
-    GtkWidget *child = gtk_menu_button_get_child(GTK_MENU_BUTTON(state->stream_combo));
+    GtkWidget *child = gtk_button_get_child(GTK_BUTTON(state->stream_combo));
     if (!GTK_IS_LABEL(child)) {
         return;
     }
@@ -821,48 +800,6 @@ static void update_stream_combo_label(SinglePlayer *state)
     }
 
     gtk_label_set_text(GTK_LABEL(child), state->streams[state->active_stream].label);
-}
-
-static void rebuild_stream_menu(SinglePlayer *state)
-{
-    GtkWidget *stream_menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_add_css_class(stream_menu, "stream-menu");
-    gtk_widget_set_size_request(stream_menu, STREAM_DROPDOWN_WIDTH, -1);
-
-    for (guint i = 0; i < state->stream_count; i++) {
-        GtkWidget *item = gtk_button_new();
-        GtkWidget *item_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        GtkWidget *item_label = gtk_label_new(state->streams[i].label);
-
-        gtk_label_set_xalign(GTK_LABEL(item_label), 0.0);
-        gtk_widget_set_halign(item_label, GTK_ALIGN_START);
-        gtk_widget_set_hexpand(item_label, TRUE);
-        gtk_widget_set_halign(item_content, GTK_ALIGN_FILL);
-        gtk_widget_set_hexpand(item_content, TRUE);
-        gtk_box_append(GTK_BOX(item_content), item_label);
-        gtk_button_set_child(GTK_BUTTON(item), item_content);
-        gtk_widget_add_css_class(item, "stream-menu-item");
-        gtk_widget_set_halign(item, GTK_ALIGN_FILL);
-        gtk_widget_set_hexpand(item, TRUE);
-        gtk_widget_set_size_request(item, STREAM_DROPDOWN_WIDTH, -1);
-        gtk_widget_set_margin_start(item, 0);
-        gtk_widget_set_margin_end(item, 0);
-        gtk_widget_set_margin_top(item, 0);
-        gtk_widget_set_margin_bottom(item, 0);
-        g_object_set_data(G_OBJECT(item), "stream-index", GUINT_TO_POINTER(i));
-        g_signal_connect(item, "clicked", G_CALLBACK(on_stream_menu_clicked), state);
-        gtk_box_append(GTK_BOX(stream_menu), item);
-    }
-
-    GtkWidget *stream_popover = gtk_popover_new();
-    gtk_widget_add_css_class(stream_popover, "stream-popover");
-    gtk_widget_set_size_request(stream_popover, STREAM_DROPDOWN_WIDTH, -1);
-    gtk_popover_set_position(GTK_POPOVER(stream_popover), GTK_POS_TOP);
-    gtk_popover_set_has_arrow(GTK_POPOVER(stream_popover), FALSE);
-    gtk_popover_set_child(GTK_POPOVER(stream_popover), stream_menu);
-    gtk_menu_button_set_popover(GTK_MENU_BUTTON(state->stream_combo), stream_popover);
-    gtk_widget_set_sensitive(state->stream_combo, state->stream_count > 0);
-    update_stream_combo_label(state);
 }
 
 static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer user_data)
@@ -991,19 +928,18 @@ static GtkWidget *create_controls(SinglePlayer *state)
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_add_css_class(box, "video-footer");
 
-    state->stream_combo = gtk_menu_button_new();
+    state->stream_combo = gtk_button_new();
     gtk_widget_add_css_class(state->stream_combo, "stream-dropdown");
     GtkWidget *stream_label = gtk_label_new("");
     gtk_widget_add_css_class(stream_label, "stream-button-label");
     gtk_widget_set_halign(stream_label, GTK_ALIGN_START);
     gtk_label_set_xalign(GTK_LABEL(stream_label), 0.0);
-    gtk_menu_button_set_child(GTK_MENU_BUTTON(state->stream_combo), stream_label);
+    gtk_button_set_child(GTK_BUTTON(state->stream_combo), stream_label);
     gtk_widget_set_halign(state->stream_combo, GTK_ALIGN_START);
-    gtk_menu_button_set_direction(GTK_MENU_BUTTON(state->stream_combo), GTK_ARROW_UP);
-    gtk_menu_button_set_always_show_arrow(GTK_MENU_BUTTON(state->stream_combo), FALSE);
     gtk_widget_set_size_request(state->stream_combo, STREAM_DROPDOWN_WIDTH, -1);
     gtk_widget_set_hexpand(state->stream_combo, FALSE);
-    rebuild_stream_menu(state);
+    g_signal_connect(state->stream_combo, "clicked", G_CALLBACK(on_stream_button_clicked), state);
+    update_stream_combo_label(state);
 
     state->stream_title_label = gtk_label_new("");
     gtk_widget_add_css_class(state->stream_title_label, "stream-title-label");
@@ -1444,7 +1380,7 @@ void single_player_set_settings(SinglePlayer *player, AppSettings *settings)
     channel_switcher_overlay_set_settings(player->channel_switcher, settings);
     free_streams(player);
     init_streams(player, current_channel);
-    rebuild_stream_menu(player);
+    update_stream_combo_label(player);
     show_footer(player);
 }
 
