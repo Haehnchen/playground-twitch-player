@@ -10,6 +10,7 @@
 
 #include "single_player.h"
 
+#include "channel_switcher_overlay.h"
 #include "chat_panel.h"
 #include "player_defaults.h"
 #include "player_icons.h"
@@ -47,6 +48,7 @@ struct _SinglePlayer {
     StreamEntry *streams;
     guint stream_count;
     PlayerSession *session;
+    ChannelSwitcherOverlay *channel_switcher;
     mpv_render_context *mpv_gl;
     ChatPanel *chat_panel;
     AppSettings *settings;
@@ -85,6 +87,7 @@ static void init_streams(SinglePlayer *state, const char *target);
 static void free_streams(SinglePlayer *state);
 static void rebuild_stream_menu(SinglePlayer *state);
 static void update_stream_combo_label(SinglePlayer *state);
+static void show_footer(SinglePlayer *state);
 
 static int clamp_chat_paned_position(int position, int width)
 {
@@ -404,6 +407,27 @@ static void load_stream_url(SinglePlayer *state, const char *url, const char *la
     player_session_load_stream(state->session, url, label, channel);
 }
 
+static void activate_context_channel(const AppSettingsChannel *channel, gpointer user_data)
+{
+    SinglePlayer *state = user_data;
+
+    if (channel == NULL || channel->url == NULL || channel->url[0] == '\0') {
+        return;
+    }
+
+    for (guint i = 0; i < state->stream_count; i++) {
+        if (state->streams[i].channel != NULL &&
+            channel->channel != NULL &&
+            g_ascii_strcasecmp(state->streams[i].channel, channel->channel) == 0) {
+            state->active_stream = i;
+            break;
+        }
+    }
+
+    load_stream_url(state, channel->url, channel->label, channel->channel);
+    show_footer(state);
+}
+
 static void play_selected_stream(SinglePlayer *state)
 {
     if (!player_session_is_ready(state->session)) {
@@ -630,7 +654,11 @@ static gboolean on_video_legacy_event(GtkEventControllerLegacy *controller, GdkE
 static gboolean on_video_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer user_data)
 {
     (void)controller;
+
     SinglePlayer *state = user_data;
+    if (channel_switcher_overlay_is_visible(state->channel_switcher)) {
+        return GDK_EVENT_PROPAGATE;
+    }
 
     if (!player_volume_apply_scroll(state->volume_scale, dx, dy)) {
         return GDK_EVENT_PROPAGATE;
@@ -643,6 +671,19 @@ static gboolean on_video_scroll(GtkEventControllerScroll *controller, double dx,
     show_footer(state);
 
     return GDK_EVENT_STOP;
+}
+
+static void on_context_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data)
+{
+    (void)gesture;
+
+    if (n_press != 1) {
+        return;
+    }
+
+    SinglePlayer *state = user_data;
+    channel_switcher_overlay_show_at(state->channel_switcher, x, y);
+    show_footer(state);
 }
 
 static void set_chat_visible(SinglePlayer *state, gboolean visible)
@@ -1170,6 +1211,8 @@ static void single_player_destroy(SinglePlayer *state)
     state->mute_button = NULL;
     state->volume_scale = NULL;
     state->status_label = NULL;
+    channel_switcher_overlay_free(state->channel_switcher);
+    state->channel_switcher = NULL;
     free_streams(state);
     state->settings = NULL;
 }
@@ -1230,6 +1273,11 @@ SinglePlayer *single_player_new(
     g_signal_connect(video_click, "pressed", G_CALLBACK(on_video_pressed), state);
     gtk_widget_add_controller(state->gl_area, GTK_EVENT_CONTROLLER(video_click));
 
+    GtkGesture *context_click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(context_click), GDK_BUTTON_SECONDARY);
+    g_signal_connect(context_click, "pressed", G_CALLBACK(on_context_pressed), state);
+    gtk_widget_add_controller(state->video_overlay, GTK_EVENT_CONTROLLER(context_click));
+
     GtkEventController *video_legacy = gtk_event_controller_legacy_new();
     g_signal_connect(video_legacy, "event", G_CALLBACK(on_video_legacy_event), state);
     gtk_widget_add_controller(state->gl_area, video_legacy);
@@ -1243,6 +1291,12 @@ SinglePlayer *single_player_new(
     gtk_widget_set_halign(state->bottom_panel, GTK_ALIGN_FILL);
     gtk_widget_set_valign(state->bottom_panel, GTK_ALIGN_END);
     gtk_overlay_add_overlay(GTK_OVERLAY(state->video_overlay), state->bottom_panel);
+    state->channel_switcher = channel_switcher_overlay_new(
+        GTK_OVERLAY(state->video_overlay),
+        state->settings,
+        activate_context_channel,
+        state
+    );
     state->title_refresh_source = g_timeout_add_seconds(STREAM_TITLE_REFRESH_SECONDS, refresh_stream_title, state);
 
     GtkEventController *video_motion = gtk_event_controller_motion_new();
@@ -1325,6 +1379,10 @@ gboolean single_player_handle_key(SinglePlayer *player, guint keyval, GdkModifie
         return GDK_EVENT_PROPAGATE;
     }
 
+    if (channel_switcher_overlay_is_visible(player->channel_switcher)) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
     if (keyval != GDK_KEY_m && keyval != GDK_KEY_M) {
         return GDK_EVENT_PROPAGATE;
     }
@@ -1346,6 +1404,7 @@ void single_player_set_settings(SinglePlayer *player, AppSettings *settings)
     }
 
     player->settings = settings;
+    channel_switcher_overlay_set_settings(player->channel_switcher, settings);
     free_streams(player);
     init_streams(player, current_channel);
     rebuild_stream_menu(player);

@@ -7,6 +7,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "channel_switcher_overlay.h"
 #include "grid_player.h"
 #include "player_icons.h"
 #include "player_motion.h"
@@ -34,6 +35,7 @@ typedef struct {
     GtkWidget *stream_info_button;
     GtkWidget *mute_button;
     GtkWidget *volume_scale;
+    ChannelSwitcherOverlay *channel_switcher;
     PlayerSession *session;
     mpv_render_context *mpv_gl;
     int last_render_width;
@@ -411,6 +413,14 @@ static void set_tile_channel(StreamTile *tile, const AppSettingsChannel *channel
     }
 
     load_tile_stream(tile);
+}
+
+static void activate_tile_context_channel(const AppSettingsChannel *channel, gpointer user_data)
+{
+    StreamTile *tile = user_data;
+
+    set_tile_channel(tile, channel);
+    show_tile_overlay(tile);
 }
 
 static void on_volume_changed(GtkRange *range, gpointer user_data)
@@ -899,7 +909,11 @@ static gboolean on_video_legacy_event(GtkEventControllerLegacy *controller, GdkE
 static gboolean on_tile_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer user_data)
 {
     (void)controller;
+
     StreamTile *tile = user_data;
+    if (channel_switcher_overlay_is_visible(tile->channel_switcher)) {
+        return GDK_EVENT_PROPAGATE;
+    }
 
     if (tile->volume_scale == NULL ||
         !gtk_widget_get_sensitive(tile->volume_scale) ||
@@ -914,6 +928,19 @@ static gboolean on_tile_scroll(GtkEventControllerScroll *controller, double dx, 
     show_tile_overlay(tile);
 
     return GDK_EVENT_STOP;
+}
+
+static void on_context_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data)
+{
+    (void)gesture;
+
+    if (n_press != 1) {
+        return;
+    }
+
+    StreamTile *tile = user_data;
+    channel_switcher_overlay_show_at(tile->channel_switcher, x, y);
+    show_tile_overlay(tile);
 }
 
 static gboolean on_gl_render(GtkGLArea *area, GdkGLContext *context, gpointer user_data)
@@ -1149,11 +1176,22 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
     gtk_widget_set_valign(tile->footer, GTK_ALIGN_END);
     gtk_widget_set_visible(tile->footer, FALSE);
     gtk_overlay_add_overlay(GTK_OVERLAY(tile->overlay), tile->footer);
+    tile->channel_switcher = channel_switcher_overlay_new(
+        GTK_OVERLAY(tile->overlay),
+        state->settings,
+        activate_tile_context_channel,
+        tile
+    );
 
     GtkGesture *video_click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(video_click), GDK_BUTTON_PRIMARY);
     g_signal_connect(video_click, "pressed", G_CALLBACK(on_video_pressed), tile);
     gtk_widget_add_controller(tile->gl_area, GTK_EVENT_CONTROLLER(video_click));
+
+    GtkGesture *context_click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(context_click), GDK_BUTTON_SECONDARY);
+    g_signal_connect(context_click, "pressed", G_CALLBACK(on_context_pressed), tile);
+    gtk_widget_add_controller(tile->overlay, GTK_EVENT_CONTROLLER(context_click));
 
     GtkEventController *video_legacy = gtk_event_controller_legacy_new();
     g_signal_connect(video_legacy, "event", G_CALLBACK(on_video_legacy_event), tile);
@@ -1371,6 +1409,8 @@ void grid_player_free(GridPlayer *player)
         tile->stream_info_button = NULL;
         tile->mute_button = NULL;
         tile->volume_scale = NULL;
+        channel_switcher_overlay_free(tile->channel_switcher);
+        tile->channel_switcher = NULL;
     }
 
     for (guint i = 0; i < MAX_TILES; i++) {
@@ -1530,5 +1570,6 @@ void grid_player_set_settings(GridPlayer *player, AppSettings *settings)
         if (player->tiles[i].channel_combo != NULL) {
             rebuild_tile_channel_popover(&player->tiles[i]);
         }
+        channel_switcher_overlay_set_settings(player->tiles[i].channel_switcher, settings);
     }
 }
