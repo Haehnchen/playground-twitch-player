@@ -456,6 +456,7 @@ static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
 {
     GtkWidget *button = gtk_button_new();
     gtk_button_set_child(GTK_BUTTON(button), icon);
+    gtk_button_set_has_frame(GTK_BUTTON(button), FALSE);
     gtk_widget_add_css_class(button, "overlay-icon-button");
     gtk_widget_set_tooltip_text(button, tooltip);
     return button;
@@ -1023,7 +1024,7 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
 
 static GtkWidget *create_tile_footer(StreamTile *tile)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_add_css_class(box, "tile-footer");
 
     tile->channel_combo = gtk_button_new();
@@ -1038,7 +1039,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_set_hexpand(tile->channel_combo, FALSE);
     g_signal_connect(tile->channel_combo, "clicked", G_CALLBACK(on_channel_button_clicked), tile);
 
-    tile->close_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE), "Clear slot");
+    tile->close_button = create_overlay_button(player_trash_icon_new(), "Clear slot");
     gtk_widget_add_css_class(tile->close_button, "tile-close-button");
     g_signal_connect(tile->close_button, "clicked", G_CALLBACK(on_tile_close_clicked), tile);
 
@@ -1046,6 +1047,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_set_hexpand(spacer, TRUE);
 
     tile->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX, 1);
+    gtk_widget_add_css_class(tile->volume_scale, "volume-scale");
     gtk_range_set_value(GTK_RANGE(tile->volume_scale), player_session_get_volume(tile->session));
     gtk_scale_set_draw_value(GTK_SCALE(tile->volume_scale), FALSE);
     gtk_widget_set_size_request(tile->volume_scale, 120, -1);
@@ -1057,6 +1059,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
         ),
         NULL
     );
+    gtk_widget_add_css_class(tile->mute_button, "volume-mute-button");
     g_signal_connect(tile->mute_button, "clicked", G_CALLBACK(on_mute_clicked), tile);
 
     tile->focus_button = create_overlay_button(player_tile_focus_icon_new(PLAYER_TILE_FOCUS_ICON_EXPAND), "Focus tile");
@@ -1221,7 +1224,7 @@ static void install_css(void)
         ".tile-footer {"
         "  background: rgba(0, 0, 0, 0.62);"
         "  color: white;"
-        "  padding: 7px 9px;"
+        "  padding: 4px 6px;"
         "}"
         ".tile-footer button,"
         ".tile-footer menubutton,"
@@ -1237,30 +1240,47 @@ static void install_css(void)
         "  border-color: transparent;"
         "  outline-color: transparent;"
         "  box-shadow: none;"
+        "  min-height: 0;"
         "}"
         ".tile-footer button:hover,"
         ".tile-footer menubutton > button:hover {"
         "  background: rgba(54, 54, 54, 0.90);"
         "}"
         ".tile-footer .overlay-icon-button {"
-        "  background: rgba(0, 0, 0, 0.58);"
-        "  min-width: 30px;"
-        "  min-height: 28px;"
-        "  padding: 3px 7px;"
+        "  background: transparent;"
+        "  background-image: none;"
+        "  border: none;"
+        "  box-shadow: none;"
+        "  color: rgba(255, 255, 255, 0.88);"
+        "  min-width: 26px;"
+        "  min-height: 24px;"
+        "  padding: 4px 5px;"
         "}"
         ".tile-footer .overlay-icon-button:hover {"
-        "  background: rgba(54, 54, 54, 0.90);"
+        "  background: rgba(255, 255, 255, 0.14);"
+        "  color: white;"
+        "}"
+        ".tile-footer .volume-mute-button {"
+        "  margin-right: 0;"
+        "}"
+        ".tile-footer .volume-scale {"
+        "  margin-left: 0;"
+        "  margin-right: 0;"
+        "  padding-left: 0;"
+        "  padding-right: 0;"
         "}"
         ".channel-dropdown {"
         "  min-width: 140px;"
+        "  min-height: 24px;"
         "}"
         ".channel-dropdown,"
         ".channel-dropdown > button {"
-        "  padding-left: 10px;"
-        "  padding-right: 8px;"
+        "  padding: 2px 8px;"
+        "  min-height: 24px;"
         "}"
         ".channel-button-label {"
         "  color: white;"
+        "  font-size: 13px;"
         "}"
         ".channel-popover contents {"
         "  background: rgba(28, 28, 28, 0.98);"
@@ -1308,6 +1328,7 @@ static void install_css(void)
         "}"
         ".tile-footer scale trough {"
         "  background: rgba(255, 255, 255, 0.20);"
+        "  min-height: 3px;"
         "}"
         ".tile-footer scale highlight {"
         "  background: rgba(255, 255, 255, 0.72);"
@@ -1315,6 +1336,12 @@ static void install_css(void)
         ".tile-footer scale slider {"
         "  background: rgba(255, 255, 255, 0.95);"
         "  border-color: rgba(0, 0, 0, 0.45);"
+        "  min-width: 10px;"
+        "  min-height: 10px;"
+        "  margin-top: -4px;"
+        "  margin-bottom: -4px;"
+        "  margin-left: 0;"
+        "  margin-right: 0;"
         "}"
         ".top-overlay-controls {"
         "  margin: 6px;"

@@ -493,6 +493,7 @@ static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
 {
     GtkWidget *button = gtk_button_new();
     gtk_button_set_child(GTK_BUTTON(button), icon);
+    gtk_button_set_has_frame(GTK_BUTTON(button), FALSE);
     gtk_widget_add_css_class(button, "overlay-icon-button");
     gtk_widget_set_tooltip_text(button, tooltip);
     return button;
@@ -925,7 +926,7 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
 
 static GtkWidget *create_controls(SinglePlayer *state)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_add_css_class(box, "video-footer");
 
     state->stream_combo = gtk_button_new();
@@ -951,6 +952,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_label_set_single_line_mode(GTK_LABEL(state->stream_title_label), TRUE);
 
     state->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX, 1);
+    gtk_widget_add_css_class(state->volume_scale, "volume-scale");
     gtk_range_set_value(GTK_RANGE(state->volume_scale), player_session_get_volume(state->session));
     gtk_widget_set_size_request(state->volume_scale, 140, -1);
     gtk_scale_set_draw_value(GTK_SCALE(state->volume_scale), FALSE);
@@ -960,6 +962,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
         ),
         NULL
     );
+    gtk_widget_add_css_class(state->mute_button, "volume-mute-button");
 
     gtk_box_append(GTK_BOX(box), state->stream_combo);
     gtk_box_append(GTK_BOX(box), state->stream_title_label);
