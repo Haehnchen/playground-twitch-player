@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Twitch Player
+Comment=Watch Twitch streams with mpv and chat
+Exec=twitch-player %u
+Icon=local.twitch-player
+Terminal=false
+Categories=AudioVideo;Player;
+StartupNotify=true
+MimeType=x-scheme-handler/twitch;

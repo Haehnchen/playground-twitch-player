@@ -48,6 +48,16 @@ executable(
   install: true,
 )
 
+install_data(
+  'data/local.twitch-player.desktop',
+  install_dir: get_option('datadir') / 'applications',
+)
+
+install_data(
+  'data/icons/hicolor/scalable/apps/local.twitch-player.svg',
+  install_dir: get_option('datadir') / 'icons/hicolor/scalable/apps',
+)
+
 test_twitch_chat = executable(
   'test-twitch-chat',
   'tests/test_twitch_chat.c',

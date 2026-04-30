@@ -71,3 +71,13 @@ Start directly in grid mode with up to four channels:
 ./build/twitch-player --grid papaplatte rumathra
 ./build/twitch-player --grid papaplatte rumathra montanablack88 another_channel
 ```
+
+## AppImage
+
+Build a portable AppImage with bundled runtime libraries:
+
+```bash
+make appimage
+```
+
+The resulting file is written to `dist/`.

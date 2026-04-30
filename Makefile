@@ -1,7 +1,7 @@
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 
-.PHONY: setup build run run-grid install clean
+.PHONY: setup build run run-grid appimage install clean
 
 setup:
 	meson setup build
@@ -12,8 +12,8 @@ build:
 run:
 	./build/twitch-player
 
-run-grid:
-	./build/twitch-player --grid papaplatte rumathra
+appimage:
+	./scripts/build-appimage.sh
 
 install: build
 	install -d "$(BINDIR)"

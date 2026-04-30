@@ -1,4 +1,6 @@
 build/
+dist/
+tools/
 .cache/
 .codex
 build
