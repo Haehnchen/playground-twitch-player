@@ -307,14 +307,17 @@ static void update_tile_empty_state(StreamTile *tile)
     if (tile->empty_label != NULL) {
         gtk_widget_set_visible(tile->empty_label, !has_stream);
     }
+    /* Keep footer icon buttons sensitive even in empty slots so their hover
+     * feedback stays consistent with the focus button. Click handlers ignore
+     * stream-only actions when no stream is loaded. */
     if (tile->close_button != NULL) {
-        gtk_widget_set_sensitive(tile->close_button, has_stream);
+        gtk_widget_set_sensitive(tile->close_button, TRUE);
     }
     if (tile->stream_info_button != NULL) {
-        gtk_widget_set_sensitive(tile->stream_info_button, has_stream && player_session_is_ready(tile->session));
+        gtk_widget_set_sensitive(tile->stream_info_button, TRUE);
     }
     if (tile->mute_button != NULL) {
-        gtk_widget_set_sensitive(tile->mute_button, has_stream && player_session_is_ready(tile->session));
+        gtk_widget_set_sensitive(tile->mute_button, TRUE);
         update_tile_mute_button(tile);
     }
     if (tile->volume_scale != NULL) {
@@ -480,6 +483,10 @@ static void on_mute_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
     StreamTile *tile = user_data;
+
+    if (tile->url == NULL || tile->url[0] == '\0') {
+        return;
+    }
 
     player_session_toggle_muted(tile->session);
     update_tile_mute_button(tile);
@@ -1027,7 +1034,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_label_set_xalign(GTK_LABEL(tile->channel_label), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(tile->channel_label), PANGO_ELLIPSIZE_END);
     gtk_button_set_child(GTK_BUTTON(tile->channel_combo), tile->channel_label);
-    gtk_widget_set_size_request(tile->channel_combo, 170, -1);
+    gtk_widget_set_size_request(tile->channel_combo, 140, -1);
     gtk_widget_set_hexpand(tile->channel_combo, FALSE);
     g_signal_connect(tile->channel_combo, "clicked", G_CALLBACK(on_channel_button_clicked), tile);
 
@@ -1235,9 +1242,19 @@ static void install_css(void)
         ".tile-footer menubutton > button:hover {"
         "  background: rgba(54, 54, 54, 0.90);"
         "}"
-        ".channel-dropdown {"
-        "  min-width: 170px;"
+        ".tile-footer .overlay-icon-button {"
+        "  background: rgba(0, 0, 0, 0.58);"
+        "  min-width: 30px;"
+        "  min-height: 28px;"
+        "  padding: 3px 7px;"
         "}"
+        ".tile-footer .overlay-icon-button:hover {"
+        "  background: rgba(54, 54, 54, 0.90);"
+        "}"
+        ".channel-dropdown {"
+        "  min-width: 140px;"
+        "}"
+        ".channel-dropdown,"
         ".channel-dropdown > button {"
         "  padding-left: 10px;"
         "  padding-right: 8px;"
@@ -1288,9 +1305,6 @@ static void install_css(void)
         ".channel-menu-item:hover {"
         "  background: rgba(74, 74, 74, 0.98);"
         "  color: white;"
-        "}"
-        ".tile-close-button:hover {"
-        "  background: rgba(170, 36, 36, 0.90);"
         "}"
         ".tile-footer scale trough {"
         "  background: rgba(255, 255, 255, 0.20);"

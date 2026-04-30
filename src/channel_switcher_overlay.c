@@ -6,9 +6,9 @@
 #include "twitch_stream_info.h"
 
 #define PANEL_MARGIN 12
-#define PANEL_TOP_MARGIN 48
-#define PANEL_BOTTOM_MARGIN 110
-#define PANEL_EXTRA_VERTICAL_SPACE 44
+#define PANEL_TOP_SAFE_MARGIN 48
+#define PANEL_BOTTOM_MARGIN 64
+#define PANEL_EXTRA_VERTICAL_SPACE 36
 #define LIVE_CHANNELS_CACHE_SECONDS 10
 #define PANEL_MIN_WIDTH 430
 #define PANEL_MAX_WIDTH 1200
@@ -316,9 +316,23 @@ static void position_panel(ChannelSwitcherOverlay *switcher)
 
     int overlay_width = gtk_widget_get_width(GTK_WIDGET(switcher->overlay));
     int overlay_height = gtk_widget_get_height(GTK_WIDGET(switcher->overlay));
+    double root_y = PANEL_TOP_SAFE_MARGIN;
+    GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(switcher->overlay));
+    if (root != NULL && GTK_IS_WIDGET(root)) {
+        graphene_point_t origin = GRAPHENE_POINT_INIT(0, 0);
+        graphene_point_t root_point = GRAPHENE_POINT_INIT(0, 0);
+        if (gtk_widget_compute_point(GTK_WIDGET(switcher->overlay), GTK_WIDGET(root), &origin, &root_point)) {
+            root_y = root_point.y;
+        }
+    }
+    /* Only reserve titlebar space when this video overlay starts under the
+     * window controls. Grid tiles below the first row should start normally. */
+    int top_margin = root_y < PANEL_TOP_SAFE_MARGIN
+        ? PANEL_TOP_SAFE_MARGIN - (int)root_y
+        : PANEL_MARGIN;
     int panel_width = CLAMP(overlay_width - PANEL_MARGIN * 2, PANEL_MIN_WIDTH, PANEL_MAX_WIDTH);
     int scroller_height = CLAMP(
-        overlay_height - PANEL_TOP_MARGIN - PANEL_BOTTOM_MARGIN - PANEL_EXTRA_VERTICAL_SPACE,
+        overlay_height - top_margin - PANEL_BOTTOM_MARGIN - PANEL_EXTRA_VERTICAL_SPACE,
         PANEL_MIN_HEIGHT,
         PANEL_MAX_HEIGHT
     );
@@ -326,7 +340,7 @@ static void position_panel(ChannelSwitcherOverlay *switcher)
     gtk_widget_set_size_request(switcher->panel, panel_width, -1);
     gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(switcher->scroller), scroller_height);
     gtk_widget_set_margin_start(switcher->panel, PANEL_MARGIN);
-    gtk_widget_set_margin_top(switcher->panel, PANEL_TOP_MARGIN);
+    gtk_widget_set_margin_top(switcher->panel, top_margin);
 }
 
 static const AppSettingsChannel *find_settings_channel(ChannelSwitcherOverlay *switcher, const char *channel_name)

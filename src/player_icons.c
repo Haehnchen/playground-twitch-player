@@ -262,22 +262,21 @@ static void draw_volume_icon(GtkDrawingArea *area, cairo_t *cr, int width, int h
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
 
-    cairo_move_to(cr, x + size * 0.16, y + size * 0.42);
-    cairo_line_to(cr, x + size * 0.33, y + size * 0.42);
-    cairo_line_to(cr, x + size * 0.53, y + size * 0.26);
-    cairo_line_to(cr, x + size * 0.53, y + size * 0.74);
-    cairo_line_to(cr, x + size * 0.33, y + size * 0.58);
-    cairo_line_to(cr, x + size * 0.16, y + size * 0.58);
+    cairo_move_to(cr, x + size * 0.10, y + size * 0.40);
+    cairo_line_to(cr, x + size * 0.32, y + size * 0.40);
+    cairo_line_to(cr, x + size * 0.56, y + size * 0.22);
+    cairo_line_to(cr, x + size * 0.56, y + size * 0.78);
+    cairo_line_to(cr, x + size * 0.32, y + size * 0.60);
+    cairo_line_to(cr, x + size * 0.10, y + size * 0.60);
     cairo_close_path(cr);
     cairo_fill(cr);
 
-    cairo_set_line_width(cr, MAX(1.7, size * 0.09));
+    cairo_set_line_width(cr, MAX(2.0, size * 0.10));
 
     if (kind == PLAYER_VOLUME_ICON_MUTED) {
-        cairo_move_to(cr, x + size * 0.66, y + size * 0.38);
-        cairo_line_to(cr, x + size * 0.84, y + size * 0.62);
-        cairo_move_to(cr, x + size * 0.84, y + size * 0.38);
-        cairo_line_to(cr, x + size * 0.66, y + size * 0.62);
+        cairo_set_line_width(cr, MAX(2.4, size * 0.12));
+        cairo_move_to(cr, x + size * 0.88, y + size * 0.24);
+        cairo_line_to(cr, x + size * 0.64, y + size * 0.76);
     } else {
         cairo_new_sub_path(cr);
         cairo_arc(cr, x + size * 0.55, y + size * 0.50, size * 0.18, -0.72, 0.72);
@@ -407,8 +406,13 @@ GtkWidget *player_chat_icon_new(PlayerChatIconKind kind)
 GtkWidget *player_volume_icon_new(PlayerVolumeIconKind kind)
 {
     GtkWidget *icon = gtk_drawing_area_new();
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 22);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 22);
+    gtk_widget_set_size_request(icon, 22, 22);
+    gtk_widget_set_halign(icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(icon, FALSE);
+    gtk_widget_set_vexpand(icon, FALSE);
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_volume_icon, GINT_TO_POINTER(kind), NULL);
     return icon;
 }
