@@ -164,6 +164,44 @@ static void test_parse_live_channels_response_returns_empty_for_missing_users(vo
     g_assert_cmpuint(previews->len, ==, 0);
 }
 
+static void test_parse_helix_user_id_response_returns_user_id(void)
+{
+    const char *json = "{\"data\":[{\"id\":\"12345\",\"login\":\"viewer\"}]}";
+    g_autoptr(GError) error = NULL;
+    g_autofree char *user_id = parse_helix_user_id_response(json, strlen(json), &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpstr(user_id, ==, "12345");
+}
+
+static void test_parse_followed_channels_page_returns_channels_and_cursor(void)
+{
+    const char *json =
+        "{"
+        "\"data\":["
+        "{\"broadcaster_login\":\"PapaPlatte\",\"broadcaster_name\":\"Papaplatte\"},"
+        "{\"broadcaster_login\":\"rocketbeans\",\"broadcaster_name\":\"Rocket Beans TV\"}"
+        "],"
+        "\"pagination\":{\"cursor\":\"next-page\"}"
+        "}";
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) channels = g_ptr_array_new_with_free_func((GDestroyNotify)twitch_followed_channel_free);
+    g_autofree char *cursor = NULL;
+
+    g_assert_true(parse_followed_channels_page(json, strlen(json), channels, &cursor, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(channels->len, ==, 2);
+    g_assert_cmpstr(cursor, ==, "next-page");
+
+    TwitchFollowedChannel *channel = g_ptr_array_index(channels, 0);
+    g_assert_cmpstr(channel->channel, ==, "papaplatte");
+    g_assert_cmpstr(channel->display_name, ==, "Papaplatte");
+
+    channel = g_ptr_array_index(channels, 1);
+    g_assert_cmpstr(channel->channel, ==, "rocketbeans");
+    g_assert_cmpstr(channel->display_name, ==, "Rocket Beans TV");
+}
+
 static void test_parse_live_channels_response_reports_invalid_json(void)
 {
     const char *json = "{";
@@ -218,6 +256,8 @@ int main(int argc, char **argv)
     g_test_add_func("/twitch-stream-info/parse-live-response/missing-optional-fields", test_parse_live_channels_response_handles_missing_optional_fields);
     g_test_add_func("/twitch-stream-info/parse-live-response/tie-sort", test_parse_live_channels_response_sorts_equal_viewers_by_display_name);
     g_test_add_func("/twitch-stream-info/parse-live-response/missing-users", test_parse_live_channels_response_returns_empty_for_missing_users);
+    g_test_add_func("/twitch-stream-info/parse-helix-user/id", test_parse_helix_user_id_response_returns_user_id);
+    g_test_add_func("/twitch-stream-info/parse-followed-page/channels", test_parse_followed_channels_page_returns_channels_and_cursor);
     g_test_add_func("/twitch-stream-info/parse-live-response/invalid-json", test_parse_live_channels_response_reports_invalid_json);
     g_test_add_func("/twitch-stream-info/parse-response/offline", test_parse_stream_title_response_returns_null_for_offline_stream);
     g_test_add_func("/twitch-stream-info/parse-response/missing-user", test_parse_stream_title_response_returns_null_for_missing_user);

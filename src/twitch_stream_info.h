@@ -14,7 +14,13 @@ typedef struct {
     guint viewer_count;
 } TwitchStreamPreview;
 
+typedef struct {
+    char *channel;
+    char *display_name;
+} TwitchFollowedChannel;
+
 void twitch_stream_preview_free(TwitchStreamPreview *preview);
+void twitch_followed_channel_free(TwitchFollowedChannel *channel);
 
 /**
  * twitch_stream_info_fetch_title_async:
@@ -73,3 +79,40 @@ void twitch_stream_info_fetch_live_channels_async(
  * Returns: (transfer full): A GPtrArray of TwitchStreamPreview entries.
  */
 GPtrArray *twitch_stream_info_fetch_live_channels_finish(GAsyncResult *result, GError **error);
+
+/**
+ * twitch_stream_info_fetch_followed_channels_async:
+ * @client_id: Twitch application client ID.
+ * @oauth_token: Twitch user access token with user:read:follows.
+ * @cancel: Optional cancellable.
+ * @callback: Completion callback.
+ * @user_data: User data passed to @callback.
+ *
+ * Fetches the channels followed by the token owner. This uses Helix and needs
+ * the user:read:follows OAuth scope.
+ */
+void twitch_stream_info_fetch_followed_channels_async(
+    const char *client_id,
+    const char *oauth_token,
+    GCancellable *cancel,
+    GAsyncReadyCallback callback,
+    gpointer user_data
+);
+
+GPtrArray *twitch_stream_info_fetch_followed_channels(
+    const char *client_id,
+    const char *oauth_token,
+    GCancellable *cancel,
+    GError **error
+);
+
+/**
+ * twitch_stream_info_fetch_followed_channels_finish:
+ * @result: Async result passed to the completion callback.
+ * @error: Return location for a GError, or NULL.
+ *
+ * Finishes twitch_stream_info_fetch_followed_channels_async().
+ *
+ * Returns: (transfer full): A GPtrArray of TwitchFollowedChannel entries.
+ */
+GPtrArray *twitch_stream_info_fetch_followed_channels_finish(GAsyncResult *result, GError **error);

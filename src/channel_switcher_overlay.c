@@ -3,6 +3,7 @@
 #include "channel_switcher_overlay.h"
 
 #include "player_icons.h"
+#include "twitch_channel_list.h"
 #include "twitch_stream_info.h"
 
 #define PANEL_MARGIN 12
@@ -50,6 +51,11 @@ typedef struct {
     ChannelSwitcherOverlay *switcher;
     guint generation;
 } LiveFetchCallbackData;
+
+typedef struct {
+    ChannelSwitcherOverlay *switcher;
+    guint generation;
+} ChannelListFetchCallbackData;
 
 static gboolean css_installed = FALSE;
 
@@ -376,6 +382,16 @@ static void on_channel_button_clicked(GtkButton *button, gpointer user_data)
 
     if (channel != NULL && switcher->activate_callback != NULL) {
         switcher->activate_callback(channel, switcher->user_data);
+    } else if (channel_name != NULL && channel_name[0] != '\0' && switcher->activate_callback != NULL) {
+        AppSettingsChannel dynamic_channel = {0};
+        dynamic_channel.channel = (char *)channel_name;
+        dynamic_channel.label = (char *)g_object_get_data(G_OBJECT(button), "channel-label");
+        dynamic_channel.url = g_strdup_printf("https://www.twitch.tv/%s", channel_name);
+        if (dynamic_channel.label == NULL || dynamic_channel.label[0] == '\0') {
+            dynamic_channel.label = dynamic_channel.channel;
+        }
+        switcher->activate_callback(&dynamic_channel, switcher->user_data);
+        g_free(dynamic_channel.url);
     }
 
     channel_switcher_overlay_hide(switcher);
@@ -474,6 +490,7 @@ static GtkWidget *create_channel_card(ChannelSwitcherOverlay *switcher, TwitchSt
     gtk_widget_set_hexpand(button, FALSE);
     gtk_widget_set_size_request(button, CARD_WIDTH, -1);
     g_object_set_data_full(G_OBJECT(button), "channel-name", g_strdup(preview->channel), g_free);
+    g_object_set_data_full(G_OBJECT(button), "channel-label", g_strdup(label), g_free);
     g_signal_connect(button, "clicked", G_CALLBACK(on_channel_button_clicked), switcher);
 
     GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 7);
@@ -656,25 +673,6 @@ static void on_live_channels_fetched(GObject *source_object, GAsyncResult *resul
     live_fetch_callback_data_free(data);
 }
 
-static void collect_settings_channels(ChannelSwitcherOverlay *switcher, char ***channels_out, guint *channel_count_out)
-{
-    guint channel_count = app_settings_get_channel_count(switcher->settings);
-    char **channels = g_new0(char *, channel_count + 1);
-    guint out = 0;
-
-    for (guint i = 0; i < channel_count; i++) {
-        const AppSettingsChannel *channel = app_settings_get_channel(switcher->settings, i);
-        if (channel == NULL || channel->channel == NULL || channel->channel[0] == '\0') {
-            continue;
-        }
-
-        channels[out++] = g_strdup(channel->channel);
-    }
-
-    *channels_out = channels;
-    *channel_count_out = out;
-}
-
 static char *build_channels_cache_key(char **channels, guint channel_count)
 {
     GString *key = g_string_new(NULL);
@@ -698,6 +696,78 @@ static gboolean has_fresh_cache(ChannelSwitcherOverlay *switcher, const char *ch
         channels_key != NULL &&
         g_strcmp0(switcher->cached_channels_key, channels_key) == 0 &&
         now_us - switcher->cached_at_us < LIVE_CHANNELS_CACHE_SECONDS * G_USEC_PER_SEC;
+}
+
+static void start_live_channel_fetch(ChannelSwitcherOverlay *switcher, char **channels, guint channel_count, gboolean allow_cache)
+{
+    g_autofree char *channels_key = build_channels_cache_key(channels, channel_count);
+
+    if (channel_count == 0) {
+        if (switcher->previews != NULL) {
+            g_ptr_array_unref(switcher->previews);
+            switcher->previews = NULL;
+        }
+        g_clear_pointer(&switcher->cached_channels_key, g_free);
+        switcher->cached_at_us = 0;
+        show_status(switcher, "No channels configured");
+        return;
+    }
+
+    if (allow_cache && has_fresh_cache(switcher, channels_key)) {
+        render_live_channels(switcher);
+        return;
+    }
+
+    if (switcher->previews != NULL) {
+        g_ptr_array_unref(switcher->previews);
+        switcher->previews = NULL;
+    }
+    g_free(switcher->cached_channels_key);
+    switcher->cached_channels_key = g_strdup(channels_key);
+    switcher->cached_at_us = 0;
+
+    switcher->cancel = g_cancellable_new();
+    LiveFetchCallbackData *data = g_new0(LiveFetchCallbackData, 1);
+    data->switcher = switcher;
+    data->generation = switcher->generation;
+    twitch_stream_info_fetch_live_channels_async(
+        (const char * const *)channels,
+        channel_count,
+        switcher->cancel,
+        on_live_channels_fetched,
+        data
+    );
+}
+
+static void on_channel_list_fetched(GObject *source_object, GAsyncResult *result, gpointer user_data)
+{
+    (void)source_object;
+    ChannelListFetchCallbackData *data = user_data;
+    ChannelSwitcherOverlay *switcher = data->switcher;
+    g_autoptr(GError) error = NULL;
+    g_auto(GStrv) channels = NULL;
+    guint channel_count = 0;
+
+    if (data->generation != switcher->generation || switcher->panel == NULL) {
+        g_free(data);
+        return;
+    }
+
+    g_clear_object(&switcher->cancel);
+    channels = twitch_channel_list_fetch_finish(result, &channel_count, &error);
+
+    if (error != NULL) {
+        if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            g_debug("channel list fetch failed: %s", error->message);
+            show_status(switcher, error->message);
+        }
+        g_free(data);
+        return;
+    }
+
+    start_live_channel_fetch(switcher, channels, channel_count, TRUE);
+
+    g_free(data);
 }
 
 static void on_close_clicked(GtkButton *button, gpointer user_data)
@@ -855,44 +925,14 @@ void channel_switcher_overlay_show_at(ChannelSwitcherOverlay *switcher, double x
     show_status(switcher, "Loading live channels");
 
     g_clear_object(&switcher->cancel);
-    g_auto(GStrv) channels = NULL;
-    guint channel_count = 0;
-    collect_settings_channels(switcher, &channels, &channel_count);
-    g_autofree char *channels_key = build_channels_cache_key(channels, channel_count);
-
-    if (channel_count == 0) {
-        if (switcher->previews != NULL) {
-            g_ptr_array_unref(switcher->previews);
-            switcher->previews = NULL;
-        }
-        g_clear_pointer(&switcher->cached_channels_key, g_free);
-        switcher->cached_at_us = 0;
-        show_status(switcher, "No channels configured");
-        return;
-    }
-
-    if (has_fresh_cache(switcher, channels_key)) {
-        render_live_channels(switcher);
-        return;
-    }
-
-    if (switcher->previews != NULL) {
-        g_ptr_array_unref(switcher->previews);
-        switcher->previews = NULL;
-    }
-    g_free(switcher->cached_channels_key);
-    switcher->cached_channels_key = g_strdup(channels_key);
-    switcher->cached_at_us = 0;
-
     switcher->cancel = g_cancellable_new();
-    LiveFetchCallbackData *data = g_new0(LiveFetchCallbackData, 1);
+    ChannelListFetchCallbackData *data = g_new0(ChannelListFetchCallbackData, 1);
     data->switcher = switcher;
     data->generation = switcher->generation;
-    twitch_stream_info_fetch_live_channels_async(
-        (const char * const *)channels,
-        channel_count,
+    twitch_channel_list_fetch_async(
+        switcher->settings,
         switcher->cancel,
-        on_live_channels_fetched,
+        on_channel_list_fetched,
         data
     );
 }

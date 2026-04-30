@@ -11,6 +11,7 @@
 
 struct _AppSettings {
     GPtrArray *channels;
+    char *twitch_oauth_token;
     gboolean hwdec_enabled;
 };
 
@@ -90,6 +91,7 @@ void app_settings_free(AppSettings *settings)
     }
 
     g_ptr_array_unref(settings->channels);
+    g_free(settings->twitch_oauth_token);
     g_free(settings);
 }
 
@@ -117,6 +119,23 @@ void app_settings_set_hwdec_enabled(AppSettings *settings, gboolean enabled)
     if (settings != NULL) {
         settings->hwdec_enabled = enabled;
     }
+}
+
+const char *app_settings_get_twitch_oauth_token(const AppSettings *settings)
+{
+    return settings != NULL ? settings->twitch_oauth_token : NULL;
+}
+
+void app_settings_set_twitch_oauth_token(AppSettings *settings, const char *oauth_token)
+{
+    if (settings == NULL) {
+        return;
+    }
+
+    g_free(settings->twitch_oauth_token);
+    settings->twitch_oauth_token = oauth_token != NULL && oauth_token[0] != '\0'
+        ? g_strdup(oauth_token)
+        : NULL;
 }
 
 void app_settings_clear_channels(AppSettings *settings)
@@ -222,6 +241,10 @@ AppSettings *app_settings_load(void)
 
     JsonObject *root = json_node_get_object(root_node);
     settings->hwdec_enabled = json_object_get_boolean_member_with_default(root, "hwdec", TRUE);
+    app_settings_set_twitch_oauth_token(
+        settings,
+        json_object_get_string_member_with_default(root, "twitch_oauth_token", NULL)
+    );
     load_channels(settings, root);
     return settings;
 }
@@ -248,6 +271,11 @@ gboolean app_settings_save(AppSettings *settings, GError **error)
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "hwdec");
     json_builder_add_boolean_value(builder, app_settings_get_hwdec_enabled(settings));
+    const char *oauth_token = app_settings_get_twitch_oauth_token(settings);
+    if (oauth_token != NULL && oauth_token[0] != '\0') {
+        json_builder_set_member_name(builder, "twitch_oauth_token");
+        json_builder_add_string_value(builder, oauth_token);
+    }
     json_builder_set_member_name(builder, "channels");
     json_builder_begin_array(builder);
 

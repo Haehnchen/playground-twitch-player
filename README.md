@@ -23,6 +23,10 @@ Channels are loaded from the user settings file:
 The first start is intentionally empty. Add channels through the Settings button
 in the top-left overlay.
 
+Open Settings > Channels and use "Connect Twitch" to authorize the app. The app
+uses Twitch's device-code flow and stores the resulting user token in the
+settings file. A client secret is not used by this desktop app.
+
 ## Dependencies
 
 On Ubuntu/Debian:

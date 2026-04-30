@@ -10,6 +10,9 @@
 #define TWITCH_GQL_CLIENT_ID "kimne78kx3ncx6brgo4mv6wki5h1ko"
 #define TWITCH_GQL_QUERY "query($login:String!){user(login:$login){stream{title}}}"
 #define TWITCH_GQL_LIVE_CHANNELS_QUERY "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:240,height:135) game{name}}}}"
+#define TWITCH_GQL_MAX_LOGINS 100
+#define TWITCH_HELIX_USERS_URI "https://api.twitch.tv/helix/users"
+#define TWITCH_HELIX_PAGE_SIZE "100"
 
 typedef struct {
     char *channel;
@@ -19,6 +22,11 @@ typedef struct {
     char **channels;
     guint channel_count;
 } FetchLiveChannelsData;
+
+typedef struct {
+    char *client_id;
+    char *oauth_token;
+} FetchFollowedChannelsData;
 
 static void fetch_title_data_free(FetchTitleData *data)
 {
@@ -40,6 +48,17 @@ static void fetch_live_channels_data_free(FetchLiveChannelsData *data)
     g_free(data);
 }
 
+static void fetch_followed_channels_data_free(FetchFollowedChannelsData *data)
+{
+    if (data == NULL) {
+        return;
+    }
+
+    g_free(data->client_id);
+    g_free(data->oauth_token);
+    g_free(data);
+}
+
 void twitch_stream_preview_free(TwitchStreamPreview *preview)
 {
     if (preview == NULL) {
@@ -54,6 +73,17 @@ void twitch_stream_preview_free(TwitchStreamPreview *preview)
     g_free(preview->started_at);
     g_free(preview->category_name);
     g_free(preview);
+}
+
+void twitch_followed_channel_free(TwitchFollowedChannel *channel)
+{
+    if (channel == NULL) {
+        return;
+    }
+
+    g_free(channel->channel);
+    g_free(channel->display_name);
+    g_free(channel);
 }
 
 static char *build_stream_title_request_body(const char *channel)
@@ -175,6 +205,142 @@ static char *post_twitch_gql_request(const char *body, GCancellable *cancel, GEr
     gsize response_size = 0;
     const char *response_data = g_bytes_get_data(response, &response_size);
     return g_strndup(response_data, response_size);
+}
+
+static char *sanitize_oauth_token(const char *oauth_token)
+{
+    if (oauth_token == NULL) {
+        return g_strdup("");
+    }
+
+    if (g_str_has_prefix(oauth_token, "oauth:")) {
+        return g_strdup(oauth_token + strlen("oauth:"));
+    }
+
+    if (g_str_has_prefix(oauth_token, "Bearer ")) {
+        return g_strdup(oauth_token + strlen("Bearer "));
+    }
+
+    return g_strdup(oauth_token);
+}
+
+static char *get_twitch_helix_request(const char *uri, const char *client_id, const char *oauth_token, GCancellable *cancel, GError **error)
+{
+    g_autoptr(SoupSession) session = soup_session_new();
+    g_autoptr(SoupMessage) message = soup_message_new("GET", uri);
+    g_autofree char *token = sanitize_oauth_token(oauth_token);
+    g_autofree char *auth_header = g_strdup_printf("Bearer %s", token);
+
+    g_object_set(session, "timeout", 15, NULL);
+    SoupMessageHeaders *request_headers = soup_message_get_request_headers(message);
+    soup_message_headers_append(request_headers, "Client-ID", client_id);
+    soup_message_headers_append(request_headers, "Authorization", auth_header);
+    soup_message_headers_append(request_headers, "Accept", "application/json");
+
+    g_autoptr(GBytes) response = soup_session_send_and_read(session, message, cancel, error);
+    if (response == NULL) {
+        return NULL;
+    }
+
+    guint status = soup_message_get_status(message);
+    if (status < 200 || status >= 300) {
+        g_set_error(
+            error,
+            G_IO_ERROR,
+            G_IO_ERROR_FAILED,
+            "Twitch returned HTTP %u",
+            status
+        );
+        return NULL;
+    }
+
+    gsize response_size = 0;
+    const char *response_data = g_bytes_get_data(response, &response_size);
+    return g_strndup(response_data, response_size);
+}
+
+static char *parse_helix_user_id_response(const char *json, gsize length, GError **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+
+    if (!json_parser_load_from_data(parser, json, length, error)) {
+        return NULL;
+    }
+
+    JsonNode *root = json_parser_get_root(parser);
+    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root)) {
+        return NULL;
+    }
+
+    JsonObject *root_object = json_node_get_object(root);
+    JsonNode *data_node = json_object_get_member(root_object, "data");
+    if (data_node == NULL || !JSON_NODE_HOLDS_ARRAY(data_node)) {
+        return NULL;
+    }
+
+    JsonArray *data = json_node_get_array(data_node);
+    if (json_array_get_length(data) == 0) {
+        return NULL;
+    }
+
+    JsonNode *user_node = json_array_get_element(data, 0);
+    if (user_node == NULL || !JSON_NODE_HOLDS_OBJECT(user_node)) {
+        return NULL;
+    }
+
+    const char *id = json_object_get_string_member_with_default(json_node_get_object(user_node), "id", NULL);
+    return id != NULL && id[0] != '\0' ? g_strdup(id) : NULL;
+}
+
+static gboolean parse_followed_channels_page(const char *json, gsize length, GPtrArray *channels, char **cursor_out, GError **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+
+    if (!json_parser_load_from_data(parser, json, length, error)) {
+        return FALSE;
+    }
+
+    JsonNode *root = json_parser_get_root(parser);
+    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root)) {
+        return TRUE;
+    }
+
+    JsonObject *root_object = json_node_get_object(root);
+    JsonNode *data_node = json_object_get_member(root_object, "data");
+    if (data_node != NULL && JSON_NODE_HOLDS_ARRAY(data_node)) {
+        JsonArray *data = json_node_get_array(data_node);
+        guint length = json_array_get_length(data);
+
+        for (guint i = 0; i < length; i++) {
+            JsonNode *channel_node = json_array_get_element(data, i);
+            if (channel_node == NULL || !JSON_NODE_HOLDS_OBJECT(channel_node)) {
+                continue;
+            }
+
+            JsonObject *channel_object = json_node_get_object(channel_node);
+            const char *login = json_object_get_string_member_with_default(channel_object, "broadcaster_login", NULL);
+            if (login == NULL || login[0] == '\0') {
+                continue;
+            }
+
+            const char *display_name = json_object_get_string_member_with_default(channel_object, "broadcaster_name", login);
+            TwitchFollowedChannel *channel = g_new0(TwitchFollowedChannel, 1);
+            channel->channel = g_ascii_strdown(login, -1);
+            channel->display_name = g_strdup(display_name != NULL && display_name[0] != '\0' ? display_name : login);
+            g_ptr_array_add(channels, channel);
+        }
+    }
+
+    JsonNode *pagination_node = json_object_get_member(root_object, "pagination");
+    if (pagination_node != NULL && JSON_NODE_HOLDS_OBJECT(pagination_node)) {
+        JsonObject *pagination = json_node_get_object(pagination_node);
+        const char *cursor = json_object_get_string_member_with_default(pagination, "cursor", NULL);
+        if (cursor != NULL && cursor[0] != '\0') {
+            *cursor_out = g_strdup(cursor);
+        }
+    }
+
+    return TRUE;
 }
 
 static char *fetch_stream_title(const char *channel, GCancellable *cancel, GError **error)
@@ -299,14 +465,101 @@ static GPtrArray *parse_live_channels_response(const char *json, gsize length, G
 
 static GPtrArray *fetch_live_channels(FetchLiveChannelsData *data, GCancellable *cancel, GError **error)
 {
-    g_autofree char *body = build_live_channels_request_body((const char * const *)data->channels, data->channel_count);
-    g_autofree char *response = post_twitch_gql_request(body, cancel, error);
+    GPtrArray *all_previews = g_ptr_array_new_with_free_func((GDestroyNotify)twitch_stream_preview_free);
 
-    if (response == NULL) {
+    for (guint offset = 0; offset < data->channel_count; offset += TWITCH_GQL_MAX_LOGINS) {
+        guint chunk_count = MIN(TWITCH_GQL_MAX_LOGINS, data->channel_count - offset);
+        g_autofree char *body = build_live_channels_request_body((const char * const *)&data->channels[offset], chunk_count);
+        g_autofree char *response = post_twitch_gql_request(body, cancel, error);
+
+        if (response == NULL) {
+            g_ptr_array_unref(all_previews);
+            return NULL;
+        }
+
+        g_autoptr(GPtrArray) chunk_previews = parse_live_channels_response(response, strlen(response), error);
+        if (chunk_previews == NULL) {
+            g_ptr_array_unref(all_previews);
+            return NULL;
+        }
+
+        for (guint i = 0; i < chunk_previews->len; i++) {
+            g_ptr_array_add(all_previews, g_ptr_array_index(chunk_previews, i));
+        }
+        g_ptr_array_set_free_func(chunk_previews, NULL);
+    }
+
+    g_ptr_array_sort(all_previews, compare_stream_previews_by_viewers);
+    return all_previews;
+}
+
+GPtrArray *twitch_stream_info_fetch_followed_channels(
+    const char *client_id,
+    const char *oauth_token,
+    GCancellable *cancel,
+    GError **error
+)
+{
+    g_autofree char *user_response = get_twitch_helix_request(
+        TWITCH_HELIX_USERS_URI,
+        client_id,
+        oauth_token,
+        cancel,
+        error
+    );
+    if (user_response == NULL) {
         return NULL;
     }
 
-    return parse_live_channels_response(response, strlen(response), error);
+    g_autofree char *user_id = parse_helix_user_id_response(user_response, strlen(user_response), error);
+    if (user_id == NULL) {
+        if (error != NULL && *error == NULL) {
+            g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "Twitch user could not be read from the token");
+        }
+        return NULL;
+    }
+
+    GPtrArray *channels = g_ptr_array_new_with_free_func((GDestroyNotify)twitch_followed_channel_free);
+    g_autofree char *cursor = NULL;
+    g_autofree char *escaped_user_id = g_uri_escape_string(user_id, NULL, TRUE);
+
+    do {
+        g_autofree char *escaped_cursor = cursor != NULL ? g_uri_escape_string(cursor, NULL, TRUE) : NULL;
+        g_autofree char *request_uri = cursor != NULL
+            ? g_strdup_printf(
+                "https://api.twitch.tv/helix/channels/followed?user_id=%s&first=%s&after=%s",
+                escaped_user_id,
+                TWITCH_HELIX_PAGE_SIZE,
+                escaped_cursor
+            )
+            : g_strdup_printf(
+                "https://api.twitch.tv/helix/channels/followed?user_id=%s&first=%s",
+                escaped_user_id,
+                TWITCH_HELIX_PAGE_SIZE
+            );
+        g_autofree char *page_response = get_twitch_helix_request(
+            request_uri,
+            client_id,
+            oauth_token,
+            cancel,
+            error
+        );
+        if (page_response == NULL) {
+            g_ptr_array_unref(channels);
+            return NULL;
+        }
+
+        g_autofree char *next_cursor = NULL;
+        if (!parse_followed_channels_page(page_response, strlen(page_response), channels, &next_cursor, error)) {
+            g_ptr_array_unref(channels);
+            return NULL;
+        }
+
+        g_free(cursor);
+        cursor = g_steal_pointer(&next_cursor);
+    } while (cursor != NULL && !g_cancellable_is_cancelled(cancel));
+
+    return channels;
 }
 
 static void fetch_title_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)
@@ -337,6 +590,26 @@ static void fetch_live_channels_worker(GTask *task, gpointer source_object, gpoi
     }
 
     g_task_return_pointer(task, previews, (GDestroyNotify)g_ptr_array_unref);
+}
+
+static void fetch_followed_channels_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)
+{
+    (void)source_object;
+    FetchFollowedChannelsData *data = task_data;
+    g_autoptr(GError) error = NULL;
+    GPtrArray *channels = twitch_stream_info_fetch_followed_channels(
+        data->client_id,
+        data->oauth_token,
+        cancel,
+        &error
+    );
+
+    if (error != NULL) {
+        g_task_return_error(task, g_steal_pointer(&error));
+        return;
+    }
+
+    g_task_return_pointer(task, channels, (GDestroyNotify)g_ptr_array_unref);
 }
 
 void twitch_stream_info_fetch_title_async(
@@ -389,6 +662,36 @@ void twitch_stream_info_fetch_live_channels_async(
 }
 
 GPtrArray *twitch_stream_info_fetch_live_channels_finish(GAsyncResult *result, GError **error)
+{
+    g_return_val_if_fail(g_task_is_valid(result, NULL), NULL);
+
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+void twitch_stream_info_fetch_followed_channels_async(
+    const char *client_id,
+    const char *oauth_token,
+    GCancellable *cancel,
+    GAsyncReadyCallback callback,
+    gpointer user_data
+)
+{
+    g_return_if_fail(client_id != NULL);
+    g_return_if_fail(client_id[0] != '\0');
+    g_return_if_fail(oauth_token != NULL);
+    g_return_if_fail(oauth_token[0] != '\0');
+
+    FetchFollowedChannelsData *data = g_new0(FetchFollowedChannelsData, 1);
+    data->client_id = g_strdup(client_id);
+    data->oauth_token = g_strdup(oauth_token);
+
+    GTask *task = g_task_new(NULL, cancel, callback, user_data);
+    g_task_set_task_data(task, data, (GDestroyNotify)fetch_followed_channels_data_free);
+    g_task_run_in_thread(task, fetch_followed_channels_worker);
+    g_object_unref(task);
+}
+
+GPtrArray *twitch_stream_info_fetch_followed_channels_finish(GAsyncResult *result, GError **error)
 {
     g_return_val_if_fail(g_task_is_valid(result, NULL), NULL);
 
