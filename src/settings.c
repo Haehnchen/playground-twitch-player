@@ -11,6 +11,7 @@
 
 struct _AppSettings {
     GPtrArray *channels;
+    gboolean hwdec_enabled;
 };
 
 static void app_settings_channel_free(gpointer data)
@@ -72,6 +73,7 @@ AppSettings *app_settings_new(void)
 {
     AppSettings *settings = g_new0(AppSettings, 1);
     settings->channels = g_ptr_array_new_with_free_func(app_settings_channel_free);
+    settings->hwdec_enabled = TRUE;
     return settings;
 }
 
@@ -103,6 +105,18 @@ const AppSettingsChannel *app_settings_get_channel(const AppSettings *settings, 
     }
 
     return g_ptr_array_index(settings->channels, index);
+}
+
+gboolean app_settings_get_hwdec_enabled(const AppSettings *settings)
+{
+    return settings != NULL ? settings->hwdec_enabled : TRUE;
+}
+
+void app_settings_set_hwdec_enabled(AppSettings *settings, gboolean enabled)
+{
+    if (settings != NULL) {
+        settings->hwdec_enabled = enabled;
+    }
 }
 
 void app_settings_clear_channels(AppSettings *settings)
@@ -206,7 +220,9 @@ AppSettings *app_settings_load(void)
         return settings;
     }
 
-    load_channels(settings, json_node_get_object(root_node));
+    JsonObject *root = json_node_get_object(root_node);
+    settings->hwdec_enabled = json_object_get_boolean_member_with_default(root, "hwdec", TRUE);
+    load_channels(settings, root);
     return settings;
 }
 
@@ -230,6 +246,8 @@ gboolean app_settings_save(AppSettings *settings, GError **error)
     /* Use JsonBuilder so user-provided channel names are escaped correctly. */
     g_autoptr(JsonBuilder) builder = json_builder_new();
     json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "hwdec");
+    json_builder_add_boolean_value(builder, app_settings_get_hwdec_enabled(settings));
     json_builder_set_member_name(builder, "channels");
     json_builder_begin_array(builder);
 

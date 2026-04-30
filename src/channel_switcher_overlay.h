@@ -10,12 +10,15 @@ typedef void (*ChannelSwitcherActivateCallback)(
     const AppSettingsChannel *channel,
     gpointer user_data
 );
+typedef void (*ChannelSwitcherSettingsCallback)(gpointer user_data);
 
 ChannelSwitcherOverlay *channel_switcher_overlay_new(
     GtkOverlay *overlay,
     AppSettings *settings,
     ChannelSwitcherActivateCallback activate_callback,
-    gpointer user_data
+    gpointer user_data,
+    ChannelSwitcherSettingsCallback settings_callback,
+    gpointer settings_user_data
 );
 
 void channel_switcher_overlay_set_settings(ChannelSwitcherOverlay *switcher, AppSettings *settings);

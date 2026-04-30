@@ -61,6 +61,7 @@ struct _SinglePlayer {
     gint event_queued;
     guint render_warmup_source;
     int render_warmup_frames;
+    gint64 last_video_reenable_us;
     guint active_stream;
     gboolean chat_visible;
     guint footer_hide_source;
@@ -94,6 +95,13 @@ static void update_empty_button(SinglePlayer *state)
     if (state->empty_button != NULL) {
         gtk_widget_set_visible(state->empty_button, !state->stream_playing);
     }
+}
+
+static gboolean end_file_finishes_stream(const mpv_event_end_file *end)
+{
+    return end == NULL ||
+        end->reason == MPV_END_FILE_REASON_EOF ||
+        end->reason == MPV_END_FILE_REASON_ERROR;
 }
 
 static int clamp_chat_paned_position(int position, int width)
@@ -345,6 +353,16 @@ static void on_mpv_render_update(void *ctx)
     }
 }
 
+static void recover_video_after_reconfig(SinglePlayer *state)
+{
+    gint64 now = g_get_monotonic_time();
+    if (now - state->last_video_reenable_us > 2 * G_USEC_PER_SEC) {
+        state->last_video_reenable_us = now;
+        player_session_reenable_video(state->session);
+    }
+    start_render_warmup(state);
+}
+
 static gboolean process_mpv_events(gpointer user_data)
 {
     SinglePlayer *state = user_data;
@@ -368,12 +386,16 @@ static gboolean process_mpv_events(gpointer user_data)
             set_status(state, "Loading stream");
             break;
         case MPV_EVENT_FILE_LOADED:
+            state->stream_playing = TRUE;
+            update_empty_button(state);
             set_status(state, "Playback running");
             break;
         case MPV_EVENT_END_FILE: {
             mpv_event_end_file *end = event->data;
-            state->stream_playing = FALSE;
-            update_empty_button(state);
+            if (end_file_finishes_stream(end)) {
+                state->stream_playing = FALSE;
+                update_empty_button(state);
+            }
             if (end != NULL && end->reason == MPV_END_FILE_REASON_ERROR) {
                 set_status(state, "Stream could not be played");
             } else {
@@ -382,10 +404,7 @@ static gboolean process_mpv_events(gpointer user_data)
             break;
         }
         case MPV_EVENT_VIDEO_RECONFIG:
-            /* After a Twitch ad the stream resumes with a huge PTS jump, causing
-             * an internal mpv playback reset. The video output needs a warmup so
-             * the GL renderer actively polls for new frames again. */
-            start_render_warmup(state);
+            recover_video_after_reconfig(state);
             break;
         case MPV_EVENT_LOG_MESSAGE: {
             mpv_event_log_message *log = event->data;
@@ -921,7 +940,6 @@ static void clear_mpv_render_context(SinglePlayer *state)
         state->mpv_gl = NULL;
     }
     remove_source_if_active(&state->render_warmup_source);
-
     state->last_render_width = 0;
     state->last_render_height = 0;
     state->render_warmup_frames = 0;
@@ -1155,7 +1173,6 @@ static void single_player_destroy(SinglePlayer *state)
 
     remove_source_if_active(&state->chat_position_source);
     remove_source_if_active(&state->render_warmup_source);
-
     clear_mpv_render_context(state);
 
     player_session_set_wakeup_callback(state->session, NULL, NULL);
@@ -1196,7 +1213,9 @@ SinglePlayer *single_player_new(
     gboolean auto_start,
     int chat_paned_position,
     SinglePlayerFullscreenCallback fullscreen_callback,
-    gpointer fullscreen_user_data
+    gpointer fullscreen_user_data,
+    SinglePlayerSettingsCallback settings_callback,
+    gpointer settings_user_data
 )
 {
     SinglePlayer *state = g_new0(SinglePlayer, 1);
@@ -1282,7 +1301,9 @@ SinglePlayer *single_player_new(
         GTK_OVERLAY(state->video_overlay),
         state->settings,
         activate_context_channel,
-        state
+        state,
+        settings_callback,
+        settings_user_data
     );
     state->title_refresh_source = g_timeout_add_seconds(STREAM_TITLE_REFRESH_SECONDS, refresh_stream_title, state);
 
@@ -1295,6 +1316,7 @@ SinglePlayer *single_player_new(
         set_status(state, "mpv could not be initialized");
         gtk_widget_set_sensitive(state->stream_combo, FALSE);
     } else {
+        player_session_set_hwdec_enabled(state->session, app_settings_get_hwdec_enabled(state->settings));
         player_session_set_wakeup_callback(state->session, on_mpv_wakeup, state);
     }
 
@@ -1391,6 +1413,7 @@ void single_player_set_settings(SinglePlayer *player, AppSettings *settings)
     }
 
     player->settings = settings;
+    player_session_set_hwdec_enabled(player->session, app_settings_get_hwdec_enabled(settings));
     channel_switcher_overlay_set_settings(player->channel_switcher, settings);
     free_streams(player);
     init_streams(player, current_channel);

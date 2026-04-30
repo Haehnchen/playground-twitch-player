@@ -44,6 +44,7 @@ typedef struct {
     gint event_queued;
     guint render_warmup_source;
     int render_warmup_frames;
+    gint64 last_video_reenable_us;
     gboolean owns_session;
 } StreamTile;
 
@@ -66,6 +67,8 @@ struct _GridAppState {
     PlayerMotionTracker motion_tracker;
     GridPlayerFullscreenCallback fullscreen_callback;
     gpointer fullscreen_user_data;
+    GridPlayerSettingsCallback settings_callback;
+    gpointer settings_user_data;
     double move_press_x;
     double move_press_y;
     gboolean move_pressed;
@@ -172,6 +175,16 @@ static void on_mpv_render_update(void *ctx)
     }
 }
 
+static void recover_tile_video_after_reconfig(StreamTile *tile)
+{
+    gint64 now = g_get_monotonic_time();
+    if (now - tile->last_video_reenable_us > 2 * G_USEC_PER_SEC) {
+        tile->last_video_reenable_us = now;
+        player_session_reenable_video(tile->session);
+    }
+    start_render_warmup(tile);
+}
+
 static gboolean process_mpv_events(gpointer user_data)
 {
     StreamTile *tile = user_data;
@@ -201,16 +214,13 @@ static gboolean process_mpv_events(gpointer user_data)
             mpv_event_end_file *end = event->data;
             if (end != NULL && end->reason == MPV_END_FILE_REASON_ERROR) {
                 set_tile_status(tile, "Stream could not be played");
-            } else {
+            } else if (end == NULL || end->reason == MPV_END_FILE_REASON_EOF) {
                 set_tile_status(tile, "Stopped");
             }
             break;
         }
         case MPV_EVENT_VIDEO_RECONFIG:
-            /* After a Twitch ad the stream resumes with a huge PTS jump, causing
-             * an internal mpv playback reset. The video output needs a warmup so
-             * the GL renderer actively polls for new frames again. */
-            start_render_warmup(tile);
+            recover_tile_video_after_reconfig(tile);
             break;
         case MPV_EVENT_LOG_MESSAGE: {
             mpv_event_log_message *log = event->data;
@@ -369,6 +379,7 @@ static void reset_owned_tile_session(StreamTile *tile)
     if (tile->owns_session) {
         player_session_free(tile->session);
         tile->session = player_session_new();
+        player_session_set_hwdec_enabled(tile->session, app_settings_get_hwdec_enabled(tile->app->settings));
     } else {
         player_session_stop(tile->session);
     }
@@ -398,6 +409,7 @@ static gboolean ensure_tile_session(StreamTile *tile)
         return FALSE;
     }
 
+    player_session_set_hwdec_enabled(tile->session, app_settings_get_hwdec_enabled(tile->app->settings));
     player_session_set_wakeup_callback(tile->session, on_mpv_wakeup, tile);
     if (tile->gl_area != NULL && gtk_widget_get_realized(tile->gl_area) && !create_mpv_render_context(tile)) {
         update_tile_empty_state(tile);
@@ -1022,12 +1034,7 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
     StreamTile *tile = user_data;
 
     gtk_gl_area_make_current(area);
-
-    if (tile->mpv_gl != NULL) {
-        mpv_render_context_set_update_callback(tile->mpv_gl, NULL, NULL);
-        mpv_render_context_free(tile->mpv_gl);
-        tile->mpv_gl = NULL;
-    }
+    clear_tile_render_context(tile);
 }
 
 static GtkWidget *create_tile_footer(StreamTile *tile)
@@ -1099,6 +1106,7 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
         tile->session = state->primary_session;
     } else if (tile->url != NULL && tile->url[0] != '\0') {
         tile->session = player_session_new();
+        player_session_set_hwdec_enabled(tile->session, app_settings_get_hwdec_enabled(state->settings));
     }
     tile->owns_session = tile->session != NULL && tile->session != state->primary_session;
     sync_tile_from_session(tile);
@@ -1151,7 +1159,9 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
         GTK_OVERLAY(tile->overlay),
         state->settings,
         activate_tile_context_channel,
-        tile
+        tile,
+        state->settings_callback,
+        state->settings_user_data
     );
 
     GtkGesture *video_click = gtk_gesture_click_new();
@@ -1449,7 +1459,9 @@ GridPlayer *grid_player_new(
     const char * const *targets,
     guint target_count,
     GridPlayerFullscreenCallback fullscreen_callback,
-    gpointer fullscreen_user_data
+    gpointer fullscreen_user_data,
+    GridPlayerSettingsCallback settings_callback,
+    gpointer settings_user_data
 )
 {
     install_css();
@@ -1464,6 +1476,8 @@ GridPlayer *grid_player_new(
     state->settings = settings;
     state->fullscreen_callback = fullscreen_callback;
     state->fullscreen_user_data = fullscreen_user_data;
+    state->settings_callback = settings_callback;
+    state->settings_user_data = settings_user_data;
 
     state->root_overlay = gtk_overlay_new();
     g_object_add_weak_pointer(G_OBJECT(state->root_overlay), (gpointer *)&state->root_overlay);
@@ -1585,6 +1599,7 @@ void grid_player_set_settings(GridPlayer *player, AppSettings *settings)
 
     player->settings = settings;
     for (guint i = 0; i < MAX_TILES; i++) {
+        player_session_set_hwdec_enabled(player->tiles[i].session, app_settings_get_hwdec_enabled(settings));
         channel_switcher_overlay_set_settings(player->tiles[i].channel_switcher, settings);
     }
 }

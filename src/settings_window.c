@@ -5,6 +5,9 @@
 
 typedef struct {
     GtkWidget *window;
+    GtkWidget *sidebar;
+    GtkWidget *stack;
+    GtkWidget *hwdec_check;
     GtkWidget *channels_box;
     GtkWidget *empty_label;
     GtkWidget *status_label;
@@ -18,6 +21,11 @@ typedef struct {
     GtkWidget *row;
     GtkWidget *channel_entry;
 } ChannelRow;
+
+static const char *page_name_for_page(SettingsWindowPage page)
+{
+    return page == SETTINGS_WINDOW_PAGE_CHANNELS ? "channels" : "general";
+}
 
 static void update_empty_state(SettingsWindow *view)
 {
@@ -127,7 +135,7 @@ static void on_save_clicked(GtkButton *button, gpointer user_data)
     SettingsWindow *view = user_data;
 
     gtk_label_set_text(GTK_LABEL(view->status_label), "");
-    app_settings_clear_channels(view->settings);
+    GPtrArray *channels = g_ptr_array_new_with_free_func(g_free);
 
     for (GtkWidget *child = gtk_widget_get_first_child(view->channels_box);
          child != NULL;
@@ -147,11 +155,22 @@ static void on_save_clicked(GtkButton *button, gpointer user_data)
 
         if (!is_valid_channel_name(trimmed_channel)) {
             gtk_label_set_text(GTK_LABEL(view->status_label), "Invalid channel name. Use a-z, 0-9 and _ only.");
+            g_ptr_array_unref(channels);
             return;
         }
 
-        app_settings_add_channel(view->settings, NULL, trimmed_channel, NULL);
+        g_ptr_array_add(channels, g_steal_pointer(&trimmed_channel));
     }
+
+    app_settings_set_hwdec_enabled(
+        view->settings,
+        view->hwdec_check == NULL || gtk_check_button_get_active(GTK_CHECK_BUTTON(view->hwdec_check))
+    );
+    app_settings_clear_channels(view->settings);
+    for (guint i = 0; i < channels->len; i++) {
+        app_settings_add_channel(view->settings, NULL, g_ptr_array_index(channels, i), NULL);
+    }
+    g_ptr_array_unref(channels);
 
     g_autoptr(GError) error = NULL;
     if (!app_settings_save(view->settings, &error)) {
@@ -166,22 +185,81 @@ static void on_save_clicked(GtkButton *button, gpointer user_data)
     gtk_window_close(GTK_WINDOW(view->window));
 }
 
-static GtkWidget *create_sidebar(void)
+static GtkWidget *create_sidebar_row(const char *name, const char *title)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *label = gtk_label_new(title);
+    gtk_widget_add_css_class(label, "settings-sidebar-label");
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+    g_object_set_data_full(G_OBJECT(row), "settings-page", g_strdup(name), g_free);
+    return row;
+}
+
+static void on_sidebar_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data)
+{
+    (void)box;
+    SettingsWindow *view = user_data;
+
+    if (row == NULL || view->stack == NULL) {
+        return;
+    }
+
+    const char *page = g_object_get_data(G_OBJECT(row), "settings-page");
+    if (page != NULL) {
+        gtk_stack_set_visible_child_name(GTK_STACK(view->stack), page);
+    }
+}
+
+static GtkWidget *create_sidebar(SettingsWindow *view, SettingsWindowPage initial_page)
 {
     GtkWidget *sidebar = gtk_list_box_new();
     gtk_widget_add_css_class(sidebar, "settings-sidebar");
     gtk_widget_set_size_request(sidebar, 170, -1);
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(sidebar), GTK_SELECTION_SINGLE);
 
-    GtkWidget *row = gtk_list_box_row_new();
-    GtkWidget *label = gtk_label_new("Channels");
-    gtk_widget_add_css_class(label, "settings-sidebar-label");
-    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
-    gtk_list_box_append(GTK_LIST_BOX(sidebar), row);
-    gtk_list_box_select_row(GTK_LIST_BOX(sidebar), GTK_LIST_BOX_ROW(row));
+    GtkWidget *general_row = create_sidebar_row("general", "General");
+    GtkWidget *channels_row = create_sidebar_row("channels", "Channels");
+    gtk_list_box_append(GTK_LIST_BOX(sidebar), general_row);
+    gtk_list_box_append(GTK_LIST_BOX(sidebar), channels_row);
+    g_signal_connect(sidebar, "row-selected", G_CALLBACK(on_sidebar_row_selected), view);
+    gtk_list_box_select_row(
+        GTK_LIST_BOX(sidebar),
+        GTK_LIST_BOX_ROW(initial_page == SETTINGS_WINDOW_PAGE_CHANNELS ? channels_row : general_row)
+    );
 
     return sidebar;
+}
+
+static GtkWidget *create_general_page(SettingsWindow *view)
+{
+    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_add_css_class(page, "settings-page");
+    gtk_widget_set_hexpand(page, TRUE);
+    gtk_widget_set_vexpand(page, TRUE);
+
+    GtkWidget *title = gtk_label_new("General");
+    gtk_widget_add_css_class(title, "settings-page-title");
+    gtk_label_set_xalign(GTK_LABEL(title), 0.0);
+    gtk_box_append(GTK_BOX(page), title);
+
+    view->hwdec_check = gtk_check_button_new_with_label("Hardware decoding");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(view->hwdec_check), app_settings_get_hwdec_enabled(view->settings));
+    gtk_widget_add_css_class(view->hwdec_check, "settings-check");
+    gtk_box_append(GTK_BOX(page), view->hwdec_check);
+
+    GtkWidget *hint = gtk_label_new("Let mpv use GPU video decoding where supported. Disable this if playback is unstable or the video renders incorrectly.");
+    gtk_widget_add_css_class(hint, "settings-hint-label");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+    gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
+    gtk_widget_set_halign(hint, GTK_ALIGN_FILL);
+    gtk_box_append(GTK_BOX(page), hint);
+
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_vexpand(spacer, TRUE);
+    gtk_box_append(GTK_BOX(page), spacer);
+
+    return page;
 }
 
 static GtkWidget *create_channels_page(SettingsWindow *view)
@@ -219,7 +297,13 @@ static GtkWidget *create_channels_page(SettingsWindow *view)
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scrolled), view->channels_box);
     gtk_box_append(GTK_BOX(page), scrolled);
 
+    return page;
+}
+
+static GtkWidget *create_footer(SettingsWindow *view)
+{
     GtkWidget *footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(footer, "settings-footer");
     view->status_label = gtk_label_new("");
     gtk_widget_add_css_class(view->status_label, "settings-status-label");
     gtk_label_set_xalign(GTK_LABEL(view->status_label), 0.0);
@@ -230,14 +314,14 @@ static GtkWidget *create_channels_page(SettingsWindow *view)
     gtk_widget_add_css_class(save_button, "settings-primary-button");
     gtk_box_append(GTK_BOX(footer), save_button);
     g_signal_connect(save_button, "clicked", G_CALLBACK(on_save_clicked), view);
-    gtk_box_append(GTK_BOX(page), footer);
 
-    return page;
+    return footer;
 }
 
 void settings_window_show(
     GtkWindow *parent,
     AppSettings *settings,
+    SettingsWindowPage initial_page,
     SettingsWindowSavedCallback saved_callback,
     gpointer user_data
 )
@@ -258,14 +342,28 @@ void settings_window_show(
     gtk_widget_add_css_class(root, "settings-window");
     gtk_window_set_child(GTK_WINDOW(view->window), root);
 
-    gtk_box_append(GTK_BOX(root), create_sidebar());
-    gtk_box_append(GTK_BOX(root), create_channels_page(view));
+    view->stack = gtk_stack_new();
+    gtk_widget_set_hexpand(view->stack, TRUE);
+    gtk_widget_set_vexpand(view->stack, TRUE);
+    gtk_stack_add_named(GTK_STACK(view->stack), create_general_page(view), "general");
+    gtk_stack_add_named(GTK_STACK(view->stack), create_channels_page(view), "channels");
+
+    GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_hexpand(content, TRUE);
+    gtk_widget_set_vexpand(content, TRUE);
+    gtk_box_append(GTK_BOX(content), view->stack);
+    gtk_box_append(GTK_BOX(content), create_footer(view));
+
+    view->sidebar = create_sidebar(view, initial_page);
+    gtk_box_append(GTK_BOX(root), view->sidebar);
+    gtk_box_append(GTK_BOX(root), content);
 
     for (guint i = 0; i < app_settings_get_channel_count(settings); i++) {
         const AppSettingsChannel *channel = app_settings_get_channel(settings, i);
         add_channel_row(view, channel->channel);
     }
     update_empty_state(view);
+    gtk_stack_set_visible_child_name(GTK_STACK(view->stack), page_name_for_page(initial_page));
 
     gtk_window_present(GTK_WINDOW(view->window));
 }

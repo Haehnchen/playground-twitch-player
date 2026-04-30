@@ -76,6 +76,9 @@ guint app_settings_get_channel_count(const AppSettings *settings);
  */
 const AppSettingsChannel *app_settings_get_channel(const AppSettings *settings, guint index);
 
+gboolean app_settings_get_hwdec_enabled(const AppSettings *settings);
+void app_settings_set_hwdec_enabled(AppSettings *settings, gboolean enabled);
+
 /**
  * app_settings_clear_channels:
  * @settings: Settings object, or NULL.

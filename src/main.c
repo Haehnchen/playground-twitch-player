@@ -68,6 +68,7 @@ typedef struct {
 
 static void set_layout_mode(AppState *state, ContentMode mode);
 static void show_window_overlay(AppState *state);
+static void show_settings_window(AppState *state, SettingsWindowPage initial_page);
 
 static void remove_source_if_active(guint *source_id)
 {
@@ -327,6 +328,11 @@ static void on_content_fullscreen_requested(gpointer user_data)
     toggle_fullscreen(user_data);
 }
 
+static void on_content_settings_requested(gpointer user_data)
+{
+    show_settings_window(user_data, SETTINGS_WINDOW_PAGE_CHANNELS);
+}
+
 static void destroy_active_content(AppState *state)
 {
     if (state->single_player != NULL) {
@@ -388,6 +394,8 @@ static void create_single_content(AppState *state)
         target != NULL && target[0] != '\0',
         state->single_chat_paned_position,
         on_content_fullscreen_requested,
+        state,
+        on_content_settings_requested,
         state
     );
     single_player_set_fullscreen(state->single_player, state->fullscreen);
@@ -425,6 +433,8 @@ static void create_grid_content(AppState *state)
         targets,
         target_count,
         on_content_fullscreen_requested,
+        state,
+        on_content_settings_requested,
         state
     );
     grid_player_set_fullscreen(state->grid_player, state->fullscreen);
@@ -489,12 +499,22 @@ static void on_settings_saved(AppSettings *settings, gpointer user_data)
     show_window_overlay(state);
 }
 
+static void show_settings_window(AppState *state, SettingsWindowPage initial_page)
+{
+    settings_window_show(
+        GTK_WINDOW(state->window),
+        state->settings,
+        initial_page,
+        on_settings_saved,
+        state
+    );
+    show_window_overlay(state);
+}
+
 static void on_settings_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
-    AppState *state = user_data;
-    settings_window_show(GTK_WINDOW(state->window), state->settings, on_settings_saved, state);
-    show_window_overlay(state);
+    show_settings_window(user_data, SETTINGS_WINDOW_PAGE_GENERAL);
 }
 
 static void on_minimize_clicked(GtkButton *button, gpointer user_data)
@@ -805,6 +825,7 @@ static void install_css(void)
         ".settings-page-title,"
         ".settings-channel-header label,"
         ".settings-empty-label,"
+        ".settings-hint-label,"
         ".settings-status-label {"
         "  color: #efeff1;"
         "}"
@@ -821,6 +842,17 @@ static void install_css(void)
         "  font-size: 12px;"
         "  font-weight: 700;"
         "}"
+        ".settings-check {"
+        "  color: #efeff1;"
+        "  margin-top: 8px;"
+        "  margin-bottom: 0;"
+        "}"
+        ".settings-hint-label {"
+        "  color: rgba(239, 239, 241, 0.64);"
+        "  font-size: 13px;"
+        "  margin-top: -4px;"
+        "  margin-left: 24px;"
+        "}"
         ".settings-channel-row entry {"
         "  background: #222226;"
         "  color: #ffffff;"
@@ -833,21 +865,25 @@ static void install_css(void)
         "  background: rgba(145, 70, 255, 0.55);"
         "  color: #ffffff;"
         "}"
-        ".settings-page button {"
+        ".settings-page button,"
+        ".settings-footer button {"
         "  background: #26262c;"
         "  color: #efeff1;"
         "  border-color: rgba(255, 255, 255, 0.12);"
         "  outline-color: transparent;"
         "  box-shadow: none;"
         "}"
-        ".settings-page button:hover {"
+        ".settings-page button:hover,"
+        ".settings-footer button:hover {"
         "  background: #34343b;"
         "}"
-        ".settings-page .settings-primary-button {"
+        ".settings-page .settings-primary-button,"
+        ".settings-footer .settings-primary-button {"
         "  background: #3a2b52;"
         "  color: #ffffff;"
         "}"
-        ".settings-page .settings-primary-button:hover {"
+        ".settings-page .settings-primary-button:hover,"
+        ".settings-footer .settings-primary-button:hover {"
         "  background: #4b3670;"
         "}"
         ".settings-page .settings-remove-button {"
@@ -859,6 +895,10 @@ static void install_css(void)
         "}"
         ".settings-page .settings-remove-button:hover {"
         "  background: rgba(255, 255, 255, 0.08);"
+        "}"
+        ".settings-footer {"
+        "  background: #141417;"
+        "  padding: 0 18px 18px 18px;"
         "}"
         ".settings-empty-label {"
         "  color: rgba(239, 239, 241, 0.62);"
@@ -994,6 +1034,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     state->grid_target_count = config != NULL ? config->grid_target_count : 0;
     state->settings = app_settings_load();
     state->primary_session = player_session_new();
+    player_session_set_hwdec_enabled(state->primary_session, app_settings_get_hwdec_enabled(state->settings));
 
     state->window = gtk_application_window_new(application);
     gtk_window_set_title(GTK_WINDOW(state->window), "Twitch Player");

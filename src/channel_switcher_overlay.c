@@ -35,6 +35,8 @@ struct _ChannelSwitcherOverlay {
     guint generation;
     ChannelSwitcherActivateCallback activate_callback;
     gpointer user_data;
+    ChannelSwitcherSettingsCallback settings_callback;
+    gpointer settings_user_data;
 };
 
 typedef struct {
@@ -89,8 +91,10 @@ static void install_css(void)
         "  background: rgba(145, 70, 255, 0.50);"
         "  color: #ffffff;"
         "}"
+        ".channel-switcher-action,"
         ".channel-switcher-close {"
-        "  background: rgba(255, 255, 255, 0.08);"
+        "  background: transparent;"
+        "  background-image: none;"
         "  color: #ffffff;"
         "  border-color: transparent;"
         "  outline-color: transparent;"
@@ -100,8 +104,12 @@ static void install_css(void)
         "  padding: 1px 4px;"
         "  border-radius: 4px;"
         "}"
+        ".channel-switcher-action:hover {"
+        "  background: rgba(255, 255, 255, 0.16);"
+        "}"
         ".channel-switcher-close:hover {"
         "  background: rgba(170, 36, 36, 0.90);"
+        "  background-image: none;"
         "}"
         ".channel-switcher-scroller,"
         ".channel-switcher-scroller viewport {"
@@ -698,6 +706,19 @@ static void on_close_clicked(GtkButton *button, gpointer user_data)
     channel_switcher_overlay_hide(user_data);
 }
 
+static void on_settings_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    ChannelSwitcherOverlay *switcher = user_data;
+    ChannelSwitcherSettingsCallback callback = switcher->settings_callback;
+    gpointer callback_data = switcher->settings_user_data;
+
+    channel_switcher_overlay_hide(switcher);
+    if (callback != NULL) {
+        callback(callback_data);
+    }
+}
+
 static void on_backdrop_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data)
 {
     (void)gesture;
@@ -713,7 +734,9 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     GtkOverlay *overlay,
     AppSettings *settings,
     ChannelSwitcherActivateCallback activate_callback,
-    gpointer user_data
+    gpointer user_data,
+    ChannelSwitcherSettingsCallback settings_callback,
+    gpointer settings_user_data
 )
 {
     install_css();
@@ -724,6 +747,8 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     switcher->settings = settings;
     switcher->activate_callback = activate_callback;
     switcher->user_data = user_data;
+    switcher->settings_callback = settings_callback;
+    switcher->settings_user_data = settings_user_data;
 
     switcher->backdrop = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     g_object_add_weak_pointer(G_OBJECT(switcher->backdrop), (gpointer *)&switcher->backdrop);
@@ -746,7 +771,7 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     gtk_widget_set_valign(switcher->panel, GTK_ALIGN_START);
     gtk_widget_set_visible(switcher->panel, FALSE);
 
-    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_add_css_class(header, "channel-switcher-header");
     switcher->search_entry = gtk_search_entry_new();
     g_object_add_weak_pointer(G_OBJECT(switcher->search_entry), (gpointer *)&switcher->search_entry);
@@ -755,6 +780,11 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     g_signal_connect(switcher->search_entry, "changed", G_CALLBACK(on_search_changed), switcher);
     GtkWidget *header_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(header_spacer, TRUE);
+    GtkWidget *settings_button = gtk_button_new();
+    gtk_button_set_child(GTK_BUTTON(settings_button), player_settings_icon_new());
+    gtk_widget_add_css_class(settings_button, "channel-switcher-action");
+    gtk_widget_set_tooltip_text(settings_button, "Edit channels");
+    g_signal_connect(settings_button, "clicked", G_CALLBACK(on_settings_clicked), switcher);
     GtkWidget *close_button = gtk_button_new();
     gtk_button_set_child(GTK_BUTTON(close_button), player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE));
     gtk_widget_add_css_class(close_button, "channel-switcher-close");
@@ -762,6 +792,7 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), switcher);
     gtk_box_append(GTK_BOX(header), switcher->search_entry);
     gtk_box_append(GTK_BOX(header), header_spacer);
+    gtk_box_append(GTK_BOX(header), settings_button);
     gtk_box_append(GTK_BOX(header), close_button);
     gtk_box_append(GTK_BOX(switcher->panel), header);
 

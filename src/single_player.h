@@ -8,6 +8,7 @@
 typedef struct _SinglePlayer SinglePlayer;
 
 typedef void (*SinglePlayerFullscreenCallback)(gpointer user_data);
+typedef void (*SinglePlayerSettingsCallback)(gpointer user_data);
 
 SinglePlayer *single_player_new(
     GtkWindow *window,
@@ -17,7 +18,9 @@ SinglePlayer *single_player_new(
     gboolean auto_start,
     int chat_paned_position,
     SinglePlayerFullscreenCallback fullscreen_callback,
-    gpointer fullscreen_user_data
+    gpointer fullscreen_user_data,
+    SinglePlayerSettingsCallback settings_callback,
+    gpointer settings_user_data
 );
 GtkWidget *single_player_get_widget(SinglePlayer *player);
 char *single_player_dup_current_target(SinglePlayer *player);
