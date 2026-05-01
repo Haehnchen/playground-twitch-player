@@ -6,6 +6,8 @@
 #include "twitch_channel_list.h"
 #include "twitch_stream_info.h"
 
+#include <string.h>
+
 #define PANEL_MARGIN 12
 #define PANEL_TOP_SAFE_MARGIN 48
 #define PANEL_BOTTOM_MARGIN 64
@@ -31,6 +33,7 @@ struct _ChannelSwitcherOverlay {
     GtkWidget *grid;
     GtkWidget *scroller;
     GtkWidget *search_entry;
+    GtkWidget *direct_channel_entry;
     AppSettings *settings;
     GPtrArray *previews;
     char *cached_channels_key;
@@ -92,7 +95,25 @@ static void install_css(void)
         "  box-shadow: none;"
         "  font-size: 12px;"
         "  min-height: 22px;"
-        "  min-width: 190px;"
+        "  min-width: 165px;"
+        "  padding: 1px 7px;"
+        "  border-radius: 4px;"
+        "}"
+        ".channel-switcher-header-separator {"
+        "  color: rgba(255, 255, 255, 0.34);"
+        "  font-size: 13px;"
+        "  margin-left: 1px;"
+        "  margin-right: 1px;"
+        "}"
+        ".channel-switcher-open-entry {"
+        "  background: rgba(255, 255, 255, 0.08);"
+        "  color: #ffffff;"
+        "  border-color: rgba(255, 255, 255, 0.10);"
+        "  outline-color: transparent;"
+        "  box-shadow: none;"
+        "  font-size: 12px;"
+        "  min-height: 22px;"
+        "  min-width: 165px;"
         "  padding: 1px 7px;"
         "  border-radius: 4px;"
         "}"
@@ -396,6 +417,42 @@ static const AppSettingsChannel *find_settings_channel(ChannelSwitcherOverlay *s
     return NULL;
 }
 
+static char *extract_twitch_channel_name(const char *value)
+{
+    if (value == NULL) {
+        return NULL;
+    }
+
+    g_autofree char *trimmed = g_strdup(value);
+    g_strstrip(trimmed);
+    if (trimmed[0] == '\0') {
+        return NULL;
+    }
+
+    const char *start = strstr(trimmed, "twitch.tv/");
+    if (start != NULL) {
+        start += strlen("twitch.tv/");
+    } else {
+        start = trimmed;
+    }
+
+    while (*start == '/' || *start == '@') {
+        start++;
+    }
+
+    const char *end = start;
+    while (g_ascii_isalnum(*end) || *end == '_') {
+        end++;
+    }
+
+    if (end == start) {
+        return NULL;
+    }
+
+    g_autofree char *channel = g_strndup(start, end - start);
+    return g_ascii_strdown(channel, -1);
+}
+
 static void on_channel_button_clicked(GtkButton *button, gpointer user_data)
 {
     ChannelSwitcherOverlay *switcher = user_data;
@@ -417,6 +474,58 @@ static void on_channel_button_clicked(GtkButton *button, gpointer user_data)
     }
 
     channel_switcher_overlay_hide(switcher);
+}
+
+static void activate_dynamic_channel(ChannelSwitcherOverlay *switcher, const char *channel_name)
+{
+    if (switcher == NULL ||
+        switcher->activate_callback == NULL ||
+        channel_name == NULL ||
+        channel_name[0] == '\0') {
+        return;
+    }
+
+    const AppSettingsChannel *configured_channel = find_settings_channel(switcher, channel_name);
+    if (configured_channel != NULL) {
+        switcher->activate_callback(configured_channel, switcher->user_data);
+        channel_switcher_overlay_hide(switcher);
+        return;
+    }
+
+    AppSettingsChannel dynamic_channel = {0};
+    dynamic_channel.channel = (char *)channel_name;
+    dynamic_channel.label = (char *)channel_name;
+    dynamic_channel.url = g_strdup_printf("https://www.twitch.tv/%s", channel_name);
+
+    switcher->activate_callback(&dynamic_channel, switcher->user_data);
+    g_free(dynamic_channel.url);
+    channel_switcher_overlay_hide(switcher);
+}
+
+static void open_direct_channel(ChannelSwitcherOverlay *switcher)
+{
+    if (switcher == NULL || switcher->direct_channel_entry == NULL) {
+        return;
+    }
+
+    const char *text = gtk_editable_get_text(GTK_EDITABLE(switcher->direct_channel_entry));
+    g_autofree char *channel = extract_twitch_channel_name(text);
+    activate_dynamic_channel(switcher, channel);
+}
+
+static void on_direct_channel_activate(GtkEntry *entry, gpointer user_data)
+{
+    (void)entry;
+    open_direct_channel(user_data);
+}
+
+static void on_direct_channel_icon_pressed(GtkEntry *entry, GtkEntryIconPosition icon_pos, gpointer user_data)
+{
+    (void)entry;
+
+    if (icon_pos == GTK_ENTRY_ICON_SECONDARY) {
+        open_direct_channel(user_data);
+    }
 }
 
 static GtkWidget *create_image_picture(ChannelSwitcherOverlay *switcher, const char *url, int width, int height, const char *css_class)
@@ -895,6 +1004,15 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(switcher->search_entry), "Filter live channels");
     g_signal_connect(switcher->search_entry, "changed", G_CALLBACK(on_search_changed), switcher);
     g_signal_connect(switcher->search_entry, "activate", G_CALLBACK(on_search_activate), switcher);
+    switcher->direct_channel_entry = gtk_entry_new();
+    g_object_add_weak_pointer(G_OBJECT(switcher->direct_channel_entry), (gpointer *)&switcher->direct_channel_entry);
+    gtk_widget_add_css_class(switcher->direct_channel_entry, "channel-switcher-open-entry");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(switcher->direct_channel_entry), "Channel or Twitch URL");
+    gtk_entry_set_icon_from_icon_name(GTK_ENTRY(switcher->direct_channel_entry), GTK_ENTRY_ICON_SECONDARY, "media-playback-start-symbolic");
+    gtk_entry_set_icon_tooltip_text(GTK_ENTRY(switcher->direct_channel_entry), GTK_ENTRY_ICON_SECONDARY, "Open channel");
+    gtk_widget_set_tooltip_text(switcher->direct_channel_entry, "Enter a channel name or Twitch URL");
+    g_signal_connect(switcher->direct_channel_entry, "activate", G_CALLBACK(on_direct_channel_activate), switcher);
+    g_signal_connect(switcher->direct_channel_entry, "icon-press", G_CALLBACK(on_direct_channel_icon_pressed), switcher);
     GtkWidget *header_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(header_spacer, TRUE);
     GtkWidget *settings_button = gtk_button_new();
@@ -907,7 +1025,11 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     gtk_widget_add_css_class(close_button, "channel-switcher-close");
     gtk_widget_set_tooltip_text(close_button, "Close");
     g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), switcher);
+    GtkWidget *input_separator = gtk_label_new("|");
+    gtk_widget_add_css_class(input_separator, "channel-switcher-header-separator");
     gtk_box_append(GTK_BOX(header), switcher->search_entry);
+    gtk_box_append(GTK_BOX(header), input_separator);
+    gtk_box_append(GTK_BOX(header), switcher->direct_channel_entry);
     gtk_box_append(GTK_BOX(header), header_spacer);
     gtk_box_append(GTK_BOX(header), settings_button);
     gtk_box_append(GTK_BOX(header), close_button);
@@ -962,6 +1084,9 @@ void channel_switcher_overlay_show_at(ChannelSwitcherOverlay *switcher, double x
     if (switcher->search_entry != NULL) {
         gtk_editable_set_text(GTK_EDITABLE(switcher->search_entry), "");
     }
+    if (switcher->direct_channel_entry != NULL) {
+        gtk_editable_set_text(GTK_EDITABLE(switcher->direct_channel_entry), "");
+    }
     if (switcher->backdrop != NULL) {
         gtk_widget_set_visible(switcher->backdrop, TRUE);
     }
@@ -1002,6 +1127,9 @@ void channel_switcher_overlay_hide(ChannelSwitcherOverlay *switcher)
     if (switcher->backdrop != NULL) {
         gtk_widget_set_visible(switcher->backdrop, FALSE);
     }
+    if (switcher->direct_channel_entry != NULL) {
+        gtk_editable_set_text(GTK_EDITABLE(switcher->direct_channel_entry), "");
+    }
     clear_grid(switcher);
 }
 
@@ -1036,6 +1164,7 @@ void channel_switcher_overlay_free(ChannelSwitcherOverlay *switcher)
     switcher->grid = NULL;
     switcher->scroller = NULL;
     switcher->search_entry = NULL;
+    switcher->direct_channel_entry = NULL;
     switcher->overlay = NULL;
     /* Async image/network callbacks can still carry this pointer briefly after
      * cancellation. Keep the tiny shell allocated, matching the player lifetime
