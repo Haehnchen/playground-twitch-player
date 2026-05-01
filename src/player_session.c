@@ -179,6 +179,29 @@ void player_session_set_wakeup_callback(PlayerSession *session, void (*callback)
     }
 }
 
+void player_session_toggle_stream_info(PlayerSession *session)
+{
+    if (!player_session_is_ready(session)) {
+        return;
+    }
+
+    const char *stats_cmd[] = {
+        "script-binding",
+        "stats/display-stats-toggle",
+        NULL,
+    };
+
+    int status = mpv_command(session->mpv, stats_cmd);
+    if (status < 0) {
+        const char *keypress_cmd[] = {
+            "keypress",
+            "i",
+            NULL,
+        };
+        check_mpv(mpv_command(session->mpv, keypress_cmd), "toggle stream info");
+    }
+}
+
 void player_session_reenable_video(PlayerSession *session)
 {
     if (!player_session_is_playing(session)) {

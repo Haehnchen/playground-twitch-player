@@ -70,6 +70,50 @@ static void draw_info_icon(GtkDrawingArea *area, cairo_t *cr, int width, int hei
     cairo_fill(cr);
 }
 
+static void draw_stream_settings_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
+{
+    (void)area;
+    (void)user_data;
+    double size = MIN(width, height);
+    double cx = width / 2.0;
+    double cy = height / 2.0;
+    double outer = size * 0.34;
+    double tooth = size * 0.05;
+    double inner = size * 0.15;
+    static const double dirs[][2] = {
+        {1.0, 0.0},
+        {0.7071, 0.7071},
+        {0.0, 1.0},
+        {-0.7071, 0.7071},
+        {-1.0, 0.0},
+        {-0.7071, -0.7071},
+        {0.0, -1.0},
+        {0.7071, -0.7071},
+    };
+
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.95);
+    cairo_set_line_width(cr, MAX(1.5, size * 0.085));
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+
+    for (guint i = 0; i < G_N_ELEMENTS(dirs); i++) {
+        double sx = cx + dirs[i][0] * (outer - tooth);
+        double sy = cy + dirs[i][1] * (outer - tooth);
+        double ex = cx + dirs[i][0] * (outer + tooth * 0.45);
+        double ey = cy + dirs[i][1] * (outer + tooth * 0.45);
+
+        cairo_move_to(cr, sx, sy);
+        cairo_line_to(cr, ex, ey);
+    }
+    cairo_stroke(cr);
+
+    cairo_arc(cr, cx, cy, outer - tooth * 0.7, 0, 2 * G_PI);
+    cairo_stroke(cr);
+
+    cairo_arc(cr, cx, cy, inner, 0, 2 * G_PI);
+    cairo_stroke(cr);
+}
+
 static void draw_trash_icon(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
 {
     (void)area;
@@ -358,6 +402,15 @@ GtkWidget *player_settings_icon_new(void)
     gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 18);
     gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 18);
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_settings_icon, NULL, NULL);
+    return icon;
+}
+
+GtkWidget *player_stream_settings_icon_new(void)
+{
+    GtkWidget *icon = gtk_drawing_area_new();
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(icon), 13);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(icon), 13);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon), draw_stream_settings_icon, NULL, NULL);
     return icon;
 }
 

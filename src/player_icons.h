@@ -29,6 +29,7 @@ typedef enum {
 } PlayerTileFocusIconKind;
 
 GtkWidget *player_settings_icon_new(void);
+GtkWidget *player_stream_settings_icon_new(void);
 GtkWidget *player_info_icon_new(void);
 GtkWidget *player_refresh_icon_new(void);
 GtkWidget *player_trash_icon_new(void);

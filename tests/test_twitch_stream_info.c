@@ -79,6 +79,37 @@ static void test_parse_current_stream_response_handles_missing_optional_fields(v
     g_assert_cmpuint(stream->viewer_count, ==, 0);
 }
 
+static void test_parse_stream_qualities_playlist_returns_sorted_variants(void)
+{
+    const char *playlist =
+        "#EXTM3U\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,FRAME-RATE=60.000\n"
+        "https://example.test/720p60.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=60.000\n"
+        "https://example.test/1080p60.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=852x480,FRAME-RATE=30.000\n"
+        "https://example.test/480p.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=160000,NAME=\"Audio Only\"\n"
+        "https://example.test/audio.m3u8\n";
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GPtrArray) qualities = parse_stream_qualities_playlist(playlist, &error);
+
+    g_assert_no_error(error);
+    g_assert_nonnull(qualities);
+    g_assert_cmpuint(qualities->len, ==, 3);
+
+    TwitchStreamQuality *low = g_ptr_array_index(qualities, 0);
+    TwitchStreamQuality *mid = g_ptr_array_index(qualities, 1);
+    TwitchStreamQuality *source = g_ptr_array_index(qualities, 2);
+
+    g_assert_cmpstr(low->label, ==, "480p");
+    g_assert_cmpstr(mid->label, ==, "720p60");
+    g_assert_cmpstr(source->label, ==, "1080p60");
+    g_assert_cmpstr(source->url, ==, "https://example.test/1080p60.m3u8");
+    g_assert_cmpuint(source->width, ==, 1920);
+    g_assert_cmpuint(source->height, ==, 1080);
+}
+
 static void test_format_viewer_count_compacts_large_counts(void)
 {
     g_autofree char *small = twitch_stream_info_format_viewer_count(999);
@@ -296,6 +327,7 @@ int main(int argc, char **argv)
     g_test_add_func("/twitch-stream-info/build-live-request-body/skips-empty", test_build_live_channels_request_body_skips_empty_channels);
     g_test_add_func("/twitch-stream-info/parse-response/current-stream", test_parse_current_stream_response_returns_title_and_viewers);
     g_test_add_func("/twitch-stream-info/parse-response/current-stream-missing-optional", test_parse_current_stream_response_handles_missing_optional_fields);
+    g_test_add_func("/twitch-stream-info/parse-response/stream-qualities", test_parse_stream_qualities_playlist_returns_sorted_variants);
     g_test_add_func("/twitch-stream-info/format/viewer-count", test_format_viewer_count_compacts_large_counts);
     g_test_add_func("/twitch-stream-info/format/current-stream-title", test_format_current_stream_title_joins_viewers_and_title);
     g_test_add_func("/twitch-stream-info/parse-live-response/only-live", test_parse_live_channels_response_returns_only_live_streams);

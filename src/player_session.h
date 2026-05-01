@@ -24,6 +24,7 @@ void player_session_set_muted(PlayerSession *session, gboolean muted);
 void player_session_toggle_muted(PlayerSession *session);
 void player_session_set_hwdec_enabled(PlayerSession *session, gboolean enabled);
 void player_session_set_wakeup_callback(PlayerSession *session, void (*callback)(void *), void *data);
+void player_session_toggle_stream_info(PlayerSession *session);
 void player_session_reenable_video(PlayerSession *session);
 void player_session_load_stream(PlayerSession *session, const char *url, const char *label, const char *channel);
 void player_session_stop(PlayerSession *session);

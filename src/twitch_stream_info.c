@@ -10,13 +10,19 @@
 #define TWITCH_GQL_CLIENT_ID "kimne78kx3ncx6brgo4mv6wki5h1ko"
 #define TWITCH_GQL_QUERY "query($login:String!){user(login:$login){stream{title viewersCount}}}"
 #define TWITCH_GQL_LIVE_CHANNELS_QUERY "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:240,height:135) game{name}}}}"
+#define TWITCH_GQL_PLAYBACK_ACCESS_TOKEN_QUERY "query($login:String!){streamPlaybackAccessToken(channelName:$login,params:{platform:\"web\",playerBackend:\"mediaplayer\",playerType:\"site\"}){value signature}}"
 #define TWITCH_GQL_MAX_LOGINS 100
 #define TWITCH_HELIX_USERS_URI "https://api.twitch.tv/helix/users"
 #define TWITCH_HELIX_PAGE_SIZE "100"
+#define TWITCH_USHER_HLS_URI_FORMAT "https://usher.ttvnw.net/api/channel/hls/%s.m3u8?allow_audio_only=true&allow_source=true&fast_bread=true&p=%u&player=twitchweb&sig=%s&token=%s&type=any"
 
 typedef struct {
     char *channel;
 } FetchCurrentStreamData;
+
+typedef struct {
+    char *channel;
+} FetchStreamQualitiesData;
 
 typedef struct {
     char **channels;
@@ -31,6 +37,16 @@ typedef struct {
 G_DEFINE_QUARK(twitch-stream-info-error, twitch_stream_info_error)
 
 static void fetch_current_stream_data_free(FetchCurrentStreamData *data)
+{
+    if (data == NULL) {
+        return;
+    }
+
+    g_free(data->channel);
+    g_free(data);
+}
+
+static void fetch_stream_qualities_data_free(FetchStreamQualitiesData *data)
 {
     if (data == NULL) {
         return;
@@ -85,6 +101,17 @@ void twitch_current_stream_free(TwitchCurrentStream *stream)
 
     g_free(stream->title);
     g_free(stream);
+}
+
+void twitch_stream_quality_free(TwitchStreamQuality *quality)
+{
+    if (quality == NULL) {
+        return;
+    }
+
+    g_free(quality->label);
+    g_free(quality->url);
+    g_free(quality);
 }
 
 char *twitch_stream_info_format_viewer_count(guint viewer_count)
@@ -172,6 +199,26 @@ static char *build_live_channels_request_body(const char * const *channels, guin
     return json_generator_to_data(generator, NULL);
 }
 
+static char *build_playback_access_token_request_body(const char *channel)
+{
+    g_autoptr(JsonBuilder) builder = json_builder_new();
+
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "query");
+    json_builder_add_string_value(builder, TWITCH_GQL_PLAYBACK_ACCESS_TOKEN_QUERY);
+    json_builder_set_member_name(builder, "variables");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "login");
+    json_builder_add_string_value(builder, channel);
+    json_builder_end_object(builder);
+    json_builder_end_object(builder);
+
+    g_autoptr(JsonNode) root = json_builder_get_root(builder);
+    g_autoptr(JsonGenerator) generator = json_generator_new();
+    json_generator_set_root(generator, root);
+    return json_generator_to_data(generator, NULL);
+}
+
 static const char *json_object_get_string_or_null(JsonObject *object, const char *member_name)
 {
     JsonNode *node = json_object_get_member(object, member_name);
@@ -234,6 +281,190 @@ static TwitchCurrentStream *parse_current_stream_response(const char *json, gsiz
     current_stream->title = title != NULL ? g_strdup(title) : g_strdup("");
     current_stream->viewer_count = json_object_get_uint_or_zero(stream, "viewersCount");
     return current_stream;
+}
+
+static gboolean parse_playback_access_token_response(const char *json, gsize length, char **token_out, char **signature_out, GError **error)
+{
+    g_autoptr(JsonParser) parser = json_parser_new();
+
+    if (!json_parser_load_from_data(parser, json, length, error)) {
+        return FALSE;
+    }
+
+    JsonNode *root = json_parser_get_root(parser);
+    if (root == NULL || !JSON_NODE_HOLDS_OBJECT(root)) {
+        return FALSE;
+    }
+
+    JsonObject *root_object = json_node_get_object(root);
+    JsonNode *data_node = json_object_get_member(root_object, "data");
+    if (data_node == NULL || !JSON_NODE_HOLDS_OBJECT(data_node)) {
+        return FALSE;
+    }
+
+    JsonObject *data = json_node_get_object(data_node);
+    JsonNode *token_node = json_object_get_member(data, "streamPlaybackAccessToken");
+    if (token_node == NULL || JSON_NODE_HOLDS_NULL(token_node) || !JSON_NODE_HOLDS_OBJECT(token_node)) {
+        return FALSE;
+    }
+
+    JsonObject *token = json_node_get_object(token_node);
+    const char *value = json_object_get_string_or_null(token, "value");
+    const char *signature = json_object_get_string_or_null(token, "signature");
+    if (value == NULL || value[0] == '\0' || signature == NULL || signature[0] == '\0') {
+        return FALSE;
+    }
+
+    *token_out = g_strdup(value);
+    *signature_out = g_strdup(signature);
+    return TRUE;
+}
+
+static char *get_m3u_attribute_value(const char *line, const char *name)
+{
+    g_autofree char *needle = g_strdup_printf("%s=", name);
+    const char *start = strstr(line, needle);
+    if (start == NULL) {
+        return NULL;
+    }
+
+    start += strlen(needle);
+    if (*start == '"') {
+        start++;
+        const char *end = strchr(start, '"');
+        return end != NULL ? g_strndup(start, end - start) : g_strdup(start);
+    }
+
+    const char *end = start;
+    while (*end != '\0' && *end != ',') {
+        end++;
+    }
+
+    return g_strndup(start, end - start);
+}
+
+static guint parse_uint_attribute(const char *line, const char *name)
+{
+    g_autofree char *value = get_m3u_attribute_value(line, name);
+    if (value == NULL || value[0] == '\0') {
+        return 0;
+    }
+
+    guint64 parsed = g_ascii_strtoull(value, NULL, 10);
+    return parsed <= G_MAXUINT ? (guint)parsed : 0;
+}
+
+static double parse_double_attribute(const char *line, const char *name)
+{
+    g_autofree char *value = get_m3u_attribute_value(line, name);
+    return value != NULL && value[0] != '\0' ? g_ascii_strtod(value, NULL) : 0.0;
+}
+
+static void parse_resolution_attribute(const char *line, guint *width, guint *height)
+{
+    g_autofree char *resolution = get_m3u_attribute_value(line, "RESOLUTION");
+    if (resolution == NULL) {
+        return;
+    }
+
+    char *separator = strchr(resolution, 'x');
+    if (separator == NULL) {
+        return;
+    }
+
+    *separator = '\0';
+    guint64 parsed_width = g_ascii_strtoull(resolution, NULL, 10);
+    guint64 parsed_height = g_ascii_strtoull(separator + 1, NULL, 10);
+    if (parsed_width <= G_MAXUINT && parsed_height <= G_MAXUINT) {
+        *width = (guint)parsed_width;
+        *height = (guint)parsed_height;
+    }
+}
+
+static char *build_quality_label(guint width, guint height, double frame_rate, guint bandwidth)
+{
+    if (height > 0) {
+        if (frame_rate >= 50.0) {
+            return g_strdup_printf("%up60", height);
+        }
+        return g_strdup_printf("%up", height);
+    }
+
+    if (bandwidth > 0) {
+        return g_strdup_printf("%u kbps", MAX(1, bandwidth / 1000));
+    }
+
+    (void)width;
+    return g_strdup("Unknown");
+}
+
+static gint compare_stream_qualities(gconstpointer a, gconstpointer b)
+{
+    const TwitchStreamQuality *quality_a = *(TwitchStreamQuality * const *)a;
+    const TwitchStreamQuality *quality_b = *(TwitchStreamQuality * const *)b;
+
+    if (quality_a->height != quality_b->height) {
+        return quality_a->height < quality_b->height ? -1 : 1;
+    }
+    if (quality_a->frame_rate != quality_b->frame_rate) {
+        return quality_a->frame_rate < quality_b->frame_rate ? -1 : 1;
+    }
+    if (quality_a->bandwidth != quality_b->bandwidth) {
+        return quality_a->bandwidth < quality_b->bandwidth ? -1 : 1;
+    }
+
+    return g_strcmp0(quality_a->label, quality_b->label);
+}
+
+static GPtrArray *parse_stream_qualities_playlist(const char *playlist, GError **error)
+{
+    GPtrArray *qualities = g_ptr_array_new_with_free_func((GDestroyNotify)twitch_stream_quality_free);
+    g_auto(GStrv) lines = g_strsplit(playlist != NULL ? playlist : "", "\n", -1);
+    char *pending_stream_info = NULL;
+
+    for (guint i = 0; lines[i] != NULL; i++) {
+        g_strstrip(lines[i]);
+
+        if (g_str_has_prefix(lines[i], "#EXT-X-STREAM-INF:")) {
+            g_free(pending_stream_info);
+            pending_stream_info = g_strdup(lines[i]);
+            continue;
+        }
+
+        if (pending_stream_info == NULL || lines[i][0] == '\0' || lines[i][0] == '#') {
+            continue;
+        }
+
+        TwitchStreamQuality *quality = g_new0(TwitchStreamQuality, 1);
+        quality->bandwidth = parse_uint_attribute(pending_stream_info, "BANDWIDTH");
+        quality->frame_rate = parse_double_attribute(pending_stream_info, "FRAME-RATE");
+        parse_resolution_attribute(pending_stream_info, &quality->width, &quality->height);
+
+        g_autofree char *name = get_m3u_attribute_value(pending_stream_info, "NAME");
+        g_autofree char *lower_name = name != NULL ? g_ascii_strdown(name, -1) : NULL;
+        if (quality->height == 0 || (lower_name != NULL && g_strrstr(lower_name, "audio") != NULL)) {
+            twitch_stream_quality_free(quality);
+            g_clear_pointer(&pending_stream_info, g_free);
+            continue;
+        }
+
+        quality->label = build_quality_label(quality->width, quality->height, quality->frame_rate, quality->bandwidth);
+        quality->url = g_strdup(lines[i]);
+        g_ptr_array_add(qualities, quality);
+
+        g_clear_pointer(&pending_stream_info, g_free);
+    }
+
+    g_free(pending_stream_info);
+    g_ptr_array_sort(qualities, compare_stream_qualities);
+
+    if (qualities->len == 0) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "No HLS stream variants found");
+        g_ptr_array_unref(qualities);
+        return NULL;
+    }
+
+    return qualities;
 }
 
 static char *post_twitch_gql_request(const char *body, GCancellable *cancel, GError **error)
@@ -340,6 +571,32 @@ static char *get_twitch_helix_request(const char *uri, const char *client_id, co
     return g_strndup(response_data, response_size);
 }
 
+static char *get_twitch_hls_playlist(const char *uri, GCancellable *cancel, GError **error)
+{
+    g_autoptr(SoupSession) session = soup_session_new();
+    g_autoptr(SoupMessage) message = soup_message_new("GET", uri);
+
+    g_object_set(session, "timeout", 15, NULL);
+    SoupMessageHeaders *request_headers = soup_message_get_request_headers(message);
+    soup_message_headers_append(request_headers, "Client-ID", TWITCH_GQL_CLIENT_ID);
+    soup_message_headers_append(request_headers, "Accept", "application/x-mpegURL, application/vnd.apple.mpegurl, */*");
+
+    g_autoptr(GBytes) response = soup_session_send_and_read(session, message, cancel, error);
+    if (response == NULL) {
+        return NULL;
+    }
+
+    guint status = soup_message_get_status(message);
+    if (status < 200 || status >= 300) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "Twitch HLS returned HTTP %u", status);
+        return NULL;
+    }
+
+    gsize response_size = 0;
+    const char *response_data = g_bytes_get_data(response, &response_size);
+    return g_strndup(response_data, response_size);
+}
+
 static char *parse_helix_user_id_response(const char *json, gsize length, GError **error)
 {
     g_autoptr(JsonParser) parser = json_parser_new();
@@ -434,6 +691,43 @@ static TwitchCurrentStream *fetch_current_stream(const char *channel, GCancellab
     }
 
     return parse_current_stream_response(response, strlen(response), error);
+}
+
+static GPtrArray *fetch_stream_qualities(const char *channel, GCancellable *cancel, GError **error)
+{
+    g_autofree char *body = build_playback_access_token_request_body(channel);
+    g_autofree char *response = post_twitch_gql_request(body, cancel, error);
+    g_autofree char *token = NULL;
+    g_autofree char *signature = NULL;
+
+    if (response == NULL) {
+        return NULL;
+    }
+
+    if (!parse_playback_access_token_response(response, strlen(response), &token, &signature, error)) {
+        if (error != NULL && *error == NULL) {
+            g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "Twitch playback token is unavailable");
+        }
+        return NULL;
+    }
+
+    g_autofree char *escaped_channel = g_uri_escape_string(channel, NULL, FALSE);
+    g_autofree char *escaped_token = g_uri_escape_string(token, NULL, FALSE);
+    g_autofree char *escaped_signature = g_uri_escape_string(signature, NULL, FALSE);
+    g_autofree char *hls_uri = g_strdup_printf(
+        TWITCH_USHER_HLS_URI_FORMAT,
+        escaped_channel,
+        g_random_int_range(100000, 999999),
+        escaped_signature,
+        escaped_token
+    );
+    g_autofree char *playlist = get_twitch_hls_playlist(hls_uri, cancel, error);
+
+    if (playlist == NULL) {
+        return NULL;
+    }
+
+    return parse_stream_qualities_playlist(playlist, error);
 }
 
 static gint compare_stream_previews_by_viewers(gconstpointer a, gconstpointer b)
@@ -635,6 +929,24 @@ static void fetch_current_stream_worker(GTask *task, gpointer source_object, gpo
     g_task_return_pointer(task, stream, (GDestroyNotify)twitch_current_stream_free);
 }
 
+static void fetch_stream_qualities_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)
+{
+    (void)source_object;
+    FetchStreamQualitiesData *data = task_data;
+    g_autoptr(GError) error = NULL;
+    GPtrArray *qualities = fetch_stream_qualities(data->channel, cancel, &error);
+
+    if (error != NULL) {
+        if (qualities != NULL) {
+            g_ptr_array_unref(qualities);
+        }
+        g_task_return_error(task, g_steal_pointer(&error));
+        return;
+    }
+
+    g_task_return_pointer(task, qualities, (GDestroyNotify)g_ptr_array_unref);
+}
+
 static void fetch_live_channels_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)
 {
     (void)source_object;
@@ -691,6 +1003,32 @@ void twitch_stream_info_fetch_current_stream_async(
 }
 
 TwitchCurrentStream *twitch_stream_info_fetch_current_stream_finish(GAsyncResult *result, GError **error)
+{
+    g_return_val_if_fail(g_task_is_valid(result, NULL), NULL);
+
+    return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+void twitch_stream_info_fetch_stream_qualities_async(
+    const char *channel,
+    GCancellable *cancel,
+    GAsyncReadyCallback callback,
+    gpointer user_data
+)
+{
+    g_return_if_fail(channel != NULL);
+    g_return_if_fail(channel[0] != '\0');
+
+    FetchStreamQualitiesData *data = g_new0(FetchStreamQualitiesData, 1);
+    data->channel = g_ascii_strdown(channel, -1);
+
+    GTask *task = g_task_new(NULL, cancel, callback, user_data);
+    g_task_set_task_data(task, data, (GDestroyNotify)fetch_stream_qualities_data_free);
+    g_task_run_in_thread(task, fetch_stream_qualities_worker);
+    g_object_unref(task);
+}
+
+GPtrArray *twitch_stream_info_fetch_stream_qualities_finish(GAsyncResult *result, GError **error)
 {
     g_return_val_if_fail(g_task_is_valid(result, NULL), NULL);
 

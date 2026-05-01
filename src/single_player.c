@@ -15,10 +15,12 @@
 #include "player_defaults.h"
 #include "player_icons.h"
 #include "player_motion.h"
+#include "player_stream_settings.h"
 #include "player_volume.h"
 #include "twitch_stream_info.h"
 
 #define STREAM_TITLE_REFRESH_SECONDS (3 * 60)
+#define STREAM_QUALITY_CACHE_SECONDS (2 * 60)
 #define STREAM_DROPDOWN_WIDTH 140
 #define DEFAULT_CHAT_WIDTH 280
 #define MIN_CHAT_WIDTH 180
@@ -46,6 +48,9 @@ struct _SinglePlayer {
     GtkWidget *empty_button;
     GtkWidget *mute_button;
     GtkWidget *volume_scale;
+    GtkWidget *stream_settings_popover;
+    GtkWidget *quality_list_box;
+    GtkWidget *quality_status_label;
     GtkWidget *status_label;
     StreamEntry *streams;
     guint stream_count;
@@ -55,6 +60,11 @@ struct _SinglePlayer {
     ChatPanel *chat_panel;
     AppSettings *settings;
     GCancellable *title_cancel;
+    GCancellable *quality_cancel;
+    GPtrArray *stream_qualities;
+    char *selected_quality_url;
+    char *selected_quality_label;
+    gint64 stream_qualities_fetched_at;
     int chat_paned_position;
     int last_render_width;
     int last_render_height;
@@ -68,6 +78,7 @@ struct _SinglePlayer {
     guint title_refresh_source;
     guint chat_position_source;
     guint title_generation;
+    guint quality_generation;
     PlayerMotionTracker motion_tracker;
     double move_press_x;
     double move_press_y;
@@ -78,6 +89,7 @@ struct _SinglePlayer {
     gpointer fullscreen_user_data;
     gboolean stream_playing;
     gboolean title_fetch_in_progress;
+    gboolean quality_fetch_in_progress;
 };
 
 typedef struct {
@@ -85,11 +97,20 @@ typedef struct {
     guint generation;
 } StreamTitleCallbackData;
 
+typedef struct {
+    SinglePlayer *state;
+    guint generation;
+} StreamQualityCallbackData;
+
 static void init_streams(SinglePlayer *state, const char *target);
 static void free_streams(SinglePlayer *state);
 static void update_stream_combo_label(SinglePlayer *state);
 static void show_footer(SinglePlayer *state);
 static void set_mute(SinglePlayer *state, gboolean muted);
+static void reset_stream_title(SinglePlayer *state);
+static void start_chat(SinglePlayer *state, const char *channel);
+static void request_stream_title_update(SinglePlayer *state, gboolean force);
+static void load_stream_url(SinglePlayer *state, const char *url, const char *label, const char *channel);
 static gboolean target_matches_stream_values(const char *target, const char *target_channel, const char *label, const char *channel, const char *url);
 
 static void update_empty_button(SinglePlayer *state)
@@ -178,6 +199,96 @@ static const char *get_active_stream_channel(SinglePlayer *state)
     }
 
     return state->streams[state->active_stream].channel;
+}
+
+static const char *get_active_stream_label(SinglePlayer *state)
+{
+    if (state->active_stream >= state->stream_count) {
+        return NULL;
+    }
+
+    return state->streams[state->active_stream].label;
+}
+
+static const char *get_active_stream_url(SinglePlayer *state)
+{
+    if (state->active_stream >= state->stream_count) {
+        return NULL;
+    }
+
+    return state->streams[state->active_stream].url;
+}
+
+static void clear_stream_qualities(SinglePlayer *state)
+{
+    if (state->quality_cancel != NULL) {
+        g_cancellable_cancel(state->quality_cancel);
+        g_clear_object(&state->quality_cancel);
+    }
+    g_clear_pointer(&state->stream_qualities, g_ptr_array_unref);
+    state->quality_fetch_in_progress = FALSE;
+    state->stream_qualities_fetched_at = 0;
+    state->quality_generation++;
+}
+
+static void reset_stream_quality_selection(SinglePlayer *state)
+{
+    g_clear_pointer(&state->selected_quality_url, g_free);
+    g_clear_pointer(&state->selected_quality_label, g_free);
+    clear_stream_qualities(state);
+}
+
+static gboolean stream_settings_popover_is_visible(SinglePlayer *state)
+{
+    return state->stream_settings_popover != NULL && gtk_widget_get_visible(state->stream_settings_popover);
+}
+
+static gboolean stream_qualities_cache_is_valid(SinglePlayer *state)
+{
+    return state->stream_qualities != NULL &&
+        state->stream_qualities_fetched_at > 0 &&
+        g_get_monotonic_time() - state->stream_qualities_fetched_at < (gint64)STREAM_QUALITY_CACHE_SECONDS * G_USEC_PER_SEC;
+}
+
+static void reload_stream_with_quality(SinglePlayer *state, const TwitchStreamQuality *quality)
+{
+    if (quality == NULL || quality->url == NULL || quality->url[0] == '\0') {
+        return;
+    }
+
+    const char *label = get_active_stream_label(state);
+    const char *channel = get_active_stream_channel(state);
+    if (channel == NULL || channel[0] == '\0') {
+        return;
+    }
+
+    g_free(state->selected_quality_url);
+    g_free(state->selected_quality_label);
+    state->selected_quality_url = g_strdup(quality->url);
+    state->selected_quality_label = g_strdup(quality->label);
+
+    set_status(state, PLAYER_STARTING_STREAM_STATUS);
+    state->stream_playing = TRUE;
+    update_empty_button(state);
+    reset_stream_title(state);
+    start_chat(state, channel);
+    request_stream_title_update(state, TRUE);
+    player_session_load_stream(state->session, quality->url, label, channel);
+}
+
+static void reload_stream_auto(SinglePlayer *state)
+{
+    const char *url = get_active_stream_url(state);
+    const char *label = get_active_stream_label(state);
+    const char *channel = get_active_stream_channel(state);
+
+    if (url == NULL || url[0] == '\0') {
+        return;
+    }
+
+    g_clear_pointer(&state->selected_quality_url, g_free);
+    g_clear_pointer(&state->selected_quality_label, g_free);
+    load_stream_url(state, url, label, channel);
 }
 
 static void on_stream_title_fetched(GObject *source_object, GAsyncResult *result, gpointer user_data)
@@ -275,13 +386,6 @@ static void start_chat(SinglePlayer *state, const char *channel)
     }
 
     chat_panel_start(state->chat_panel, channel);
-}
-
-static void check_mpv(int status, const char *action)
-{
-    if (status < 0) {
-        g_warning("%s: %s", action, mpv_error_string(status));
-    }
 }
 
 static mpv_handle *get_mpv(SinglePlayer *state)
@@ -429,6 +533,7 @@ static void on_mpv_wakeup(void *ctx)
 
 static void load_stream_url(SinglePlayer *state, const char *url, const char *label, const char *channel)
 {
+    reset_stream_quality_selection(state);
     set_status(state, PLAYER_STARTING_STREAM_STATUS);
     state->stream_playing = TRUE;
     update_empty_button(state);
@@ -556,7 +661,7 @@ static gboolean hide_footer(gpointer user_data)
 
     state->footer_hide_source = 0;
 
-    if (channel_switcher_overlay_is_visible(state->channel_switcher)) {
+    if (channel_switcher_overlay_is_visible(state->channel_switcher) || stream_settings_popover_is_visible(state)) {
         schedule_footer_hide(state);
         return G_SOURCE_REMOVE;
     }
@@ -793,32 +898,141 @@ static void on_mute_clicked(GtkButton *button, gpointer user_data)
     show_footer(state);
 }
 
-static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
+static void populate_quality_buttons(SinglePlayer *state);
+
+static void on_quality_auto_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
     SinglePlayer *state = user_data;
 
-    mpv_handle *mpv = get_mpv(state);
-    if (mpv == NULL) {
+    reload_stream_auto(state);
+    if (state->stream_settings_popover != NULL) {
+        gtk_popover_popdown(GTK_POPOVER(state->stream_settings_popover));
+    }
+    show_footer(state);
+}
+
+static void on_quality_button_clicked(GtkButton *button, gpointer user_data)
+{
+    SinglePlayer *state = user_data;
+    const TwitchStreamQuality *quality = g_object_get_data(G_OBJECT(button), "stream-quality");
+
+    reload_stream_with_quality(state, quality);
+    if (state->stream_settings_popover != NULL) {
+        gtk_popover_popdown(GTK_POPOVER(state->stream_settings_popover));
+    }
+    show_footer(state);
+}
+
+static void on_stream_info_toggle_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    SinglePlayer *state = user_data;
+
+    player_session_toggle_stream_info(state->session);
+    if (state->stream_settings_popover != NULL) {
+        gtk_popover_popdown(GTK_POPOVER(state->stream_settings_popover));
+    }
+    show_footer(state);
+}
+
+static void on_stream_qualities_fetched(GObject *source_object, GAsyncResult *result, gpointer user_data)
+{
+    (void)source_object;
+    StreamQualityCallbackData *data = user_data;
+    SinglePlayer *state = data->state;
+    g_autoptr(GError) error = NULL;
+    GPtrArray *qualities = twitch_stream_info_fetch_stream_qualities_finish(result, &error);
+
+    if (data->generation != state->quality_generation) {
+        if (qualities != NULL) {
+            g_ptr_array_unref(qualities);
+        }
+        g_free(data);
         return;
     }
 
-    const char *stats_cmd[] = {
-        "script-binding",
-        "stats/display-stats-toggle",
-        NULL,
-    };
+    state->quality_fetch_in_progress = FALSE;
+    g_clear_object(&state->quality_cancel);
+    g_clear_pointer(&state->stream_qualities, g_ptr_array_unref);
+    state->stream_qualities = qualities;
 
-    int status = mpv_command(mpv, stats_cmd);
-    if (status < 0) {
-        const char *keypress_cmd[] = {
-            "keypress",
-            "i",
-            NULL,
-        };
-        check_mpv(mpv_command(mpv, keypress_cmd), "toggle stream info");
+    if (error != NULL) {
+        if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            gtk_label_set_text(GTK_LABEL(state->quality_status_label), "Qualities unavailable");
+            g_debug("stream quality fetch failed: %s", error->message);
+        }
+        g_free(data);
+        return;
     }
 
+    state->stream_qualities_fetched_at = g_get_monotonic_time();
+    populate_quality_buttons(state);
+    g_free(data);
+}
+
+static void request_stream_qualities_update(SinglePlayer *state, gboolean force)
+{
+    const char *channel = get_active_stream_channel(state);
+
+    if (state->closing || channel == NULL || channel[0] == '\0') {
+        return;
+    }
+    if (state->quality_fetch_in_progress && !force) {
+        return;
+    }
+    if (!force && stream_qualities_cache_is_valid(state)) {
+        populate_quality_buttons(state);
+        return;
+    }
+
+    if (force && state->quality_cancel != NULL) {
+        g_cancellable_cancel(state->quality_cancel);
+        g_clear_object(&state->quality_cancel);
+    }
+
+    gtk_label_set_text(GTK_LABEL(state->quality_status_label), "Loading...");
+
+    StreamQualityCallbackData *data = g_new0(StreamQualityCallbackData, 1);
+    data->state = state;
+    data->generation = ++state->quality_generation;
+
+    state->quality_cancel = g_cancellable_new();
+    state->quality_fetch_in_progress = TRUE;
+
+    twitch_stream_info_fetch_stream_qualities_async(channel, state->quality_cancel, on_stream_qualities_fetched, data);
+}
+
+static void populate_quality_buttons(SinglePlayer *state)
+{
+    player_stream_settings_quality_list_populate(
+        state->quality_list_box,
+        state->quality_status_label,
+        state->stream_qualities,
+        state->selected_quality_url,
+        state->selected_quality_label,
+        G_CALLBACK(on_quality_button_clicked),
+        state,
+        G_CALLBACK(on_quality_auto_clicked),
+        state
+    );
+}
+
+static void on_stream_settings_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    SinglePlayer *state = user_data;
+
+    if (state->stream_settings_popover == NULL) {
+        return;
+    }
+    if (!player_session_is_playing(state->session) || get_active_stream_channel(state) == NULL) {
+        show_footer(state);
+        return;
+    }
+
+    request_stream_qualities_update(state, FALSE);
+    gtk_popover_popup(GTK_POPOVER(state->stream_settings_popover));
     show_footer(state);
 }
 
@@ -1057,14 +1271,24 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_box_append(GTK_BOX(box), state->mute_button);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 
-    GtkWidget *stream_info_button = create_overlay_button(player_info_icon_new(), PLAYER_STREAM_INFO_TOOLTIP);
-    gtk_box_append(GTK_BOX(box), stream_info_button);
-
     state->chat_toggle_button = create_overlay_button(player_chat_icon_new(PLAYER_CHAT_ICON_OPEN), "Open chat");
     gtk_widget_add_css_class(state->chat_toggle_button, "chat-toggle");
     gtk_box_append(GTK_BOX(box), state->chat_toggle_button);
 
-    g_signal_connect(stream_info_button, "clicked", G_CALLBACK(on_stream_info_clicked), state);
+    GtkWidget *stream_settings_button = create_overlay_button(player_stream_settings_icon_new(), "Stream settings");
+    gtk_widget_add_css_class(stream_settings_button, "stream-settings-button");
+    gtk_box_append(GTK_BOX(box), stream_settings_button);
+
+    GtkWidget *info_button = NULL;
+    state->stream_settings_popover = player_stream_settings_popover_new(
+        stream_settings_button,
+        &state->quality_list_box,
+        &state->quality_status_label,
+        &info_button
+    );
+
+    g_signal_connect(stream_settings_button, "clicked", G_CALLBACK(on_stream_settings_clicked), state);
+    g_signal_connect(info_button, "clicked", G_CALLBACK(on_stream_info_toggle_clicked), state);
     g_signal_connect(state->mute_button, "clicked", G_CALLBACK(on_mute_clicked), state);
     g_signal_connect(state->chat_toggle_button, "clicked", G_CALLBACK(on_chat_toggle_clicked), state);
     g_signal_connect(state->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), state);
@@ -1229,6 +1453,7 @@ static void single_player_destroy(SinglePlayer *state)
 
     remove_source_if_active(&state->chat_position_source);
     remove_source_if_active(&state->render_warmup_source);
+    clear_stream_qualities(state);
     clear_mpv_render_context(state);
 
     player_session_set_wakeup_callback(state->session, NULL, NULL);
@@ -1255,7 +1480,15 @@ static void single_player_destroy(SinglePlayer *state)
     state->empty_button = NULL;
     state->mute_button = NULL;
     state->volume_scale = NULL;
+    if (state->stream_settings_popover != NULL) {
+        gtk_widget_unparent(state->stream_settings_popover);
+    }
+    state->stream_settings_popover = NULL;
+    state->quality_list_box = NULL;
+    state->quality_status_label = NULL;
     state->status_label = NULL;
+    g_clear_pointer(&state->selected_quality_url, g_free);
+    g_clear_pointer(&state->selected_quality_label, g_free);
     channel_switcher_overlay_free(state->channel_switcher);
     state->channel_switcher = NULL;
     free_streams(state);
@@ -1404,6 +1637,11 @@ char *single_player_dup_current_target(SinglePlayer *player)
 {
     if (player == NULL || !player_session_is_playing(player->session)) {
         return NULL;
+    }
+
+    const char *channel = player_session_get_channel(player->session);
+    if (channel != NULL && channel[0] != '\0') {
+        return g_strdup(channel);
     }
 
     return player_session_dup_url(player->session);

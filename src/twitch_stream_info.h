@@ -20,6 +20,15 @@ typedef struct {
 } TwitchCurrentStream;
 
 typedef struct {
+    char *label;
+    char *url;
+    guint width;
+    guint height;
+    guint bandwidth;
+    double frame_rate;
+} TwitchStreamQuality;
+
+typedef struct {
     char *channel;
     char *display_name;
 } TwitchFollowedChannel;
@@ -34,9 +43,11 @@ GQuark twitch_stream_info_error_quark(void);
 
 void twitch_stream_preview_free(TwitchStreamPreview *preview);
 void twitch_current_stream_free(TwitchCurrentStream *stream);
+void twitch_stream_quality_free(TwitchStreamQuality *quality);
 void twitch_followed_channel_free(TwitchFollowedChannel *channel);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(TwitchCurrentStream, twitch_current_stream_free)
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(TwitchStreamQuality, twitch_stream_quality_free)
 
 char *twitch_stream_info_format_viewer_count(guint viewer_count);
 char *twitch_stream_info_format_current_stream_title(const TwitchCurrentStream *stream);
@@ -68,6 +79,34 @@ void twitch_stream_info_fetch_current_stream_async(
  * Returns: (transfer full): The stream metadata, or NULL when unavailable or an error occurred.
  */
 TwitchCurrentStream *twitch_stream_info_fetch_current_stream_finish(GAsyncResult *result, GError **error);
+
+/**
+ * twitch_stream_info_fetch_stream_qualities_async:
+ * @channel: Twitch channel login.
+ * @cancel: Optional cancellable.
+ * @callback: Completion callback.
+ * @user_data: User data passed to @callback.
+ *
+ * Fetches the currently available HLS variants for a live Twitch channel.
+ * The returned entries contain direct variant playlist URLs suitable for mpv.
+ */
+void twitch_stream_info_fetch_stream_qualities_async(
+    const char *channel,
+    GCancellable *cancel,
+    GAsyncReadyCallback callback,
+    gpointer user_data
+);
+
+/**
+ * twitch_stream_info_fetch_stream_qualities_finish:
+ * @result: Async result passed to the completion callback.
+ * @error: Return location for a GError, or NULL.
+ *
+ * Finishes twitch_stream_info_fetch_stream_qualities_async().
+ *
+ * Returns: (transfer full): A GPtrArray of TwitchStreamQuality entries.
+ */
+GPtrArray *twitch_stream_info_fetch_stream_qualities_finish(GAsyncResult *result, GError **error);
 
 /**
  * twitch_stream_info_fetch_live_channels_async:

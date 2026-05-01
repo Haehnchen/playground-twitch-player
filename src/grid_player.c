@@ -14,12 +14,14 @@
 #include "player_motion.h"
 #include "player_defaults.h"
 #include "player_style.h"
+#include "player_stream_settings.h"
 #include "player_volume.h"
 #include "twitch_stream_info.h"
 
 #define MAX_TILES GRID_PLAYER_MAX_TILES
 #define MPV_MAINLOOP_PRIORITY G_PRIORITY_HIGH
 #define STREAM_TITLE_REFRESH_SECONDS (3 * 60)
+#define STREAM_QUALITY_CACHE_SECONDS (2 * 60)
 #define GRID_CHANNEL_DROPDOWN_WIDTH 119
 #define GRID_VOLUME_SCALE_WIDTH 82
 typedef struct _GridAppState GridAppState;
@@ -43,9 +45,17 @@ typedef struct {
     GtkWidget *stream_info_button;
     GtkWidget *mute_button;
     GtkWidget *volume_scale;
+    GtkWidget *stream_settings_popover;
+    GtkWidget *quality_list_box;
+    GtkWidget *quality_status_label;
     ChannelSwitcherOverlay *channel_switcher;
     PlayerSession *session;
     GCancellable *title_cancel;
+    GCancellable *quality_cancel;
+    GPtrArray *stream_qualities;
+    char *selected_quality_url;
+    char *selected_quality_label;
+    gint64 stream_qualities_fetched_at;
     mpv_render_context *mpv_gl;
     int last_render_width;
     int last_render_height;
@@ -53,9 +63,11 @@ typedef struct {
     gint event_queued;
     guint render_warmup_source;
     guint title_generation;
+    guint quality_generation;
     int render_warmup_frames;
     gboolean owns_session;
     gboolean title_fetch_in_progress;
+    gboolean quality_fetch_in_progress;
 } StreamTile;
 
 struct _GridAppState {
@@ -98,24 +110,25 @@ typedef struct {
     guint generation;
 } StreamTitleCallbackData;
 
+typedef struct {
+    StreamTile *tile;
+    guint generation;
+} StreamQualityCallbackData;
+
 static gboolean create_mpv_render_context(StreamTile *tile);
 static void schedule_footer_hide(GridAppState *state);
 static void show_tile_overlay(StreamTile *tile);
 static void update_tile_mute_button(StreamTile *tile);
 static void set_tile_mute(StreamTile *tile, gboolean muted);
 static void request_tile_title_update(StreamTile *tile, gboolean force);
+static void update_tile_empty_state(StreamTile *tile);
+static void load_tile_stream(StreamTile *tile);
+static void reset_tile_stream_title(StreamTile *tile);
 
 static void set_tile_status(StreamTile *tile, const char *message)
 {
     (void)tile;
     (void)message;
-}
-
-static void check_mpv(int status, const char *action)
-{
-    if (status < 0) {
-        g_warning("%s: %s", action, mpv_error_string(status));
-    }
 }
 
 static mpv_handle *tile_mpv(StreamTile *tile)
@@ -305,6 +318,62 @@ static void reset_tile_stream_title(StreamTile *tile)
     set_tile_stream_title(tile, "");
 }
 
+static void clear_tile_stream_qualities(StreamTile *tile)
+{
+    if (tile->quality_cancel != NULL) {
+        g_cancellable_cancel(tile->quality_cancel);
+        g_clear_object(&tile->quality_cancel);
+    }
+    g_clear_pointer(&tile->stream_qualities, g_ptr_array_unref);
+    tile->quality_fetch_in_progress = FALSE;
+    tile->stream_qualities_fetched_at = 0;
+    tile->quality_generation++;
+}
+
+static void reset_tile_quality_selection(StreamTile *tile)
+{
+    g_clear_pointer(&tile->selected_quality_url, g_free);
+    g_clear_pointer(&tile->selected_quality_label, g_free);
+    clear_tile_stream_qualities(tile);
+}
+
+static gboolean tile_settings_popover_is_visible(StreamTile *tile)
+{
+    return tile->stream_settings_popover != NULL && gtk_widget_get_visible(tile->stream_settings_popover);
+}
+
+static gboolean tile_qualities_cache_is_valid(StreamTile *tile)
+{
+    return tile->stream_qualities != NULL &&
+        tile->stream_qualities_fetched_at > 0 &&
+        g_get_monotonic_time() - tile->stream_qualities_fetched_at < (gint64)STREAM_QUALITY_CACHE_SECONDS * G_USEC_PER_SEC;
+}
+
+static void reload_tile_stream_with_quality(StreamTile *tile, const TwitchStreamQuality *quality)
+{
+    if (quality == NULL || quality->url == NULL || quality->url[0] == '\0' ||
+        tile->channel == NULL || tile->channel[0] == '\0') {
+        return;
+    }
+
+    g_free(tile->selected_quality_url);
+    g_free(tile->selected_quality_label);
+    tile->selected_quality_url = g_strdup(quality->url);
+    tile->selected_quality_label = g_strdup(quality->label);
+
+    set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
+    player_session_load_stream(tile->session, quality->url, tile->label, tile->channel);
+    update_tile_empty_state(tile);
+    request_tile_title_update(tile, TRUE);
+}
+
+static void reload_tile_stream_auto(StreamTile *tile)
+{
+    g_clear_pointer(&tile->selected_quality_url, g_free);
+    g_clear_pointer(&tile->selected_quality_label, g_free);
+    load_tile_stream(tile);
+}
+
 static void on_tile_title_fetched(GObject *source_object, GAsyncResult *result, gpointer user_data)
 {
     (void)source_object;
@@ -443,6 +512,7 @@ static void load_tile_stream(StreamTile *tile)
         return;
     }
 
+    reset_tile_quality_selection(tile);
     g_autofree char *url = g_strdup_printf("https://www.twitch.tv/%s", tile->channel);
 
     set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
@@ -486,6 +556,7 @@ static void stop_tile_stream(StreamTile *tile)
     reset_owned_tile_session(tile);
     g_clear_pointer(&tile->label, g_free);
     g_clear_pointer(&tile->channel, g_free);
+    reset_tile_quality_selection(tile);
     reset_tile_stream_title(tile);
     update_tile_empty_state(tile);
 
@@ -527,6 +598,7 @@ static void set_tile_channel(StreamTile *tile, const AppSettingsChannel *channel
     g_free(tile->channel);
     tile->label = g_strdup(channel->label);
     tile->channel = g_strdup(channel->channel);
+    reset_tile_quality_selection(tile);
     reset_tile_stream_title(tile);
 
     if (!ensure_tile_session(tile)) {
@@ -615,32 +687,139 @@ static void on_mute_clicked(GtkButton *button, gpointer user_data)
     show_tile_overlay(tile);
 }
 
-static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
+static void populate_tile_quality_buttons(StreamTile *tile);
+
+static void on_tile_quality_auto_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
     StreamTile *tile = user_data;
 
-    mpv_handle *mpv = tile_mpv(tile);
-    if (mpv == NULL) {
+    reload_tile_stream_auto(tile);
+    if (tile->stream_settings_popover != NULL) {
+        gtk_popover_popdown(GTK_POPOVER(tile->stream_settings_popover));
+    }
+    show_tile_overlay(tile);
+}
+
+static void on_tile_quality_button_clicked(GtkButton *button, gpointer user_data)
+{
+    StreamTile *tile = user_data;
+    const TwitchStreamQuality *quality = g_object_get_data(G_OBJECT(button), "stream-quality");
+
+    reload_tile_stream_with_quality(tile, quality);
+    if (tile->stream_settings_popover != NULL) {
+        gtk_popover_popdown(GTK_POPOVER(tile->stream_settings_popover));
+    }
+    show_tile_overlay(tile);
+}
+
+static void on_tile_stream_info_toggle_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    StreamTile *tile = user_data;
+
+    player_session_toggle_stream_info(tile->session);
+    if (tile->stream_settings_popover != NULL) {
+        gtk_popover_popdown(GTK_POPOVER(tile->stream_settings_popover));
+    }
+    show_tile_overlay(tile);
+}
+
+static void on_tile_stream_qualities_fetched(GObject *source_object, GAsyncResult *result, gpointer user_data)
+{
+    (void)source_object;
+    StreamQualityCallbackData *data = user_data;
+    StreamTile *tile = data->tile;
+    g_autoptr(GError) error = NULL;
+    GPtrArray *qualities = twitch_stream_info_fetch_stream_qualities_finish(result, &error);
+
+    if (data->generation != tile->quality_generation) {
+        if (qualities != NULL) {
+            g_ptr_array_unref(qualities);
+        }
+        g_free(data);
         return;
     }
 
-    const char *stats_cmd[] = {
-        "script-binding",
-        "stats/display-stats-toggle",
-        NULL,
-    };
+    tile->quality_fetch_in_progress = FALSE;
+    g_clear_object(&tile->quality_cancel);
+    g_clear_pointer(&tile->stream_qualities, g_ptr_array_unref);
+    tile->stream_qualities = qualities;
 
-    int status = mpv_command(mpv, stats_cmd);
-    if (status < 0) {
-        const char *keypress_cmd[] = {
-            "keypress",
-            "i",
-            NULL,
-        };
-        check_mpv(mpv_command(mpv, keypress_cmd), "toggle stream info");
+    if (error != NULL) {
+        if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            gtk_label_set_text(GTK_LABEL(tile->quality_status_label), "Qualities unavailable");
+            g_debug("grid stream quality fetch failed: %s", error->message);
+        }
+        g_free(data);
+        return;
     }
 
+    tile->stream_qualities_fetched_at = g_get_monotonic_time();
+    populate_tile_quality_buttons(tile);
+    g_free(data);
+}
+
+static void request_tile_qualities_update(StreamTile *tile, gboolean force)
+{
+    if (tile->app->closing || tile->channel == NULL || tile->channel[0] == '\0') {
+        return;
+    }
+    if (tile->quality_fetch_in_progress && !force) {
+        return;
+    }
+    if (!force && tile_qualities_cache_is_valid(tile)) {
+        populate_tile_quality_buttons(tile);
+        return;
+    }
+
+    if (force && tile->quality_cancel != NULL) {
+        g_cancellable_cancel(tile->quality_cancel);
+        g_clear_object(&tile->quality_cancel);
+    }
+
+    gtk_label_set_text(GTK_LABEL(tile->quality_status_label), "Loading...");
+
+    StreamQualityCallbackData *data = g_new0(StreamQualityCallbackData, 1);
+    data->tile = tile;
+    data->generation = ++tile->quality_generation;
+
+    tile->quality_cancel = g_cancellable_new();
+    tile->quality_fetch_in_progress = TRUE;
+
+    twitch_stream_info_fetch_stream_qualities_async(tile->channel, tile->quality_cancel, on_tile_stream_qualities_fetched, data);
+}
+
+static void populate_tile_quality_buttons(StreamTile *tile)
+{
+    player_stream_settings_quality_list_populate(
+        tile->quality_list_box,
+        tile->quality_status_label,
+        tile->stream_qualities,
+        tile->selected_quality_url,
+        tile->selected_quality_label,
+        G_CALLBACK(on_tile_quality_button_clicked),
+        tile,
+        G_CALLBACK(on_tile_quality_auto_clicked),
+        tile
+    );
+}
+
+static void on_tile_stream_settings_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    StreamTile *tile = user_data;
+
+    if (tile->stream_settings_popover == NULL) {
+        return;
+    }
+    if (!player_session_is_playing(tile->session) || tile->channel == NULL || tile->channel[0] == '\0') {
+        show_tile_overlay(tile);
+        return;
+    }
+
+    request_tile_qualities_update(tile, FALSE);
+    gtk_popover_popup(GTK_POPOVER(tile->stream_settings_popover));
     show_tile_overlay(tile);
 }
 
@@ -682,7 +861,7 @@ static gboolean hide_footers(gpointer user_data)
     state->footer_hide_source = 0;
 
     for (guint i = 0; i < MAX_TILES; i++) {
-        if (is_channel_menu_open(&state->tiles[i])) {
+        if (is_channel_menu_open(&state->tiles[i]) || tile_settings_popover_is_visible(&state->tiles[i])) {
             schedule_footer_hide(state);
             return G_SOURCE_REMOVE;
         }
@@ -1221,8 +1400,18 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     tile->focus_button = create_overlay_button(player_tile_focus_icon_new(PLAYER_TILE_FOCUS_ICON_EXPAND), "Focus tile");
     g_signal_connect(tile->focus_button, "clicked", G_CALLBACK(on_tile_focus_clicked), tile);
 
-    tile->stream_info_button = create_overlay_button(player_info_icon_new(), PLAYER_STREAM_INFO_TOOLTIP);
-    g_signal_connect(tile->stream_info_button, "clicked", G_CALLBACK(on_stream_info_clicked), tile);
+    tile->stream_info_button = create_overlay_button(player_stream_settings_icon_new(), "Stream settings");
+    gtk_widget_add_css_class(tile->stream_info_button, "stream-settings-button");
+    g_signal_connect(tile->stream_info_button, "clicked", G_CALLBACK(on_tile_stream_settings_clicked), tile);
+
+    GtkWidget *info_button = NULL;
+    tile->stream_settings_popover = player_stream_settings_popover_new(
+        tile->stream_info_button,
+        &tile->quality_list_box,
+        &tile->quality_status_label,
+        &info_button
+    );
+    g_signal_connect(info_button, "clicked", G_CALLBACK(on_tile_stream_info_toggle_clicked), tile);
 
     gtk_box_append(GTK_BOX(box), channel_selector);
     gtk_box_append(GTK_BOX(box), tile->close_button);
@@ -1530,6 +1719,7 @@ void grid_player_free(GridPlayer *player)
 
         clear_tile_render_context(tile);
         reset_tile_stream_title(tile);
+        clear_tile_stream_qualities(tile);
         player_session_set_wakeup_callback(tile->session, NULL, NULL);
         if (tile->owns_session) {
             player_session_free(tile->session);
@@ -1551,6 +1741,14 @@ void grid_player_free(GridPlayer *player)
         tile->stream_info_button = NULL;
         tile->mute_button = NULL;
         tile->volume_scale = NULL;
+        if (tile->stream_settings_popover != NULL) {
+            gtk_widget_unparent(tile->stream_settings_popover);
+        }
+        tile->stream_settings_popover = NULL;
+        tile->quality_list_box = NULL;
+        tile->quality_status_label = NULL;
+        g_clear_pointer(&tile->selected_quality_url, g_free);
+        g_clear_pointer(&tile->selected_quality_label, g_free);
         channel_switcher_overlay_free(tile->channel_switcher);
         tile->channel_switcher = NULL;
     }
