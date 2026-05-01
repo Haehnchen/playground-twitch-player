@@ -13,6 +13,7 @@
 #define PANEL_BOTTOM_MARGIN 64
 #define PANEL_EXTRA_VERTICAL_SPACE 36
 #define LIVE_CHANNELS_CACHE_SECONDS 10
+#define SEARCH_DEBOUNCE_MS 300
 #define PANEL_MIN_WIDTH 430
 #define PANEL_MAX_WIDTH 1300
 #define PANEL_MAX_COLUMNS 4
@@ -36,9 +37,13 @@ struct _ChannelSwitcherOverlay {
     GtkWidget *direct_channel_entry;
     AppSettings *settings;
     GPtrArray *previews;
+    GPtrArray *preview_cards;
+    GHashTable *image_cache;
+    GHashTable *image_waiters;
     char *cached_channels_key;
     gint64 cached_at_us;
     GCancellable *cancel;
+    guint search_debounce_source;
     guint generation;
     ChannelSwitcherActivateCallback activate_callback;
     gpointer user_data;
@@ -48,9 +53,7 @@ struct _ChannelSwitcherOverlay {
 
 typedef struct {
     ChannelSwitcherOverlay *switcher;
-    guint generation;
     char *url;
-    GtkWidget *image;
 } RemoteImageData;
 
 typedef struct {
@@ -207,9 +210,26 @@ static void remote_image_data_free(RemoteImageData *data)
         return;
     }
 
-    g_clear_object(&data->image);
     g_free(data->url);
     g_free(data);
+}
+
+static void remove_source_if_active(guint *source_id)
+{
+    if (source_id != NULL && *source_id != 0) {
+        g_source_remove(*source_id);
+        *source_id = 0;
+    }
+}
+
+static void clear_grid(ChannelSwitcherOverlay *switcher);
+
+static void clear_preview_cards(ChannelSwitcherOverlay *switcher)
+{
+    clear_grid(switcher);
+    if (switcher->preview_cards != NULL) {
+        g_ptr_array_set_size(switcher->preview_cards, 0);
+    }
 }
 
 static void draw_remote_image(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
@@ -247,6 +267,16 @@ static void draw_remote_image(GtkDrawingArea *area, cairo_t *cr, int width, int 
     cairo_restore(cr);
 }
 
+static void set_remote_image_pixbuf(GtkWidget *image, GdkPixbuf *pixbuf)
+{
+    if (image == NULL || pixbuf == NULL) {
+        return;
+    }
+
+    g_object_set_data_full(G_OBJECT(image), "remote-image-pixbuf", g_object_ref(pixbuf), g_object_unref);
+    gtk_widget_queue_draw(image);
+}
+
 static void live_fetch_callback_data_free(LiveFetchCallbackData *data)
 {
     g_free(data);
@@ -255,17 +285,27 @@ static void live_fetch_callback_data_free(LiveFetchCallbackData *data)
 static void on_remote_image_loaded(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     RemoteImageData *data = user_data;
+    ChannelSwitcherOverlay *switcher = data->switcher;
     g_autoptr(GError) error = NULL;
     char *contents = NULL;
     gsize length = 0;
 
-    if (data->generation != data->switcher->generation || data->switcher->panel == NULL) {
+    if (switcher->image_waiters == NULL) {
         remote_image_data_free(data);
         return;
     }
 
+    GPtrArray *waiters = g_hash_table_lookup(switcher->image_waiters, data->url);
+    if (waiters != NULL) {
+        g_ptr_array_ref(waiters);
+        g_hash_table_remove(switcher->image_waiters, data->url);
+    }
+
     if (!g_file_load_contents_finish(G_FILE(source), result, &contents, &length, NULL, &error)) {
         g_debug("image load failed for %s: %s", data->url, error != NULL ? error->message : "unknown error");
+        if (waiters != NULL) {
+            g_ptr_array_unref(waiters);
+        }
         remote_image_data_free(data);
         return;
     }
@@ -273,11 +313,22 @@ static void on_remote_image_loaded(GObject *source, GAsyncResult *result, gpoint
     g_autoptr(GBytes) bytes = g_bytes_new_take(contents, length);
     g_autoptr(GInputStream) stream = g_memory_input_stream_new_from_bytes(bytes);
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_stream(stream, NULL, &error);
-    if (pixbuf != NULL && data->generation == data->switcher->generation) {
-        g_object_set_data_full(G_OBJECT(data->image), "remote-image-pixbuf", pixbuf, g_object_unref);
-        gtk_widget_queue_draw(data->image);
-    } else {
-        g_clear_object(&pixbuf);
+    if (pixbuf != NULL) {
+        if (switcher->image_cache != NULL) {
+            g_hash_table_insert(switcher->image_cache, g_strdup(data->url), g_object_ref(pixbuf));
+        }
+        if (waiters != NULL) {
+            for (guint i = 0; i < waiters->len; i++) {
+                set_remote_image_pixbuf(g_ptr_array_index(waiters, i), pixbuf);
+            }
+        }
+        g_object_unref(pixbuf);
+    } else if (error != NULL) {
+        g_debug("image decode failed for %s: %s", data->url, error->message);
+    }
+
+    if (waiters != NULL) {
+        g_ptr_array_unref(waiters);
     }
 
     remote_image_data_free(data);
@@ -289,10 +340,28 @@ static void load_remote_image(ChannelSwitcherOverlay *switcher, GtkWidget *image
         return;
     }
 
+    if (switcher->image_cache == NULL || switcher->image_waiters == NULL) {
+        return;
+    }
+
+    GdkPixbuf *cached = g_hash_table_lookup(switcher->image_cache, url);
+    if (cached != NULL) {
+        set_remote_image_pixbuf(image, cached);
+        return;
+    }
+
+    GPtrArray *waiters = g_hash_table_lookup(switcher->image_waiters, url);
+    if (waiters != NULL) {
+        g_ptr_array_add(waiters, g_object_ref(image));
+        return;
+    }
+
+    waiters = g_ptr_array_new_with_free_func(g_object_unref);
+    g_ptr_array_add(waiters, g_object_ref(image));
+    g_hash_table_insert(switcher->image_waiters, g_strdup(url), waiters);
+
     RemoteImageData *data = g_new0(RemoteImageData, 1);
     data->switcher = switcher;
-    data->generation = switcher->generation;
-    data->image = g_object_ref(image);
     data->url = g_strdup(url);
 
     GFile *file = g_file_new_for_uri(url);
@@ -695,12 +764,32 @@ static gboolean preview_matches_filter(TwitchStreamPreview *preview, const char 
         string_contains_casefold(preview->category_name, filter);
 }
 
+static void ensure_preview_cards(ChannelSwitcherOverlay *switcher)
+{
+    if (switcher->preview_cards == NULL) {
+        switcher->preview_cards = g_ptr_array_new_with_free_func(g_object_unref);
+    }
+
+    if (switcher->previews == NULL || switcher->preview_cards->len == switcher->previews->len) {
+        return;
+    }
+
+    clear_preview_cards(switcher);
+    for (guint i = 0; i < switcher->previews->len; i++) {
+        TwitchStreamPreview *preview = g_ptr_array_index(switcher->previews, i);
+        GtkWidget *card = create_channel_card(switcher, preview);
+        g_ptr_array_add(switcher->preview_cards, g_object_ref_sink(card));
+    }
+}
+
 static void render_live_channels(ChannelSwitcherOverlay *switcher)
 {
     if (switcher->previews == NULL || switcher->previews->len == 0) {
         show_status(switcher, "No configured channels are live");
         return;
     }
+
+    ensure_preview_cards(switcher);
 
     const char *filter = switcher->search_entry != NULL
         ? gtk_editable_get_text(GTK_EDITABLE(switcher->search_entry))
@@ -709,7 +798,7 @@ static void render_live_channels(ChannelSwitcherOverlay *switcher)
 
     clear_grid(switcher);
     guint columns = get_grid_columns(switcher);
-    for (guint i = 0; i < switcher->previews->len; i++) {
+    for (guint i = 0; i < switcher->previews->len && i < switcher->preview_cards->len; i++) {
         TwitchStreamPreview *preview = g_ptr_array_index(switcher->previews, i);
         if (!preview_matches_filter(preview, filter)) {
             continue;
@@ -717,7 +806,7 @@ static void render_live_channels(ChannelSwitcherOverlay *switcher)
 
         gtk_grid_attach(
             GTK_GRID(switcher->grid),
-            create_channel_card(switcher, preview),
+            g_ptr_array_index(switcher->preview_cards, i),
             (int)(visible_count % columns),
             (int)(visible_count / columns),
             1,
@@ -731,10 +820,27 @@ static void render_live_channels(ChannelSwitcherOverlay *switcher)
     }
 }
 
+static gboolean apply_search_filter(gpointer user_data)
+{
+    ChannelSwitcherOverlay *switcher = user_data;
+
+    switcher->search_debounce_source = 0;
+    render_live_channels(switcher);
+
+    return G_SOURCE_REMOVE;
+}
+
 static void on_search_changed(GtkEditable *editable, gpointer user_data)
 {
     (void)editable;
-    render_live_channels(user_data);
+    ChannelSwitcherOverlay *switcher = user_data;
+
+    remove_source_if_active(&switcher->search_debounce_source);
+    if (switcher->panel == NULL || !gtk_widget_get_visible(switcher->panel) || switcher->previews == NULL) {
+        return;
+    }
+
+    switcher->search_debounce_source = g_timeout_add(SEARCH_DEBOUNCE_MS, apply_search_filter, switcher);
 }
 
 static void activate_first_visible_channel(ChannelSwitcherOverlay *switcher)
@@ -756,7 +862,11 @@ static void activate_first_visible_channel(ChannelSwitcherOverlay *switcher)
 static void on_search_activate(GtkSearchEntry *entry, gpointer user_data)
 {
     (void)entry;
-    activate_first_visible_channel(user_data);
+    ChannelSwitcherOverlay *switcher = user_data;
+
+    remove_source_if_active(&switcher->search_debounce_source);
+    render_live_channels(switcher);
+    activate_first_visible_channel(switcher);
 }
 
 static void on_live_channels_fetched(GObject *source_object, GAsyncResult *result, gpointer user_data)
@@ -786,6 +896,7 @@ static void on_live_channels_fetched(GObject *source_object, GAsyncResult *resul
     if (switcher->previews != NULL) {
         g_ptr_array_unref(switcher->previews);
     }
+    clear_preview_cards(switcher);
     switcher->previews = previews != NULL ? g_ptr_array_ref(previews) : NULL;
     switcher->cached_at_us = g_get_monotonic_time();
     render_live_channels(switcher);
@@ -827,6 +938,7 @@ static void start_live_channel_fetch(ChannelSwitcherOverlay *switcher, char **ch
             g_ptr_array_unref(switcher->previews);
             switcher->previews = NULL;
         }
+        clear_preview_cards(switcher);
         g_clear_pointer(&switcher->cached_channels_key, g_free);
         switcher->cached_at_us = 0;
         show_status(switcher, "No channels configured");
@@ -842,6 +954,7 @@ static void start_live_channel_fetch(ChannelSwitcherOverlay *switcher, char **ch
         g_ptr_array_unref(switcher->previews);
         switcher->previews = NULL;
     }
+    clear_preview_cards(switcher);
     g_free(switcher->cached_channels_key);
     switcher->cached_channels_key = g_strdup(channels_key);
     switcher->cached_at_us = 0;
@@ -940,6 +1053,9 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     switcher->user_data = user_data;
     switcher->settings_callback = settings_callback;
     switcher->settings_user_data = settings_user_data;
+    switcher->preview_cards = g_ptr_array_new_with_free_func(g_object_unref);
+    switcher->image_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
+    switcher->image_waiters = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_ptr_array_unref);
 
     switcher->backdrop = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     g_object_add_weak_pointer(G_OBJECT(switcher->backdrop), (gpointer *)&switcher->backdrop);
@@ -1034,6 +1150,7 @@ void channel_switcher_overlay_set_settings(ChannelSwitcherOverlay *switcher, App
         g_ptr_array_unref(switcher->previews);
         switcher->previews = NULL;
     }
+    clear_preview_cards(switcher);
     g_clear_pointer(&switcher->cached_channels_key, g_free);
     switcher->cached_at_us = 0;
 }
@@ -1048,12 +1165,14 @@ void channel_switcher_overlay_show_at(ChannelSwitcherOverlay *switcher, double x
     }
 
     switcher->generation++;
+    remove_source_if_active(&switcher->search_debounce_source);
     if (switcher->search_entry != NULL) {
         gtk_editable_set_text(GTK_EDITABLE(switcher->search_entry), "");
     }
     if (switcher->direct_channel_entry != NULL) {
         gtk_editable_set_text(GTK_EDITABLE(switcher->direct_channel_entry), "");
     }
+    remove_source_if_active(&switcher->search_debounce_source);
     if (switcher->backdrop != NULL) {
         gtk_widget_set_visible(switcher->backdrop, TRUE);
     }
@@ -1084,6 +1203,7 @@ void channel_switcher_overlay_hide(ChannelSwitcherOverlay *switcher)
     }
 
     switcher->generation++;
+    remove_source_if_active(&switcher->search_debounce_source);
     if (switcher->cancel != NULL) {
         g_cancellable_cancel(switcher->cancel);
         g_clear_object(&switcher->cancel);
@@ -1118,6 +1238,7 @@ void channel_switcher_overlay_free(ChannelSwitcherOverlay *switcher)
         g_ptr_array_unref(switcher->previews);
         switcher->previews = NULL;
     }
+    clear_preview_cards(switcher);
     g_clear_pointer(&switcher->cached_channels_key, g_free);
     switcher->cached_at_us = 0;
     if (switcher->panel != NULL && switcher->overlay != NULL) {
