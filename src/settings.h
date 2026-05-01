@@ -79,7 +79,15 @@ const AppSettingsChannel *app_settings_get_channel(const AppSettings *settings, 
 gboolean app_settings_get_hwdec_enabled(const AppSettings *settings);
 void app_settings_set_hwdec_enabled(AppSettings *settings, gboolean enabled);
 const char *app_settings_get_twitch_oauth_token(const AppSettings *settings);
+const char *app_settings_get_twitch_refresh_token(const AppSettings *settings);
+gint64 app_settings_get_twitch_oauth_expires_at(const AppSettings *settings);
 void app_settings_set_twitch_oauth_token(AppSettings *settings, const char *oauth_token);
+void app_settings_set_twitch_auth_tokens(
+    AppSettings *settings,
+    const char *oauth_token,
+    const char *refresh_token,
+    gint64 oauth_expires_at
+);
 
 /**
  * app_settings_clear_channels:

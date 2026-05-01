@@ -10,6 +10,7 @@
 #define TWITCH_TOKEN_URI "https://id.twitch.tv/oauth2/token"
 #define TWITCH_FOLLOWS_SCOPE "user:read:follows"
 #define TWITCH_DEVICE_GRANT "urn:ietf:params:oauth:grant-type:device_code"
+#define TWITCH_REFRESH_GRANT "refresh_token"
 
 typedef struct {
     char *client_id;
@@ -319,6 +320,55 @@ static TwitchAuthToken *poll_device_token(PollTokenData *data, GCancellable *can
 
     g_set_error(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "Twitch authorization timed out");
     return NULL;
+}
+
+TwitchAuthToken *twitch_auth_refresh_token(
+    const char *client_id,
+    const char *refresh_token,
+    GCancellable *cancel,
+    GError **error
+)
+{
+    g_return_val_if_fail(client_id != NULL, NULL);
+    g_return_val_if_fail(client_id[0] != '\0', NULL);
+    g_return_val_if_fail(refresh_token != NULL, NULL);
+    g_return_val_if_fail(refresh_token[0] != '\0', NULL);
+
+    g_autoptr(GString) form = g_string_new(NULL);
+    append_form_pair(form, "client_id", client_id);
+    append_form_pair(form, "grant_type", TWITCH_REFRESH_GRANT);
+    append_form_pair(form, "refresh_token", refresh_token);
+
+    g_autoptr(AuthResponse) response = post_auth_form(TWITCH_TOKEN_URI, form->str, cancel, error);
+    if (response == NULL) {
+        return NULL;
+    }
+
+    if (response->status < 200 || response->status >= 300) {
+        g_autofree char *message = parse_auth_error_message(response->body);
+        g_set_error(
+            error,
+            G_IO_ERROR,
+            G_IO_ERROR_FAILED,
+            "Twitch token refresh failed with HTTP %u%s%s",
+            response->status,
+            message[0] != '\0' ? ": " : "",
+            message
+        );
+        return NULL;
+    }
+
+    TwitchAuthToken *token = parse_token_response(response->body, error);
+    if (token == NULL) {
+        return NULL;
+    }
+    if (token->refresh_token == NULL || token->refresh_token[0] == '\0') {
+        twitch_auth_token_free(token);
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "Twitch did not return a refresh token");
+        return NULL;
+    }
+
+    return token;
 }
 
 static void request_device_code_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)

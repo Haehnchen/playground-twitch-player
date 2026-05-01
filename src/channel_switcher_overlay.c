@@ -770,13 +770,14 @@ static void on_channel_list_fetched(GObject *source_object, GAsyncResult *result
     g_auto(GStrv) channels = NULL;
     guint channel_count = 0;
 
+    channels = twitch_channel_list_fetch_finish(result, &channel_count, &error);
+
     if (data->generation != switcher->generation || switcher->panel == NULL) {
         g_free(data);
         return;
     }
 
     g_clear_object(&switcher->cancel);
-    channels = twitch_channel_list_fetch_finish(result, &channel_count, &error);
 
     if (error != NULL) {
         if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {

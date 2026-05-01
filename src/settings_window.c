@@ -67,7 +67,8 @@ static gboolean on_settings_window_close_request(GtkWindow *window, gpointer use
 static gboolean has_twitch_auth(SettingsWindow *view)
 {
     const char *token = app_settings_get_twitch_oauth_token(view->settings);
-    return token != NULL && token[0] != '\0';
+    const char *refresh_token = app_settings_get_twitch_refresh_token(view->settings);
+    return token != NULL && token[0] != '\0' && refresh_token != NULL && refresh_token[0] != '\0';
 }
 
 static void set_twitch_auth_status(SettingsWindow *view, const char *message)
@@ -230,7 +231,15 @@ static void on_twitch_token_ready(GObject *source_object, GAsyncResult *result, 
         return;
     }
 
-    app_settings_set_twitch_oauth_token(view->settings, token->access_token);
+    gint64 expires_at = token->expires_in > 0
+        ? g_get_real_time() / G_USEC_PER_SEC + token->expires_in
+        : 0;
+    app_settings_set_twitch_auth_tokens(
+        view->settings,
+        token->access_token,
+        token->refresh_token,
+        expires_at
+    );
 
     if (!app_settings_save(view->settings, &error)) {
         g_autofree char *message = g_strdup_printf("Twitch login saved in memory, but saving failed: %s", error->message);
@@ -515,6 +524,8 @@ static GtkWidget *create_channels_page(SettingsWindow *view)
         set_twitch_auth_status(view, "Twitch login is not configured.");
     } else if (has_twitch_auth(view)) {
         set_twitch_auth_status(view, "Twitch connected.");
+    } else if (app_settings_get_twitch_oauth_token(view->settings) != NULL) {
+        set_twitch_auth_status(view, "Reconnect Twitch to enable token refresh.");
     }
     update_twitch_auth_controls(view);
 

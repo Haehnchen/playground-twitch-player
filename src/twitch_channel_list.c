@@ -8,14 +8,20 @@
 #define FOLLOWED_CHANNELS_CACHE_SECONDS 120
 
 typedef struct {
+    AppSettings *settings;
     char **manual_channels;
     guint manual_channel_count;
     char *oauth_token;
+    char *refresh_token;
+    gint64 oauth_expires_at;
 } FetchChannelListData;
 
 typedef struct {
+    AppSettings *settings;
     char **channels;
     guint channel_count;
+    TwitchAuthToken *refreshed_token;
+    GError *error;
 } ChannelListResult;
 
 static GMutex followed_cache_mutex;
@@ -30,6 +36,7 @@ static void fetch_channel_list_data_free(FetchChannelListData *data)
 
     g_strfreev(data->manual_channels);
     g_free(data->oauth_token);
+    g_free(data->refresh_token);
     g_free(data);
 }
 
@@ -40,7 +47,23 @@ static void channel_list_result_free(ChannelListResult *result)
     }
 
     g_strfreev(result->channels);
+    twitch_auth_token_free(result->refreshed_token);
+    g_clear_error(&result->error);
     g_free(result);
+}
+
+static gint64 token_expires_at_from_expires_in(guint expires_in)
+{
+    return expires_in > 0 ? g_get_real_time() / G_USEC_PER_SEC + expires_in : 0;
+}
+
+static gboolean token_needs_refresh(gint64 expires_at)
+{
+    if (expires_at <= 0) {
+        return FALSE;
+    }
+
+    return g_get_real_time() / G_USEC_PER_SEC + 60 >= expires_at;
 }
 
 static void add_unique_channel(GPtrArray *channels, const char *channel)
@@ -137,23 +160,70 @@ static ChannelListResult *build_channel_list_result(char **manual_channels, guin
     return result;
 }
 
+static gboolean refresh_access_token(
+    FetchChannelListData *data,
+    ChannelListResult *result,
+    char **oauth_token,
+    GCancellable *cancel,
+    GError **error
+)
+{
+    if (data->refresh_token == NULL || data->refresh_token[0] == '\0') {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "Connect Twitch again to refresh followed channels");
+        return FALSE;
+    }
+
+    g_autoptr(TwitchAuthToken) token = twitch_auth_refresh_token(
+        TWITCH_AUTH_CLIENT_ID,
+        data->refresh_token,
+        cancel,
+        error
+    );
+    if (token == NULL) {
+        return FALSE;
+    }
+
+    g_free(*oauth_token);
+    *oauth_token = g_strdup(token->access_token);
+    result->refreshed_token = g_steal_pointer(&token);
+    return TRUE;
+}
+
+static gboolean save_refreshed_token(ChannelListResult *result, GError **error)
+{
+    if (result->settings == NULL || result->refreshed_token == NULL) {
+        return TRUE;
+    }
+
+    app_settings_set_twitch_auth_tokens(
+        result->settings,
+        result->refreshed_token->access_token,
+        result->refreshed_token->refresh_token,
+        token_expires_at_from_expires_in(result->refreshed_token->expires_in)
+    );
+
+    return app_settings_save(result->settings, error);
+}
+
 static ChannelListResult *fetch_channel_list(FetchChannelListData *data, GCancellable *cancel, GError **error)
 {
-    if (data->oauth_token == NULL || data->oauth_token[0] == '\0') {
-        return build_channel_list_result(data->manual_channels, data->manual_channel_count, NULL);
-    }
+    ChannelListResult *result = NULL;
 
     g_autoptr(GPtrArray) followed_channels = dup_fresh_followed_cache();
     if (followed_channels != NULL) {
-        return build_channel_list_result(data->manual_channels, data->manual_channel_count, followed_channels);
+        result = build_channel_list_result(data->manual_channels, data->manual_channel_count, followed_channels);
+        result->settings = data->settings;
+        return result;
     }
 
     const char *client_id = TWITCH_AUTH_CLIENT_ID;
-    const char *oauth_token = data->oauth_token;
-    if (client_id == NULL || client_id[0] == '\0' || oauth_token == NULL || oauth_token[0] == '\0') {
+    g_autofree char *oauth_token = g_strdup(data->oauth_token);
+    if (client_id == NULL || client_id[0] == '\0') {
         if (data->manual_channel_count > 0) {
             g_debug("followed channels enabled but Twitch credentials are incomplete");
-            return build_channel_list_result(data->manual_channels, data->manual_channel_count, NULL);
+            result = build_channel_list_result(data->manual_channels, data->manual_channel_count, NULL);
+            result->settings = data->settings;
+            return result;
         }
 
         g_set_error(
@@ -165,7 +235,37 @@ static ChannelListResult *fetch_channel_list(FetchChannelListData *data, GCancel
         return NULL;
     }
 
+    result = g_new0(ChannelListResult, 1);
+    result->settings = data->settings;
+
+    if ((oauth_token == NULL || oauth_token[0] == '\0' || token_needs_refresh(data->oauth_expires_at)) &&
+        !refresh_access_token(data, result, &oauth_token, cancel, error)) {
+        if (data->manual_channel_count > 0 &&
+            (error == NULL || *error == NULL || !g_error_matches(*error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) {
+            if (error != NULL && *error != NULL) {
+                g_debug("Twitch token refresh failed: %s", (*error)->message);
+                g_clear_error(error);
+            }
+            ChannelListResult *manual_result = build_channel_list_result(data->manual_channels, data->manual_channel_count, NULL);
+            manual_result->settings = data->settings;
+            channel_list_result_free(result);
+            return manual_result;
+        }
+        channel_list_result_free(result);
+        return NULL;
+    }
+
     followed_channels = twitch_stream_info_fetch_followed_channels(client_id, oauth_token, cancel, error);
+    if (followed_channels == NULL &&
+        error != NULL &&
+        g_error_matches(*error, TWITCH_STREAM_INFO_ERROR, TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED) &&
+        result->refreshed_token == NULL) {
+        g_clear_error(error);
+        if (refresh_access_token(data, result, &oauth_token, cancel, error)) {
+            followed_channels = twitch_stream_info_fetch_followed_channels(client_id, oauth_token, cancel, error);
+        }
+    }
+
     if (followed_channels == NULL) {
         if (data->manual_channel_count > 0 &&
             (error == NULL || *error == NULL || !g_error_matches(*error, G_IO_ERROR, G_IO_ERROR_CANCELLED))) {
@@ -173,13 +273,26 @@ static ChannelListResult *fetch_channel_list(FetchChannelListData *data, GCancel
                 g_debug("followed channel fetch failed: %s", (*error)->message);
                 g_clear_error(error);
             }
-            return build_channel_list_result(data->manual_channels, data->manual_channel_count, NULL);
+            ChannelListResult *manual_result = build_channel_list_result(data->manual_channels, data->manual_channel_count, NULL);
+            manual_result->settings = data->settings;
+            manual_result->refreshed_token = g_steal_pointer(&result->refreshed_token);
+            channel_list_result_free(result);
+            return manual_result;
         }
+        channel_list_result_free(result);
         return NULL;
     }
 
     store_followed_cache(followed_channels);
-    return build_channel_list_result(data->manual_channels, data->manual_channel_count, followed_channels);
+    ChannelListResult *channels_result = build_channel_list_result(
+        data->manual_channels,
+        data->manual_channel_count,
+        followed_channels
+    );
+    channels_result->settings = data->settings;
+    channels_result->refreshed_token = g_steal_pointer(&result->refreshed_token);
+    channel_list_result_free(result);
+    return channels_result;
 }
 
 static void fetch_channel_list_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)
@@ -189,24 +302,30 @@ static void fetch_channel_list_worker(GTask *task, gpointer source_object, gpoin
     g_autoptr(GError) error = NULL;
     ChannelListResult *result = fetch_channel_list(data, cancel, &error);
 
-    if (error != NULL) {
-        g_task_return_error(task, g_steal_pointer(&error));
-        return;
+    if (result == NULL) {
+        result = g_new0(ChannelListResult, 1);
+        result->settings = data->settings;
+        result->error = g_steal_pointer(&error);
+    } else if (error != NULL) {
+        result->error = g_steal_pointer(&error);
     }
 
     g_task_return_pointer(task, result, (GDestroyNotify)channel_list_result_free);
 }
 
 void twitch_channel_list_fetch_async(
-    const AppSettings *settings,
+    AppSettings *settings,
     GCancellable *cancel,
     GAsyncReadyCallback callback,
     gpointer user_data
 )
 {
     FetchChannelListData *data = g_new0(FetchChannelListData, 1);
+    data->settings = settings;
     data->manual_channels = collect_settings_channels(settings, &data->manual_channel_count);
     data->oauth_token = g_strdup(app_settings_get_twitch_oauth_token(settings));
+    data->refresh_token = g_strdup(app_settings_get_twitch_refresh_token(settings));
+    data->oauth_expires_at = app_settings_get_twitch_oauth_expires_at(settings);
 
     GTask *task = g_task_new(NULL, cancel, callback, user_data);
     g_task_set_task_data(task, data, (GDestroyNotify)fetch_channel_list_data_free);
@@ -220,6 +339,29 @@ char **twitch_channel_list_fetch_finish(GAsyncResult *result, guint *channel_cou
 
     ChannelListResult *list = g_task_propagate_pointer(G_TASK(result), error);
     if (list == NULL) {
+        if (channel_count_out != NULL) {
+            *channel_count_out = 0;
+        }
+        return NULL;
+    }
+
+    g_autoptr(GError) save_error = NULL;
+    if (!save_refreshed_token(list, &save_error)) {
+        if (error != NULL) {
+            g_propagate_prefixed_error(error, g_steal_pointer(&save_error), "Twitch token refreshed, but saving failed: ");
+        }
+        channel_list_result_free(list);
+        if (channel_count_out != NULL) {
+            *channel_count_out = 0;
+        }
+        return NULL;
+    }
+
+    if (list->error != NULL) {
+        if (error != NULL) {
+            *error = g_steal_pointer(&list->error);
+        }
+        channel_list_result_free(list);
         if (channel_count_out != NULL) {
             *channel_count_out = 0;
         }

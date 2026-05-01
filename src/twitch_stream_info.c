@@ -28,6 +28,8 @@ typedef struct {
     char *oauth_token;
 } FetchFollowedChannelsData;
 
+G_DEFINE_QUARK(twitch-stream-info-error, twitch_stream_info_error)
+
 static void fetch_title_data_free(FetchTitleData *data)
 {
     if (data == NULL) {
@@ -192,13 +194,22 @@ static char *post_twitch_gql_request(const char *body, GCancellable *cancel, GEr
 
     guint status = soup_message_get_status(message);
     if (status < 200 || status >= 300) {
-        g_set_error(
-            error,
-            G_IO_ERROR,
-            G_IO_ERROR_FAILED,
-            "Twitch returned HTTP %u",
-            status
-        );
+        if (status == 401) {
+            g_set_error(
+                error,
+                TWITCH_STREAM_INFO_ERROR,
+                TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED,
+                "Twitch access token is expired or invalid"
+            );
+        } else {
+            g_set_error(
+                error,
+                G_IO_ERROR,
+                G_IO_ERROR_FAILED,
+                "Twitch returned HTTP %u",
+                status
+            );
+        }
         return NULL;
     }
 
@@ -244,13 +255,22 @@ static char *get_twitch_helix_request(const char *uri, const char *client_id, co
 
     guint status = soup_message_get_status(message);
     if (status < 200 || status >= 300) {
-        g_set_error(
-            error,
-            G_IO_ERROR,
-            G_IO_ERROR_FAILED,
-            "Twitch returned HTTP %u",
-            status
-        );
+        if (status == 401) {
+            g_set_error(
+                error,
+                TWITCH_STREAM_INFO_ERROR,
+                TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED,
+                "Twitch access token is expired or invalid"
+            );
+        } else {
+            g_set_error(
+                error,
+                G_IO_ERROR,
+                G_IO_ERROR_FAILED,
+                "Twitch returned HTTP %u",
+                status
+            );
+        }
         return NULL;
     }
 

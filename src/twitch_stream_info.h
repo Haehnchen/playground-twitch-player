@@ -19,6 +19,14 @@ typedef struct {
     char *display_name;
 } TwitchFollowedChannel;
 
+typedef enum {
+    TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED,
+} TwitchStreamInfoError;
+
+#define TWITCH_STREAM_INFO_ERROR twitch_stream_info_error_quark()
+
+GQuark twitch_stream_info_error_quark(void);
+
 void twitch_stream_preview_free(TwitchStreamPreview *preview);
 void twitch_followed_channel_free(TwitchFollowedChannel *channel);
 

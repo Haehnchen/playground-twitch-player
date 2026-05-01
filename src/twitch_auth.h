@@ -43,3 +43,10 @@ void twitch_auth_poll_device_token_async(
 );
 
 TwitchAuthToken *twitch_auth_poll_device_token_finish(GAsyncResult *result, GError **error);
+
+TwitchAuthToken *twitch_auth_refresh_token(
+    const char *client_id,
+    const char *refresh_token,
+    GCancellable *cancel,
+    GError **error
+);

@@ -12,6 +12,8 @@
 struct _AppSettings {
     GPtrArray *channels;
     char *twitch_oauth_token;
+    char *twitch_refresh_token;
+    gint64 twitch_oauth_expires_at;
     gboolean hwdec_enabled;
 };
 
@@ -92,6 +94,7 @@ void app_settings_free(AppSettings *settings)
 
     g_ptr_array_unref(settings->channels);
     g_free(settings->twitch_oauth_token);
+    g_free(settings->twitch_refresh_token);
     g_free(settings);
 }
 
@@ -126,16 +129,59 @@ const char *app_settings_get_twitch_oauth_token(const AppSettings *settings)
     return settings != NULL ? settings->twitch_oauth_token : NULL;
 }
 
+const char *app_settings_get_twitch_refresh_token(const AppSettings *settings)
+{
+    return settings != NULL ? settings->twitch_refresh_token : NULL;
+}
+
+gint64 app_settings_get_twitch_oauth_expires_at(const AppSettings *settings)
+{
+    return settings != NULL ? settings->twitch_oauth_expires_at : 0;
+}
+
 void app_settings_set_twitch_oauth_token(AppSettings *settings, const char *oauth_token)
 {
     if (settings == NULL) {
         return;
     }
 
-    g_free(settings->twitch_oauth_token);
-    settings->twitch_oauth_token = oauth_token != NULL && oauth_token[0] != '\0'
+    g_autofree char *new_oauth_token = oauth_token != NULL && oauth_token[0] != '\0'
         ? g_strdup(oauth_token)
         : NULL;
+
+    g_free(settings->twitch_oauth_token);
+    settings->twitch_oauth_token = g_steal_pointer(&new_oauth_token);
+    if (settings->twitch_oauth_token == NULL) {
+        g_clear_pointer(&settings->twitch_refresh_token, g_free);
+        settings->twitch_oauth_expires_at = 0;
+    }
+}
+
+void app_settings_set_twitch_auth_tokens(
+    AppSettings *settings,
+    const char *oauth_token,
+    const char *refresh_token,
+    gint64 oauth_expires_at
+)
+{
+    if (settings == NULL) {
+        return;
+    }
+
+    g_autofree char *new_oauth_token = oauth_token != NULL && oauth_token[0] != '\0'
+        ? g_strdup(oauth_token)
+        : NULL;
+    g_autofree char *new_refresh_token = refresh_token != NULL && refresh_token[0] != '\0'
+        ? g_strdup(refresh_token)
+        : NULL;
+
+    g_free(settings->twitch_oauth_token);
+    settings->twitch_oauth_token = g_steal_pointer(&new_oauth_token);
+
+    g_free(settings->twitch_refresh_token);
+    settings->twitch_refresh_token = g_steal_pointer(&new_refresh_token);
+
+    settings->twitch_oauth_expires_at = settings->twitch_oauth_token != NULL ? oauth_expires_at : 0;
 }
 
 void app_settings_clear_channels(AppSettings *settings)
@@ -245,6 +291,12 @@ AppSettings *app_settings_load(void)
         settings,
         json_object_get_string_member_with_default(root, "twitch_oauth_token", NULL)
     );
+    app_settings_set_twitch_auth_tokens(
+        settings,
+        app_settings_get_twitch_oauth_token(settings),
+        json_object_get_string_member_with_default(root, "twitch_refresh_token", NULL),
+        json_object_get_int_member_with_default(root, "twitch_oauth_expires_at", 0)
+    );
     load_channels(settings, root);
     return settings;
 }
@@ -275,6 +327,16 @@ gboolean app_settings_save(AppSettings *settings, GError **error)
     if (oauth_token != NULL && oauth_token[0] != '\0') {
         json_builder_set_member_name(builder, "twitch_oauth_token");
         json_builder_add_string_value(builder, oauth_token);
+    }
+    const char *refresh_token = app_settings_get_twitch_refresh_token(settings);
+    if (refresh_token != NULL && refresh_token[0] != '\0') {
+        json_builder_set_member_name(builder, "twitch_refresh_token");
+        json_builder_add_string_value(builder, refresh_token);
+    }
+    gint64 oauth_expires_at = app_settings_get_twitch_oauth_expires_at(settings);
+    if (oauth_expires_at > 0) {
+        json_builder_set_member_name(builder, "twitch_oauth_expires_at");
+        json_builder_add_int_value(builder, oauth_expires_at);
     }
     json_builder_set_member_name(builder, "channels");
     json_builder_begin_array(builder);
