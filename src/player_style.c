@@ -2,9 +2,35 @@
 
 #include <gtk/gtk.h>
 
-char *player_style_build_footer_volume_css(void)
+char *player_style_build_footer_css(void)
 {
     return g_strdup(
+        ".player-footer .overlay-icon-button,"
+        ".player-footer button.overlay-icon-button {"
+        "  background: transparent;"
+        "  background-color: transparent;"
+        "  background-image: none;"
+        "  border: none;"
+        "  border-color: transparent;"
+        "  outline-color: transparent;"
+        "  box-shadow: none;"
+        "  color: rgba(255, 255, 255, 0.88);"
+        "  min-width: 26px;"
+        "  min-height: 24px;"
+        "  padding: 4px 5px;"
+        "}"
+        ".player-footer .overlay-icon-button:hover,"
+        ".player-footer button.overlay-icon-button:hover {"
+        "  background: rgba(255, 255, 255, 0.14);"
+        "  background-image: none;"
+        "  color: white;"
+        "}"
+        ".player-footer .player-refresh-button,"
+        ".player-footer button.player-refresh-button {"
+        "  min-width: 20px;"
+        "  min-height: 22px;"
+        "  padding: 3px;"
+        "}"
         ".player-footer .volume-mute-button {"
         "  margin-right: 0;"
         "}"
@@ -191,9 +217,9 @@ char *player_style_build_footer_volume_css(void)
     );
 }
 
-void player_style_install_footer_volume_css(void)
+void player_style_install_footer_css(void)
 {
-    g_autofree char *css = player_style_build_footer_volume_css();
+    g_autofree char *css = player_style_build_footer_css();
     if (css == NULL) {
         return;
     }

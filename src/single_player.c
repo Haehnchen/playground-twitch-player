@@ -397,10 +397,9 @@ static gboolean process_mpv_events(gpointer user_data)
             break;
         }
         case MPV_EVENT_VIDEO_RECONFIG:
-            /* Twitch ad transitions can reconfigure the video stream while mpv
-             * has no fresh frame queued yet. Keep polling the renderer without
-             * toggling track selection, which can leave some streams black. */
-            start_render_warmup(state);
+            /* Twitch ad transitions can reconfigure the video stream, but this
+             * event also fires during startup. Keep the branch documented while
+             * avoiding automatic render refreshes here. */
             break;
         case MPV_EVENT_LOG_MESSAGE: {
             mpv_event_log_message *log = event->data;
@@ -1020,6 +1019,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
 
     state->stream_refresh_button = create_overlay_button(player_refresh_icon_new(), "Refresh video");
     gtk_widget_add_css_class(state->stream_refresh_button, "stream-refresh-button");
+    gtk_widget_add_css_class(state->stream_refresh_button, "player-refresh-button");
     gtk_widget_set_halign(state->stream_refresh_button, GTK_ALIGN_END);
     gtk_widget_set_valign(state->stream_refresh_button, GTK_ALIGN_CENTER);
     gtk_widget_set_margin_end(state->stream_refresh_button, 3);

@@ -763,24 +763,6 @@ static void install_css(void)
         ".video-footer menubutton > button:hover {"
         "  background: rgba(54, 54, 54, 0.90);"
         "}"
-        ".video-footer button.overlay-icon-button {"
-        "  background: transparent;"
-        "  background-color: transparent;"
-        "  background-image: none;"
-        "  border: none;"
-        "  border-color: transparent;"
-        "  outline-color: transparent;"
-        "  box-shadow: none;"
-        "  color: rgba(255, 255, 255, 0.88);"
-        "  min-width: 26px;"
-        "  min-height: 24px;"
-        "  padding: 4px 5px;"
-        "}"
-        ".video-footer button.overlay-icon-button:hover {"
-        "  background: rgba(255, 255, 255, 0.14);"
-        "  background-image: none;"
-        "  color: white;"
-        "}"
         ".stream-dropdown {"
         "  min-width: 140px;"
         "  min-height: 24px;"
@@ -792,11 +774,6 @@ static void install_css(void)
         ".stream-dropdown > button {"
         "  padding: 2px 8px;"
         "  min-height: 24px;"
-        "}"
-        ".stream-refresh-button {"
-        "  min-width: 22px;"
-        "  min-height: 22px;"
-        "  padding: 3px;"
         "}"
         ".stream-button-label {"
         "  color: white;"
@@ -983,7 +960,7 @@ static void install_css(void)
     );
 
     g_object_unref(provider);
-    player_style_install_footer_volume_css();
+    player_style_install_footer_css();
 }
 
 static void install_app_icon(void)
