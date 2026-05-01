@@ -661,6 +661,28 @@ static void on_search_changed(GtkEditable *editable, gpointer user_data)
     render_live_channels(user_data);
 }
 
+static void activate_first_visible_channel(ChannelSwitcherOverlay *switcher)
+{
+    if (switcher == NULL || switcher->grid == NULL) {
+        return;
+    }
+
+    for (GtkWidget *child = gtk_widget_get_first_child(switcher->grid);
+         child != NULL;
+         child = gtk_widget_get_next_sibling(child)) {
+        if (GTK_IS_BUTTON(child)) {
+            g_signal_emit_by_name(child, "clicked");
+            return;
+        }
+    }
+}
+
+static void on_search_activate(GtkSearchEntry *entry, gpointer user_data)
+{
+    (void)entry;
+    activate_first_visible_channel(user_data);
+}
+
 static void on_live_channels_fetched(GObject *source_object, GAsyncResult *result, gpointer user_data)
 {
     (void)source_object;
@@ -872,6 +894,7 @@ ChannelSwitcherOverlay *channel_switcher_overlay_new(
     gtk_widget_add_css_class(switcher->search_entry, "channel-switcher-search");
     gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(switcher->search_entry), "Filter live channels");
     g_signal_connect(switcher->search_entry, "changed", G_CALLBACK(on_search_changed), switcher);
+    g_signal_connect(switcher->search_entry, "activate", G_CALLBACK(on_search_activate), switcher);
     GtkWidget *header_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(header_spacer, TRUE);
     GtkWidget *settings_button = gtk_button_new();
