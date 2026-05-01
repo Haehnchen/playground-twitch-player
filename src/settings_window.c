@@ -75,8 +75,32 @@ static gboolean has_twitch_auth(SettingsWindow *view)
 static void set_twitch_auth_status(SettingsWindow *view, const char *message)
 {
     if (view->twitch_auth_status != NULL) {
+        gtk_label_set_use_markup(GTK_LABEL(view->twitch_auth_status), FALSE);
         gtk_label_set_text(GTK_LABEL(view->twitch_auth_status), message != NULL ? message : "");
     }
+}
+
+static void set_twitch_auth_status_markup(SettingsWindow *view, const char *markup)
+{
+    if (view->twitch_auth_status != NULL) {
+        gtk_label_set_use_markup(GTK_LABEL(view->twitch_auth_status), TRUE);
+        gtk_label_set_markup(GTK_LABEL(view->twitch_auth_status), markup != NULL ? markup : "");
+    }
+}
+
+static gboolean on_twitch_auth_status_link_activated(GtkLabel *label, const char *uri, gpointer user_data)
+{
+    (void)label;
+    SettingsWindow *view = user_data;
+
+    if (view == NULL || view->window == NULL || uri == NULL || uri[0] == '\0') {
+        return TRUE;
+    }
+
+    GtkUriLauncher *launcher = gtk_uri_launcher_new(uri);
+    gtk_uri_launcher_launch(launcher, GTK_WINDOW(view->window), NULL, NULL, NULL);
+    g_object_unref(launcher);
+    return TRUE;
 }
 
 static void update_twitch_auth_controls(SettingsWindow *view)
@@ -281,8 +305,15 @@ static void on_twitch_device_code_ready(GObject *source_object, GAsyncResult *re
     GtkUriLauncher *launcher = gtk_uri_launcher_new(code->verification_uri);
     gtk_uri_launcher_launch(launcher, GTK_WINDOW(view->window), NULL, NULL, NULL);
     g_object_unref(launcher);
-    g_autofree char *message = g_strdup_printf("Authorize Twitch in the browser with code %s.", code->user_code);
-        set_twitch_auth_status(view, message);
+
+    g_autofree char *escaped_uri = g_markup_escape_text(code->verification_uri, -1);
+    g_autofree char *escaped_code = g_markup_escape_text(code->user_code, -1);
+    g_autofree char *message = g_strdup_printf(
+        "Open Twitch activation and enter code <a href=\"%s\">%s</a>.",
+        escaped_uri,
+        escaped_code
+    );
+    set_twitch_auth_status_markup(view, message);
 
     twitch_auth_poll_device_token_async(
         TWITCH_AUTH_CLIENT_ID,
@@ -522,6 +553,12 @@ static GtkWidget *create_channels_page(SettingsWindow *view)
     gtk_label_set_xalign(GTK_LABEL(view->twitch_auth_status), 0.0);
     gtk_label_set_wrap(GTK_LABEL(view->twitch_auth_status), TRUE);
     gtk_widget_set_halign(view->twitch_auth_status, GTK_ALIGN_FILL);
+    g_signal_connect(
+        view->twitch_auth_status,
+        "activate-link",
+        G_CALLBACK(on_twitch_auth_status_link_activated),
+        view
+    );
     gtk_box_append(GTK_BOX(page), view->twitch_auth_status);
     if (!has_twitch_auth_client()) {
         set_twitch_auth_status(view, "Twitch login is not configured.");
