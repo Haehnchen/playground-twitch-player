@@ -85,6 +85,7 @@ static gboolean create_mpv_render_context(StreamTile *tile);
 static void schedule_footer_hide(GridAppState *state);
 static void show_tile_overlay(StreamTile *tile);
 static void update_tile_mute_button(StreamTile *tile);
+static void set_tile_mute(StreamTile *tile, gboolean muted);
 
 static void set_tile_status(StreamTile *tile, const char *message)
 {
@@ -440,6 +441,9 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
     StreamTile *tile = user_data;
 
     player_volume_sync_session_from_range(tile->session, range);
+    if (player_session_get_muted(tile->session)) {
+        set_tile_mute(tile, FALSE);
+    }
 }
 
 static void update_tile_mute_button(StreamTile *tile)
@@ -884,10 +888,6 @@ static gboolean on_tile_scroll(GtkEventControllerScroll *controller, double dx, 
         !gtk_widget_get_sensitive(tile->volume_scale) ||
         !player_volume_apply_scroll(tile->volume_scale, dx, dy)) {
         return GDK_EVENT_PROPAGATE;
-    }
-
-    if (player_session_get_muted(tile->session)) {
-        set_tile_mute(tile, FALSE);
     }
 
     show_tile_overlay(tile);

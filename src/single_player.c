@@ -88,6 +88,7 @@ static void init_streams(SinglePlayer *state, const char *target);
 static void free_streams(SinglePlayer *state);
 static void update_stream_combo_label(SinglePlayer *state);
 static void show_footer(SinglePlayer *state);
+static void set_mute(SinglePlayer *state, gboolean muted);
 static gboolean target_matches_stream_values(const char *target, const char *target_channel, const char *label, const char *channel, const char *url);
 
 static void update_empty_button(SinglePlayer *state)
@@ -503,6 +504,9 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
     SinglePlayer *state = user_data;
 
     player_volume_sync_session_from_range(state->session, range);
+    if (player_session_get_muted(state->session)) {
+        set_mute(state, FALSE);
+    }
 }
 
 static void update_mute_button(SinglePlayer *state)
@@ -706,10 +710,6 @@ static gboolean on_video_scroll(GtkEventControllerScroll *controller, double dx,
 
     if (!player_volume_apply_scroll(state->volume_scale, dx, dy)) {
         return GDK_EVENT_PROPAGATE;
-    }
-
-    if (player_session_get_muted(state->session)) {
-        set_mute(state, FALSE);
     }
 
     show_footer(state);
