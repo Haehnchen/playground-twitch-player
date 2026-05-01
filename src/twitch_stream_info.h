@@ -16,6 +16,7 @@ typedef struct {
 
 typedef struct {
     char *title;
+    char *started_at;
     char *category_name;
     guint viewer_count;
 } TwitchCurrentStream;
@@ -51,6 +52,7 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(TwitchCurrentStream, twitch_current_stream_free)
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(TwitchStreamQuality, twitch_stream_quality_free)
 
 char *twitch_stream_info_format_viewer_count(guint viewer_count);
+char *twitch_stream_info_format_live_duration(const char *started_at);
 char *twitch_stream_info_format_current_stream_title(const TwitchCurrentStream *stream);
 char *twitch_stream_info_format_current_stream_metadata(const TwitchCurrentStream *stream);
 

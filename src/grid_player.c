@@ -1329,7 +1329,7 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
 
 static GtkWidget *create_tile_footer(StreamTile *tile)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_add_css_class(box, "player-footer");
     gtk_widget_add_css_class(box, "tile-footer");
 
@@ -1368,9 +1368,6 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
 
     tile->stream_info = player_footer_stream_info_new();
 
-    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_hexpand(spacer, FALSE);
-
     tile->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX, 1);
     gtk_widget_add_css_class(tile->volume_scale, "volume-scale");
     gtk_range_set_value(GTK_RANGE(tile->volume_scale), player_session_get_volume(tile->session));
@@ -1406,7 +1403,6 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_box_append(GTK_BOX(box), channel_selector);
     gtk_box_append(GTK_BOX(box), tile->close_button);
     gtk_box_append(GTK_BOX(box), player_footer_stream_info_get_widget(tile->stream_info));
-    gtk_box_append(GTK_BOX(box), spacer);
     gtk_box_append(GTK_BOX(box), tile->mute_button);
     gtk_box_append(GTK_BOX(box), tile->volume_scale);
     gtk_box_append(GTK_BOX(box), tile->focus_button);
@@ -1564,6 +1560,10 @@ static void install_css(void)
         "  background: rgba(0, 0, 0, 0.62);"
         "  color: white;"
         "  padding: 4px 6px;"
+        "}"
+        ".tile-footer .stream-info-labels {"
+        "  margin-left: 2px;"
+        "  margin-right: 2px;"
         "}"
         ".tile-footer button,"
         ".tile-footer menubutton,"

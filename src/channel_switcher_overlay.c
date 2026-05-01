@@ -567,40 +567,12 @@ static char *format_viewer_count(guint viewer_count)
     return g_strdup_printf("%s viewers", count);
 }
 
-static char *format_live_duration(const char *started_at)
-{
-    if (started_at == NULL || started_at[0] == '\0') {
-        return g_strdup("live");
-    }
-
-    g_autoptr(GDateTime) started = g_date_time_new_from_iso8601(started_at, NULL);
-    if (started == NULL) {
-        return g_strdup("live");
-    }
-
-    g_autoptr(GDateTime) now = g_date_time_new_now_utc();
-    GTimeSpan span = g_date_time_difference(now, started);
-    if (span < 0) {
-        span = 0;
-    }
-
-    gint64 total_minutes = span / G_TIME_SPAN_MINUTE;
-    gint64 hours = total_minutes / 60;
-    gint64 minutes = total_minutes % 60;
-
-    if (hours > 0) {
-        return g_strdup_printf("%" G_GINT64_FORMAT "h %" G_GINT64_FORMAT "m", hours, minutes);
-    }
-
-    return g_strdup_printf("%" G_GINT64_FORMAT "m", minutes);
-}
-
 static char *format_meta_text(TwitchStreamPreview *preview)
 {
     g_autofree char *viewers = format_viewer_count(preview->viewer_count);
-    g_autofree char *duration = format_live_duration(preview->started_at);
+    g_autofree char *duration = twitch_stream_info_format_live_duration(preview->started_at);
 
-    return g_strdup_printf("%s • %s", viewers, duration);
+    return g_strdup_printf("%s • %s", viewers, duration != NULL ? duration : "live");
 }
 
 static GtkWidget *create_channel_card(ChannelSwitcherOverlay *switcher, TwitchStreamPreview *preview)

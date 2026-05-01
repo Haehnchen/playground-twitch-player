@@ -42,7 +42,6 @@ struct _SinglePlayer {
     GtkWidget *main_area;
     GtkWidget *chat_toggle_button;
     GtkWidget *bottom_panel;
-    GtkWidget *footer_spacer;
     GtkWidget *stream_combo;
     GtkWidget *stream_refresh_button;
     GtkWidget *empty_button;
@@ -1203,7 +1202,7 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
 
 static GtkWidget *create_controls(SinglePlayer *state)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_add_css_class(box, "player-footer");
     gtk_widget_add_css_class(box, "video-footer");
 
@@ -1255,9 +1254,6 @@ static GtkWidget *create_controls(SinglePlayer *state)
 
     gtk_box_append(GTK_BOX(box), stream_selector);
     gtk_box_append(GTK_BOX(box), player_footer_stream_info_get_widget(state->stream_info));
-    state->footer_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_hexpand(state->footer_spacer, FALSE);
-    gtk_box_append(GTK_BOX(box), state->footer_spacer);
     gtk_box_append(GTK_BOX(box), state->mute_button);
     gtk_box_append(GTK_BOX(box), state->volume_scale);
 

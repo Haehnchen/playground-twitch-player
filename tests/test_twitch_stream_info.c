@@ -59,26 +59,28 @@ static void test_parse_current_stream_response_returns_title_viewers_and_categor
 {
     const char *json =
         "{\"data\":{\"user\":{\"stream\":{\"title\":\"Live now\",\"viewersCount\":1234,"
-        "\"game\":{\"name\":\"Games + Demos\"}}}}}";
+        "\"createdAt\":\"2026-04-30T10:00:00Z\",\"game\":{\"name\":\"Games + Demos\"}}}}}";
     g_autoptr(GError) error = NULL;
     g_autoptr(TwitchCurrentStream) stream = parse_current_stream_response(json, strlen(json), &error);
 
     g_assert_no_error(error);
     g_assert_nonnull(stream);
     g_assert_cmpstr(stream->title, ==, "Live now");
+    g_assert_cmpstr(stream->started_at, ==, "2026-04-30T10:00:00Z");
     g_assert_cmpstr(stream->category_name, ==, "Games + Demos");
     g_assert_cmpuint(stream->viewer_count, ==, 1234);
 }
 
 static void test_parse_current_stream_response_handles_missing_optional_fields(void)
 {
-    const char *json = "{\"data\":{\"user\":{\"stream\":{\"title\":null,\"viewersCount\":null,\"game\":null}}}}";
+    const char *json = "{\"data\":{\"user\":{\"stream\":{\"title\":null,\"viewersCount\":null,\"createdAt\":null,\"game\":null}}}}";
     g_autoptr(GError) error = NULL;
     g_autoptr(TwitchCurrentStream) stream = parse_current_stream_response(json, strlen(json), &error);
 
     g_assert_no_error(error);
     g_assert_nonnull(stream);
     g_assert_cmpstr(stream->title, ==, "");
+    g_assert_null(stream->started_at);
     g_assert_null(stream->category_name);
     g_assert_cmpuint(stream->viewer_count, ==, 0);
 }
@@ -125,10 +127,24 @@ static void test_format_viewer_count_compacts_large_counts(void)
     g_assert_cmpstr(millions, ==, "1.2M");
 }
 
+static void test_format_live_duration_uses_hours_and_minutes(void)
+{
+    g_autofree char *minutes = format_live_duration_from_span(42 * G_TIME_SPAN_MINUTE);
+    g_autofree char *hours = format_live_duration_from_span(65 * G_TIME_SPAN_MINUTE);
+    g_autofree char *future = format_live_duration_from_span(-5 * G_TIME_SPAN_MINUTE);
+    g_autofree char *invalid = twitch_stream_info_format_live_duration("not a date");
+
+    g_assert_cmpstr(minutes, ==, "42m");
+    g_assert_cmpstr(hours, ==, "1h 5m");
+    g_assert_cmpstr(future, ==, "0m");
+    g_assert_null(invalid);
+}
+
 static void test_format_current_stream_title_and_metadata_separately(void)
 {
     TwitchCurrentStream stream = {
         .title = "Live now",
+        .started_at = "2999-01-01T00:00:00Z",
         .category_name = "Games + Demos",
         .viewer_count = 1234,
     };
@@ -145,7 +161,7 @@ static void test_format_current_stream_title_and_metadata_separately(void)
 
     g_assert_cmpstr(title, ==, "Live now");
     g_assert_cmpstr(untitled, ==, "");
-    g_assert_cmpstr(metadata, ==, "1.2K • Games + Demos");
+    g_assert_cmpstr(metadata, ==, "1.2K • 0m • Games + Demos");
     g_assert_cmpstr(untitled_metadata, ==, "42 • Just Chatting");
 }
 
@@ -339,6 +355,7 @@ int main(int argc, char **argv)
     g_test_add_func("/twitch-stream-info/parse-response/current-stream-missing-optional", test_parse_current_stream_response_handles_missing_optional_fields);
     g_test_add_func("/twitch-stream-info/parse-response/stream-qualities", test_parse_stream_qualities_playlist_returns_sorted_variants);
     g_test_add_func("/twitch-stream-info/format/viewer-count", test_format_viewer_count_compacts_large_counts);
+    g_test_add_func("/twitch-stream-info/format/live-duration", test_format_live_duration_uses_hours_and_minutes);
     g_test_add_func("/twitch-stream-info/format/current-stream-title", test_format_current_stream_title_and_metadata_separately);
     g_test_add_func("/twitch-stream-info/parse-live-response/only-live", test_parse_live_channels_response_returns_only_live_streams);
     g_test_add_func("/twitch-stream-info/parse-live-response/missing-optional-fields", test_parse_live_channels_response_handles_missing_optional_fields);
