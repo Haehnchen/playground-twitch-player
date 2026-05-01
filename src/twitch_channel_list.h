@@ -13,3 +13,5 @@ void twitch_channel_list_fetch_async(
 );
 
 char **twitch_channel_list_fetch_finish(GAsyncResult *result, guint *channel_count_out, GError **error);
+
+void twitch_channel_list_invalidate_followed_cache(void);

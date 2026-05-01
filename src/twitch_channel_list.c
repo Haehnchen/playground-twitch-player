@@ -138,6 +138,17 @@ static void store_followed_cache(GPtrArray *channels)
     g_mutex_unlock(&followed_cache_mutex);
 }
 
+void twitch_channel_list_invalidate_followed_cache(void)
+{
+    g_mutex_lock(&followed_cache_mutex);
+    if (followed_channels_cache != NULL) {
+        g_ptr_array_unref(followed_channels_cache);
+        followed_channels_cache = NULL;
+    }
+    followed_channels_cached_at_us = 0;
+    g_mutex_unlock(&followed_cache_mutex);
+}
+
 static ChannelListResult *build_channel_list_result(char **manual_channels, guint manual_channel_count, GPtrArray *followed_channels)
 {
     GPtrArray *combined = g_ptr_array_new_with_free_func(g_free);
@@ -209,6 +220,14 @@ static ChannelListResult *fetch_channel_list(FetchChannelListData *data, GCancel
 {
     ChannelListResult *result = NULL;
 
+    g_autofree char *oauth_token = g_strdup(data->oauth_token);
+    if ((oauth_token == NULL || oauth_token[0] == '\0') &&
+        (data->refresh_token == NULL || data->refresh_token[0] == '\0')) {
+        result = build_channel_list_result(data->manual_channels, data->manual_channel_count, NULL);
+        result->settings = data->settings;
+        return result;
+    }
+
     g_autoptr(GPtrArray) followed_channels = dup_fresh_followed_cache();
     if (followed_channels != NULL) {
         result = build_channel_list_result(data->manual_channels, data->manual_channel_count, followed_channels);
@@ -217,7 +236,6 @@ static ChannelListResult *fetch_channel_list(FetchChannelListData *data, GCancel
     }
 
     const char *client_id = TWITCH_AUTH_CLIENT_ID;
-    g_autofree char *oauth_token = g_strdup(data->oauth_token);
     if (client_id == NULL || client_id[0] == '\0') {
         if (data->manual_channel_count > 0) {
             g_debug("followed channels enabled but Twitch credentials are incomplete");

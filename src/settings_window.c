@@ -3,6 +3,7 @@
 #include "settings_window.h"
 #include "player_icons.h"
 #include "twitch_auth.h"
+#include "twitch_channel_list.h"
 
 typedef struct {
     GtkWidget *window;
@@ -245,6 +246,7 @@ static void on_twitch_token_ready(GObject *source_object, GAsyncResult *result, 
         g_autofree char *message = g_strdup_printf("Twitch login saved in memory, but saving failed: %s", error->message);
         set_twitch_auth_status(view, message);
     } else {
+        twitch_channel_list_invalidate_followed_cache();
         set_twitch_auth_status(view, "Twitch connected. Followed channels are enabled.");
         notify_settings_saved(view);
     }
@@ -334,6 +336,7 @@ static void disconnect_twitch(SettingsWindow *view)
     view->auth_in_progress = FALSE;
 
     app_settings_set_twitch_oauth_token(view->settings, NULL);
+    twitch_channel_list_invalidate_followed_cache();
 
     g_autoptr(GError) error = NULL;
     if (!app_settings_save(view->settings, &error)) {
