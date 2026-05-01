@@ -30,6 +30,8 @@ executable(
     'src/player_session.c',
     'src/single_player.c',
     'src/grid_player.c',
+    'src/player_overlay_controls.c',
+    'src/player_stream_quality.c',
     'src/player_icons.c',
     'src/player_motion.c',
     'src/player_style.c',

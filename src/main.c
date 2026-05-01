@@ -6,6 +6,7 @@
 
 #include "settings.h"
 #include "player_defaults.h"
+#include "player_overlay_controls.h"
 #include "player_icons.h"
 #include "player_motion.h"
 #include "player_session.h"
@@ -122,15 +123,6 @@ static void remove_source_if_active(guint *source_id)
         g_source_destroy(source);
     }
     *source_id = 0;
-}
-
-static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
-{
-    GtkWidget *button = gtk_button_new();
-    gtk_button_set_child(GTK_BUTTON(button), icon);
-    gtk_widget_add_css_class(button, "overlay-icon-button");
-    gtk_widget_set_tooltip_text(button, tooltip);
-    return button;
 }
 
 static gboolean hide_window_overlay(gpointer user_data)
@@ -633,6 +625,8 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
 
 static void install_css(void)
 {
+    player_style_install_overlay_css();
+
     GtkCssProvider *provider = gtk_css_provider_new();
 
     gtk_css_provider_load_from_string(
@@ -698,50 +692,11 @@ static void install_css(void)
         "  border-radius: 999px;"
         "  min-width: 4px;"
         "}"
-        ".top-overlay-controls {"
-        "  margin: 6px;"
-        "}"
-        ".overlay-icon-button {"
-        "  background: rgba(0, 0, 0, 0.58);"
-        "  color: white;"
-        "  border-color: transparent;"
-        "  outline-color: transparent;"
-        "  box-shadow: none;"
-        "  min-width: 30px;"
-        "  min-height: 28px;"
-        "  padding: 3px 7px;"
-        "}"
-        ".overlay-icon-button:hover {"
-        "  background: rgba(54, 54, 54, 0.90);"
-        "}"
-        ".empty-stream-button {"
-        "  background: transparent;"
-        "  color: rgba(255, 255, 255, 0.50);"
-        "  border-color: transparent;"
-        "  outline-color: transparent;"
-        "  box-shadow: none;"
-        "  min-width: 52px;"
-        "  min-height: 52px;"
-        "  padding: 0;"
-        "  opacity: 0.50;"
-        "}"
-        ".empty-stream-button:hover {"
-        "  background: transparent;"
-        "  color: rgba(255, 255, 255, 0.65);"
-        "  opacity: 0.65;"
-        "}"
-        ".empty-stream-button-visible {"
-        "  min-width: 30px;"
-        "  min-height: 30px;"
-        "}"
         ".settings-overlay-button {"
         "  background: rgba(0, 0, 0, 0.30);"
         "}"
         ".settings-overlay-button:hover {"
         "  background: rgba(38, 38, 38, 0.62);"
-        "}"
-        ".close-button:hover {"
-        "  background: rgba(170, 36, 36, 0.90);"
         "}"
         ".video-footer button,"
         ".video-footer menubutton,"
@@ -1106,12 +1061,12 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_widget_set_valign(state->top_left_controls, GTK_ALIGN_START);
     gtk_overlay_add_overlay(GTK_OVERLAY(state->root_overlay), state->top_left_controls);
 
-    state->settings_button = create_overlay_button(player_settings_icon_new(), "Settings");
+    state->settings_button = player_overlay_button_new(player_settings_icon_new(), "Settings");
     gtk_widget_add_css_class(state->settings_button, "settings-overlay-button");
     gtk_box_append(GTK_BOX(state->top_left_controls), state->settings_button);
     g_signal_connect(state->settings_button, "clicked", G_CALLBACK(on_settings_clicked), state);
 
-    state->layout_button = create_overlay_button(player_layout_icon_new(PLAYER_LAYOUT_ICON_GRID), "Switch to grid player");
+    state->layout_button = player_overlay_button_new(player_layout_icon_new(PLAYER_LAYOUT_ICON_GRID), "Switch to grid player");
     gtk_widget_add_css_class(state->layout_button, "settings-overlay-button");
     gtk_box_append(GTK_BOX(state->top_left_controls), state->layout_button);
     g_signal_connect(state->layout_button, "clicked", G_CALLBACK(on_layout_clicked), state);
@@ -1123,15 +1078,15 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_widget_set_valign(state->top_controls, GTK_ALIGN_START);
     gtk_overlay_add_overlay(GTK_OVERLAY(state->root_overlay), state->top_controls);
 
-    GtkWidget *minimize_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_MINIMIZE), "Minimize");
+    GtkWidget *minimize_button = player_overlay_button_new(player_window_icon_new(PLAYER_WINDOW_ICON_MINIMIZE), "Minimize");
     gtk_box_append(GTK_BOX(state->top_controls), minimize_button);
     g_signal_connect(minimize_button, "clicked", G_CALLBACK(on_minimize_clicked), state);
 
-    GtkWidget *fullscreen_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_FULLSCREEN), "Fullscreen");
+    GtkWidget *fullscreen_button = player_overlay_button_new(player_window_icon_new(PLAYER_WINDOW_ICON_FULLSCREEN), "Fullscreen");
     gtk_box_append(GTK_BOX(state->top_controls), fullscreen_button);
     g_signal_connect(fullscreen_button, "clicked", G_CALLBACK(on_fullscreen_clicked), state);
 
-    GtkWidget *close_button = create_overlay_button(player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE), "Close");
+    GtkWidget *close_button = player_overlay_button_new(player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE), "Close");
     gtk_widget_add_css_class(close_button, "close-button");
     gtk_box_append(GTK_BOX(state->top_controls), close_button);
     g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), state);

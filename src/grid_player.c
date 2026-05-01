@@ -10,11 +10,13 @@
 
 #include "channel_switcher_overlay.h"
 #include "grid_player.h"
+#include "player_overlay_controls.h"
 #include "player_footer.h"
 #include "player_icons.h"
 #include "player_motion.h"
 #include "player_defaults.h"
 #include "player_style.h"
+#include "player_stream_quality.h"
 #include "player_stream_settings.h"
 #include "player_volume.h"
 #include "twitch_stream_info.h"
@@ -51,12 +53,8 @@ typedef struct {
     ChannelSwitcherOverlay *channel_switcher;
     PlayerSession *session;
     GCancellable *title_cancel;
-    GCancellable *quality_cancel;
-    GPtrArray *stream_qualities;
     PlayerFooterStreamInfo *stream_info;
-    char *selected_quality_url;
-    char *selected_quality_label;
-    gint64 stream_qualities_fetched_at;
+    PlayerStreamQualityState stream_quality;
     mpv_render_context *mpv_gl;
     int last_render_width;
     int last_render_height;
@@ -64,11 +62,9 @@ typedef struct {
     gint event_queued;
     guint render_warmup_source;
     guint title_generation;
-    guint quality_generation;
     int render_warmup_frames;
     gboolean owns_session;
     gboolean title_fetch_in_progress;
-    gboolean quality_fetch_in_progress;
 } StreamTile;
 
 struct _GridAppState {
@@ -119,8 +115,6 @@ typedef struct {
 static gboolean create_mpv_render_context(StreamTile *tile);
 static void schedule_footer_hide(GridAppState *state);
 static void show_tile_overlay(StreamTile *tile);
-static void update_tile_mute_button(StreamTile *tile);
-static void set_tile_mute(StreamTile *tile, gboolean muted);
 static void request_tile_title_update(StreamTile *tile, gboolean force);
 static void update_tile_empty_state(StreamTile *tile);
 static void load_tile_stream(StreamTile *tile);
@@ -316,21 +310,12 @@ static void reset_tile_stream_title(StreamTile *tile)
 
 static void clear_tile_stream_qualities(StreamTile *tile)
 {
-    if (tile->quality_cancel != NULL) {
-        g_cancellable_cancel(tile->quality_cancel);
-        g_clear_object(&tile->quality_cancel);
-    }
-    g_clear_pointer(&tile->stream_qualities, g_ptr_array_unref);
-    tile->quality_fetch_in_progress = FALSE;
-    tile->stream_qualities_fetched_at = 0;
-    tile->quality_generation++;
+    player_stream_quality_state_clear(&tile->stream_quality);
 }
 
 static void reset_tile_quality_selection(StreamTile *tile)
 {
-    g_clear_pointer(&tile->selected_quality_url, g_free);
-    g_clear_pointer(&tile->selected_quality_label, g_free);
-    clear_tile_stream_qualities(tile);
+    player_stream_quality_state_reset_selection(&tile->stream_quality);
 }
 
 static gboolean tile_settings_popover_is_visible(StreamTile *tile)
@@ -340,9 +325,7 @@ static gboolean tile_settings_popover_is_visible(StreamTile *tile)
 
 static gboolean tile_qualities_cache_is_valid(StreamTile *tile)
 {
-    return tile->stream_qualities != NULL &&
-        tile->stream_qualities_fetched_at > 0 &&
-        g_get_monotonic_time() - tile->stream_qualities_fetched_at < (gint64)STREAM_QUALITY_CACHE_SECONDS * G_USEC_PER_SEC;
+    return player_stream_quality_state_cache_is_valid(&tile->stream_quality, STREAM_QUALITY_CACHE_SECONDS);
 }
 
 static void reload_tile_stream_with_quality(StreamTile *tile, const TwitchStreamQuality *quality)
@@ -352,10 +335,7 @@ static void reload_tile_stream_with_quality(StreamTile *tile, const TwitchStream
         return;
     }
 
-    g_free(tile->selected_quality_url);
-    g_free(tile->selected_quality_label);
-    tile->selected_quality_url = g_strdup(quality->url);
-    tile->selected_quality_label = g_strdup(quality->label);
+    player_stream_quality_state_select(&tile->stream_quality, quality);
 
     set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
     player_session_load_stream(tile->session, quality->url, tile->label, tile->channel);
@@ -365,8 +345,7 @@ static void reload_tile_stream_with_quality(StreamTile *tile, const TwitchStream
 
 static void reload_tile_stream_auto(StreamTile *tile)
 {
-    g_clear_pointer(&tile->selected_quality_url, g_free);
-    g_clear_pointer(&tile->selected_quality_label, g_free);
+    player_stream_quality_state_select_auto(&tile->stream_quality);
     load_tile_stream(tile);
 }
 
@@ -491,7 +470,7 @@ static void update_tile_empty_state(StreamTile *tile)
     }
     if (tile->mute_button != NULL) {
         gtk_widget_set_sensitive(tile->mute_button, TRUE);
-        update_tile_mute_button(tile);
+        player_volume_update_mute_button(tile->mute_button, tile->session);
     }
     if (tile->volume_scale != NULL) {
         gtk_widget_set_sensitive(tile->volume_scale, has_stream && player_session_is_ready(tile->session));
@@ -619,37 +598,8 @@ static void on_volume_changed(GtkRange *range, gpointer user_data)
 
     player_volume_sync_session_from_range(tile->session, range);
     if (player_session_get_muted(tile->session)) {
-        set_tile_mute(tile, FALSE);
+        player_volume_set_muted(tile->session, tile->mute_button, FALSE);
     }
-}
-
-static void update_tile_mute_button(StreamTile *tile)
-{
-    if (tile->mute_button == NULL) {
-        return;
-    }
-
-    gboolean muted = player_session_get_muted(tile->session);
-    gtk_button_set_child(
-        GTK_BUTTON(tile->mute_button),
-        player_volume_icon_new(muted ? PLAYER_VOLUME_ICON_MUTED : PLAYER_VOLUME_ICON_SOUND)
-    );
-}
-
-static void set_tile_mute(StreamTile *tile, gboolean muted)
-{
-    player_session_set_muted(tile->session, muted);
-    update_tile_mute_button(tile);
-}
-
-static GtkWidget *create_overlay_button(GtkWidget *icon, const char *tooltip)
-{
-    GtkWidget *button = gtk_button_new();
-    gtk_button_set_child(GTK_BUTTON(button), icon);
-    gtk_button_set_has_frame(GTK_BUTTON(button), FALSE);
-    gtk_widget_add_css_class(button, "overlay-icon-button");
-    gtk_widget_set_tooltip_text(button, tooltip);
-    return button;
 }
 
 static void on_tile_close_clicked(GtkButton *button, gpointer user_data)
@@ -679,8 +629,7 @@ static void on_mute_clicked(GtkButton *button, gpointer user_data)
         return;
     }
 
-    player_session_toggle_muted(tile->session);
-    update_tile_mute_button(tile);
+    player_volume_toggle_muted(tile->session, tile->mute_button);
     show_tile_overlay(tile);
 }
 
@@ -730,7 +679,7 @@ static void on_tile_stream_qualities_fetched(GObject *source_object, GAsyncResul
     g_autoptr(GError) error = NULL;
     GPtrArray *qualities = twitch_stream_info_fetch_stream_qualities_finish(result, &error);
 
-    if (data->generation != tile->quality_generation) {
+    if (data->generation != tile->stream_quality.generation) {
         if (qualities != NULL) {
             g_ptr_array_unref(qualities);
         }
@@ -738,10 +687,7 @@ static void on_tile_stream_qualities_fetched(GObject *source_object, GAsyncResul
         return;
     }
 
-    tile->quality_fetch_in_progress = FALSE;
-    g_clear_object(&tile->quality_cancel);
-    g_clear_pointer(&tile->stream_qualities, g_ptr_array_unref);
-    tile->stream_qualities = qualities;
+    player_stream_quality_state_finish_fetch(&tile->stream_quality, qualities);
 
     if (error != NULL) {
         if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
@@ -752,7 +698,7 @@ static void on_tile_stream_qualities_fetched(GObject *source_object, GAsyncResul
         return;
     }
 
-    tile->stream_qualities_fetched_at = g_get_monotonic_time();
+    player_stream_quality_state_mark_fetched(&tile->stream_quality);
     populate_tile_quality_buttons(tile);
     g_free(data);
 }
@@ -762,7 +708,7 @@ static void request_tile_qualities_update(StreamTile *tile, gboolean force)
     if (tile->app->closing || tile->channel == NULL || tile->channel[0] == '\0') {
         return;
     }
-    if (tile->quality_fetch_in_progress && !force) {
+    if (tile->stream_quality.fetch_in_progress && !force) {
         return;
     }
     if (!force && tile_qualities_cache_is_valid(tile)) {
@@ -770,21 +716,17 @@ static void request_tile_qualities_update(StreamTile *tile, gboolean force)
         return;
     }
 
-    if (force && tile->quality_cancel != NULL) {
-        g_cancellable_cancel(tile->quality_cancel);
-        g_clear_object(&tile->quality_cancel);
+    if (force) {
+        player_stream_quality_state_cancel_fetch(&tile->stream_quality);
     }
 
     gtk_label_set_text(GTK_LABEL(tile->quality_status_label), "Loading...");
 
     StreamQualityCallbackData *data = g_new0(StreamQualityCallbackData, 1);
     data->tile = tile;
-    data->generation = ++tile->quality_generation;
+    data->generation = player_stream_quality_state_begin_fetch(&tile->stream_quality);
 
-    tile->quality_cancel = g_cancellable_new();
-    tile->quality_fetch_in_progress = TRUE;
-
-    twitch_stream_info_fetch_stream_qualities_async(tile->channel, tile->quality_cancel, on_tile_stream_qualities_fetched, data);
+    twitch_stream_info_fetch_stream_qualities_async(tile->channel, tile->stream_quality.cancel, on_tile_stream_qualities_fetched, data);
 }
 
 static void populate_tile_quality_buttons(StreamTile *tile)
@@ -792,9 +734,9 @@ static void populate_tile_quality_buttons(StreamTile *tile)
     player_stream_settings_quality_list_populate(
         tile->quality_list_box,
         tile->quality_status_label,
-        tile->stream_qualities,
-        tile->selected_quality_url,
-        tile->selected_quality_label,
+        tile->stream_quality.qualities,
+        tile->stream_quality.selected_url,
+        tile->stream_quality.selected_label,
         G_CALLBACK(on_tile_quality_button_clicked),
         tile,
         G_CALLBACK(on_tile_quality_auto_clicked),
@@ -1353,7 +1295,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
 
     gtk_overlay_set_child(GTK_OVERLAY(channel_selector), tile->channel_combo);
 
-    tile->channel_refresh_button = create_overlay_button(player_refresh_icon_new(), "Refresh video");
+    tile->channel_refresh_button = player_overlay_button_new(player_refresh_icon_new(), "Refresh video");
     gtk_widget_add_css_class(tile->channel_refresh_button, "channel-refresh-button");
     gtk_widget_add_css_class(tile->channel_refresh_button, "player-refresh-button");
     gtk_widget_set_halign(tile->channel_refresh_button, GTK_ALIGN_END);
@@ -1362,7 +1304,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_overlay_add_overlay(GTK_OVERLAY(channel_selector), tile->channel_refresh_button);
     g_signal_connect(tile->channel_refresh_button, "clicked", G_CALLBACK(on_channel_refresh_clicked), tile);
 
-    tile->close_button = create_overlay_button(player_trash_icon_new(), "Clear slot");
+    tile->close_button = player_overlay_button_new(player_trash_icon_new(), "Clear slot");
     gtk_widget_add_css_class(tile->close_button, "tile-close-button");
     g_signal_connect(tile->close_button, "clicked", G_CALLBACK(on_tile_close_clicked), tile);
 
@@ -1375,19 +1317,13 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_set_size_request(tile->volume_scale, GRID_VOLUME_SCALE_WIDTH, -1);
     g_signal_connect(tile->volume_scale, "value-changed", G_CALLBACK(on_volume_changed), tile);
 
-    tile->mute_button = create_overlay_button(
-        player_volume_icon_new(
-            player_session_get_muted(tile->session) ? PLAYER_VOLUME_ICON_MUTED : PLAYER_VOLUME_ICON_SOUND
-        ),
-        NULL
-    );
-    gtk_widget_add_css_class(tile->mute_button, "volume-mute-button");
+    tile->mute_button = player_volume_mute_button_new(tile->session);
     g_signal_connect(tile->mute_button, "clicked", G_CALLBACK(on_mute_clicked), tile);
 
-    tile->focus_button = create_overlay_button(player_tile_focus_icon_new(PLAYER_TILE_FOCUS_ICON_EXPAND), "Focus tile");
+    tile->focus_button = player_overlay_button_new(player_tile_focus_icon_new(PLAYER_TILE_FOCUS_ICON_EXPAND), "Focus tile");
     g_signal_connect(tile->focus_button, "clicked", G_CALLBACK(on_tile_focus_clicked), tile);
 
-    tile->stream_info_button = create_overlay_button(player_stream_settings_icon_new(), "Stream settings");
+    tile->stream_info_button = player_overlay_button_new(player_stream_settings_icon_new(), "Stream settings");
     gtk_widget_add_css_class(tile->stream_info_button, "stream-settings-button");
     g_signal_connect(tile->stream_info_button, "clicked", G_CALLBACK(on_tile_stream_settings_clicked), tile);
 
@@ -1516,6 +1452,8 @@ static GtkWidget *create_stream_tile(GridAppState *state, guint index, const cha
 
 static void install_css(void)
 {
+    player_style_install_overlay_css();
+
     GtkCssProvider *provider = gtk_css_provider_new();
 
     gtk_css_provider_load_from_string(
@@ -1535,26 +1473,6 @@ static void install_css(void)
         "}"
         ".tile-top {"
         "  border-bottom: 1px solid rgba(255, 255, 255, 0.12);"
-        "}"
-        ".empty-stream-button {"
-        "  background: transparent;"
-        "  color: rgba(255, 255, 255, 0.50);"
-        "  border-color: transparent;"
-        "  outline-color: transparent;"
-        "  box-shadow: none;"
-        "  min-width: 52px;"
-        "  min-height: 52px;"
-        "  padding: 0;"
-        "  opacity: 0.50;"
-        "}"
-        ".empty-stream-button:hover {"
-        "  background: transparent;"
-        "  color: rgba(255, 255, 255, 0.65);"
-        "  opacity: 0.65;"
-        "}"
-        ".empty-stream-button-visible {"
-        "  min-width: 30px;"
-        "  min-height: 30px;"
         "}"
         ".tile-footer {"
         "  background: rgba(0, 0, 0, 0.62);"
@@ -1653,25 +1571,6 @@ static void install_css(void)
         "  background: rgba(74, 74, 74, 0.98);"
         "  color: white;"
         "}"
-        ".top-overlay-controls {"
-        "  margin: 6px;"
-        "}"
-        ".overlay-icon-button {"
-        "  background: rgba(0, 0, 0, 0.58);"
-        "  color: white;"
-        "  border-color: transparent;"
-        "  outline-color: transparent;"
-        "  box-shadow: none;"
-        "  min-width: 30px;"
-        "  min-height: 28px;"
-        "  padding: 3px 7px;"
-        "}"
-        ".overlay-icon-button:hover {"
-        "  background: rgba(54, 54, 54, 0.90);"
-        "}"
-        ".close-button:hover {"
-        "  background: rgba(170, 36, 36, 0.90);"
-        "}"
     );
 
     gtk_style_context_add_provider_for_display(
@@ -1741,8 +1640,6 @@ void grid_player_free(GridPlayer *player)
         tile->stream_settings_popover = NULL;
         tile->quality_list_box = NULL;
         tile->quality_status_label = NULL;
-        g_clear_pointer(&tile->selected_quality_url, g_free);
-        g_clear_pointer(&tile->selected_quality_label, g_free);
         channel_switcher_overlay_free(tile->channel_switcher);
         tile->channel_switcher = NULL;
     }

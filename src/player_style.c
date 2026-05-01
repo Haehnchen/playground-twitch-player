@@ -2,6 +2,52 @@
 
 #include <gtk/gtk.h>
 
+char *player_style_build_overlay_css(void)
+{
+    return g_strdup(
+        ".top-overlay-controls {"
+        "  margin: 6px;"
+        "}"
+        ".overlay-icon-button {"
+        "  background: rgba(0, 0, 0, 0.58);"
+        "  color: white;"
+        "  border-color: transparent;"
+        "  outline-color: transparent;"
+        "  box-shadow: none;"
+        "  min-width: 30px;"
+        "  min-height: 28px;"
+        "  padding: 3px 7px;"
+        "}"
+        ".overlay-icon-button:hover {"
+        "  background: rgba(54, 54, 54, 0.90);"
+        "}"
+        ".empty-stream-button {"
+        "  background: transparent;"
+        "  color: rgba(255, 255, 255, 0.50);"
+        "  border-color: transparent;"
+        "  outline-color: transparent;"
+        "  box-shadow: none;"
+        "  min-width: 52px;"
+        "  min-height: 52px;"
+        "  padding: 0;"
+        "  opacity: 0.50;"
+        "}"
+        ".empty-stream-button:hover {"
+        "  background: transparent;"
+        "  color: rgba(255, 255, 255, 0.65);"
+        "  opacity: 0.65;"
+        "}"
+        ".empty-stream-button-visible {"
+        "  min-width: 30px;"
+        "  min-height: 30px;"
+        "}"
+        "button.close-button:hover,"
+        ".tile-footer button.tile-close-button:hover {"
+        "  background: rgba(170, 36, 36, 0.90);"
+        "}"
+    );
+}
+
 char *player_style_build_footer_css(void)
 {
     return g_strdup(
@@ -273,6 +319,12 @@ char *player_style_build_footer_css(void)
 
 void player_style_install_footer_css(void)
 {
+    static gboolean installed = FALSE;
+
+    if (installed) {
+        return;
+    }
+
     g_autofree char *css = player_style_build_footer_css();
     if (css == NULL) {
         return;
@@ -286,4 +338,29 @@ void player_style_install_footer_css(void)
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1
     );
     g_object_unref(provider);
+    installed = TRUE;
+}
+
+void player_style_install_overlay_css(void)
+{
+    static gboolean installed = FALSE;
+
+    if (installed) {
+        return;
+    }
+
+    g_autofree char *css = player_style_build_overlay_css();
+    if (css == NULL) {
+        return;
+    }
+
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider, css);
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(),
+        GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+    );
+    g_object_unref(provider);
+    installed = TRUE;
 }
