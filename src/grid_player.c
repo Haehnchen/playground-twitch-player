@@ -311,7 +311,7 @@ static void on_tile_title_fetched(GObject *source_object, GAsyncResult *result, 
     StreamTitleCallbackData *data = user_data;
     StreamTile *tile = data->tile;
     g_autoptr(GError) error = NULL;
-    g_autofree char *title = twitch_stream_info_fetch_title_finish(result, &error);
+    g_autoptr(TwitchCurrentStream) stream = twitch_stream_info_fetch_current_stream_finish(result, &error);
 
     if (data->generation != tile->title_generation) {
         g_free(data);
@@ -334,6 +334,7 @@ static void on_tile_title_fetched(GObject *source_object, GAsyncResult *result, 
         return;
     }
 
+    g_autofree char *title = twitch_stream_info_format_current_stream_title(stream);
     set_tile_stream_title(tile, title);
     g_free(data);
 }
@@ -361,7 +362,7 @@ static void request_tile_title_update(StreamTile *tile, gboolean force)
     tile->title_cancel = g_cancellable_new();
     tile->title_fetch_in_progress = TRUE;
 
-    twitch_stream_info_fetch_title_async(tile->channel, tile->title_cancel, on_tile_title_fetched, data);
+    twitch_stream_info_fetch_current_stream_async(tile->channel, tile->title_cancel, on_tile_title_fetched, data);
 }
 
 static gboolean refresh_grid_stream_titles(gpointer user_data)

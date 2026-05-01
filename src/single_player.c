@@ -182,7 +182,7 @@ static void on_stream_title_fetched(GObject *source_object, GAsyncResult *result
     StreamTitleCallbackData *data = user_data;
     SinglePlayer *state = data->state;
     g_autoptr(GError) error = NULL;
-    g_autofree char *title = twitch_stream_info_fetch_title_finish(result, &error);
+    g_autoptr(TwitchCurrentStream) stream = twitch_stream_info_fetch_current_stream_finish(result, &error);
 
     if (data->generation != state->title_generation) {
         g_free(data);
@@ -205,6 +205,7 @@ static void on_stream_title_fetched(GObject *source_object, GAsyncResult *result
         return;
     }
 
+    g_autofree char *title = twitch_stream_info_format_current_stream_title(stream);
     set_stream_title(state, title);
     g_free(data);
 }
@@ -236,7 +237,7 @@ static void request_stream_title_update(SinglePlayer *state, gboolean force)
     state->title_cancel = g_cancellable_new();
     state->title_fetch_in_progress = TRUE;
 
-    twitch_stream_info_fetch_title_async(channel, state->title_cancel, on_stream_title_fetched, data);
+    twitch_stream_info_fetch_current_stream_async(channel, state->title_cancel, on_stream_title_fetched, data);
 }
 
 static gboolean refresh_stream_title(gpointer user_data)

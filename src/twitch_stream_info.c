@@ -8,7 +8,7 @@
 
 #define TWITCH_GQL_URI "https://gql.twitch.tv/gql"
 #define TWITCH_GQL_CLIENT_ID "kimne78kx3ncx6brgo4mv6wki5h1ko"
-#define TWITCH_GQL_QUERY "query($login:String!){user(login:$login){stream{title}}}"
+#define TWITCH_GQL_QUERY "query($login:String!){user(login:$login){stream{title viewersCount}}}"
 #define TWITCH_GQL_LIVE_CHANNELS_QUERY "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:240,height:135) game{name}}}}"
 #define TWITCH_GQL_MAX_LOGINS 100
 #define TWITCH_HELIX_USERS_URI "https://api.twitch.tv/helix/users"
@@ -16,7 +16,7 @@
 
 typedef struct {
     char *channel;
-} FetchTitleData;
+} FetchCurrentStreamData;
 
 typedef struct {
     char **channels;
@@ -30,7 +30,7 @@ typedef struct {
 
 G_DEFINE_QUARK(twitch-stream-info-error, twitch_stream_info_error)
 
-static void fetch_title_data_free(FetchTitleData *data)
+static void fetch_current_stream_data_free(FetchCurrentStreamData *data)
 {
     if (data == NULL) {
         return;
@@ -75,6 +75,41 @@ void twitch_stream_preview_free(TwitchStreamPreview *preview)
     g_free(preview->started_at);
     g_free(preview->category_name);
     g_free(preview);
+}
+
+void twitch_current_stream_free(TwitchCurrentStream *stream)
+{
+    if (stream == NULL) {
+        return;
+    }
+
+    g_free(stream->title);
+    g_free(stream);
+}
+
+char *twitch_stream_info_format_viewer_count(guint viewer_count)
+{
+    if (viewer_count >= 1000000) {
+        return g_strdup_printf("%.1fM", viewer_count / 1000000.0);
+    }
+    if (viewer_count >= 1000) {
+        return g_strdup_printf("%.1fK", viewer_count / 1000.0);
+    }
+    return g_strdup_printf("%u", viewer_count);
+}
+
+char *twitch_stream_info_format_current_stream_title(const TwitchCurrentStream *stream)
+{
+    if (stream == NULL) {
+        return g_strdup("");
+    }
+
+    g_autofree char *viewers = twitch_stream_info_format_viewer_count(stream->viewer_count);
+    if (stream->title == NULL || stream->title[0] == '\0') {
+        return g_strdup(viewers);
+    }
+
+    return g_strdup_printf("%s • %s", viewers, stream->title);
 }
 
 void twitch_followed_channel_free(TwitchFollowedChannel *channel)
@@ -137,7 +172,30 @@ static char *build_live_channels_request_body(const char * const *channels, guin
     return json_generator_to_data(generator, NULL);
 }
 
-static char *parse_stream_title_response(const char *json, gsize length, GError **error)
+static const char *json_object_get_string_or_null(JsonObject *object, const char *member_name)
+{
+    JsonNode *node = json_object_get_member(object, member_name);
+
+    if (node == NULL || JSON_NODE_HOLDS_NULL(node) || !JSON_NODE_HOLDS_VALUE(node)) {
+        return NULL;
+    }
+
+    return json_node_get_string(node);
+}
+
+static guint json_object_get_uint_or_zero(JsonObject *object, const char *member_name)
+{
+    JsonNode *node = json_object_get_member(object, member_name);
+
+    if (node == NULL || JSON_NODE_HOLDS_NULL(node) || !JSON_NODE_HOLDS_VALUE(node)) {
+        return 0;
+    }
+
+    gint64 value = json_node_get_int(node);
+    return value > 0 && value <= G_MAXUINT ? (guint)value : 0;
+}
+
+static TwitchCurrentStream *parse_current_stream_response(const char *json, gsize length, GError **error)
 {
     g_autoptr(JsonParser) parser = json_parser_new();
 
@@ -171,8 +229,11 @@ static char *parse_stream_title_response(const char *json, gsize length, GError 
     }
 
     JsonObject *stream = json_node_get_object(stream_node);
-    const char *title = json_object_get_string_member_with_default(stream, "title", NULL);
-    return title != NULL ? g_strdup(title) : NULL;
+    const char *title = json_object_get_string_or_null(stream, "title");
+    TwitchCurrentStream *current_stream = g_new0(TwitchCurrentStream, 1);
+    current_stream->title = title != NULL ? g_strdup(title) : g_strdup("");
+    current_stream->viewer_count = json_object_get_uint_or_zero(stream, "viewersCount");
+    return current_stream;
 }
 
 static char *post_twitch_gql_request(const char *body, GCancellable *cancel, GError **error)
@@ -363,7 +424,7 @@ static gboolean parse_followed_channels_page(const char *json, gsize length, GPt
     return TRUE;
 }
 
-static char *fetch_stream_title(const char *channel, GCancellable *cancel, GError **error)
+static TwitchCurrentStream *fetch_current_stream(const char *channel, GCancellable *cancel, GError **error)
 {
     g_autofree char *body = build_stream_title_request_body(channel);
     g_autofree char *response = post_twitch_gql_request(body, cancel, error);
@@ -372,30 +433,7 @@ static char *fetch_stream_title(const char *channel, GCancellable *cancel, GErro
         return NULL;
     }
 
-    return parse_stream_title_response(response, strlen(response), error);
-}
-
-static const char *json_object_get_string_or_null(JsonObject *object, const char *member_name)
-{
-    JsonNode *node = json_object_get_member(object, member_name);
-
-    if (node == NULL || JSON_NODE_HOLDS_NULL(node) || !JSON_NODE_HOLDS_VALUE(node)) {
-        return NULL;
-    }
-
-    return json_node_get_string(node);
-}
-
-static guint json_object_get_uint_or_zero(JsonObject *object, const char *member_name)
-{
-    JsonNode *node = json_object_get_member(object, member_name);
-
-    if (node == NULL || JSON_NODE_HOLDS_NULL(node) || !JSON_NODE_HOLDS_VALUE(node)) {
-        return 0;
-    }
-
-    gint64 value = json_node_get_int(node);
-    return value > 0 && value <= G_MAXUINT ? (guint)value : 0;
+    return parse_current_stream_response(response, strlen(response), error);
 }
 
 static gint compare_stream_previews_by_viewers(gconstpointer a, gconstpointer b)
@@ -582,19 +620,19 @@ GPtrArray *twitch_stream_info_fetch_followed_channels(
     return channels;
 }
 
-static void fetch_title_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)
+static void fetch_current_stream_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)
 {
     (void)source_object;
-    FetchTitleData *data = task_data;
+    FetchCurrentStreamData *data = task_data;
     g_autoptr(GError) error = NULL;
-    char *title = fetch_stream_title(data->channel, cancel, &error);
+    TwitchCurrentStream *stream = fetch_current_stream(data->channel, cancel, &error);
 
     if (error != NULL) {
         g_task_return_error(task, g_steal_pointer(&error));
         return;
     }
 
-    g_task_return_pointer(task, title, g_free);
+    g_task_return_pointer(task, stream, (GDestroyNotify)twitch_current_stream_free);
 }
 
 static void fetch_live_channels_worker(GTask *task, gpointer source_object, gpointer task_data, GCancellable *cancel)
@@ -632,7 +670,7 @@ static void fetch_followed_channels_worker(GTask *task, gpointer source_object, 
     g_task_return_pointer(task, channels, (GDestroyNotify)g_ptr_array_unref);
 }
 
-void twitch_stream_info_fetch_title_async(
+void twitch_stream_info_fetch_current_stream_async(
     const char *channel,
     GCancellable *cancel,
     GAsyncReadyCallback callback,
@@ -642,17 +680,17 @@ void twitch_stream_info_fetch_title_async(
     g_return_if_fail(channel != NULL);
     g_return_if_fail(channel[0] != '\0');
 
-    FetchTitleData *data = g_new0(FetchTitleData, 1);
+    FetchCurrentStreamData *data = g_new0(FetchCurrentStreamData, 1);
     data->channel = g_ascii_strdown(channel, -1);
 
     GTask *task = g_task_new(NULL, cancel, callback, user_data);
-    g_task_set_task_data(task, data, (GDestroyNotify)fetch_title_data_free);
+    g_task_set_task_data(task, data, (GDestroyNotify)fetch_current_stream_data_free);
     /* Network I/O runs off the GTK main thread. */
-    g_task_run_in_thread(task, fetch_title_worker);
+    g_task_run_in_thread(task, fetch_current_stream_worker);
     g_object_unref(task);
 }
 
-char *twitch_stream_info_fetch_title_finish(GAsyncResult *result, GError **error)
+TwitchCurrentStream *twitch_stream_info_fetch_current_stream_finish(GAsyncResult *result, GError **error)
 {
     g_return_val_if_fail(g_task_is_valid(result, NULL), NULL);
 

@@ -563,13 +563,8 @@ static GtkWidget *create_fixed_picture_frame(GtkWidget *picture, int width, int 
 
 static char *format_viewer_count(guint viewer_count)
 {
-    if (viewer_count >= 1000000) {
-        return g_strdup_printf("%.1fM viewers", viewer_count / 1000000.0);
-    }
-    if (viewer_count >= 1000) {
-        return g_strdup_printf("%.1fK viewers", viewer_count / 1000.0);
-    }
-    return g_strdup_printf("%u viewers", viewer_count);
+    g_autofree char *count = twitch_stream_info_format_viewer_count(viewer_count);
+    return g_strdup_printf("%s viewers", count);
 }
 
 static char *format_live_duration(const char *started_at)
@@ -594,10 +589,10 @@ static char *format_live_duration(const char *started_at)
     gint64 minutes = total_minutes % 60;
 
     if (hours > 0) {
-        return g_strdup_printf("live for %" G_GINT64_FORMAT "h %" G_GINT64_FORMAT "m", hours, minutes);
+        return g_strdup_printf("%" G_GINT64_FORMAT "h %" G_GINT64_FORMAT "m", hours, minutes);
     }
 
-    return g_strdup_printf("live for %" G_GINT64_FORMAT "m", minutes);
+    return g_strdup_printf("%" G_GINT64_FORMAT "m", minutes);
 }
 
 static char *format_meta_text(TwitchStreamPreview *preview)
@@ -605,7 +600,7 @@ static char *format_meta_text(TwitchStreamPreview *preview)
     g_autofree char *viewers = format_viewer_count(preview->viewer_count);
     g_autofree char *duration = format_live_duration(preview->started_at);
 
-    return g_strdup_printf("%s - %s", viewers, duration);
+    return g_strdup_printf("%s • %s", viewers, duration);
 }
 
 static GtkWidget *create_channel_card(ChannelSwitcherOverlay *switcher, TwitchStreamPreview *preview)
