@@ -53,6 +53,7 @@ struct _ChannelSwitcherOverlay {
 
 typedef struct {
     ChannelSwitcherOverlay *switcher;
+    guint generation;
     char *url;
     char *cache_key;
     int width;
@@ -236,6 +237,16 @@ static void clear_preview_cards(ChannelSwitcherOverlay *switcher)
     }
 }
 
+static void clear_image_cache(ChannelSwitcherOverlay *switcher)
+{
+    if (switcher->image_cache != NULL) {
+        g_hash_table_remove_all(switcher->image_cache);
+    }
+    if (switcher->image_waiters != NULL) {
+        g_hash_table_remove_all(switcher->image_waiters);
+    }
+}
+
 static void set_remote_image_texture(GtkWidget *image, GdkTexture *texture)
 {
     if (!GTK_IS_PICTURE(image) || texture == NULL) {
@@ -339,6 +350,14 @@ static void on_remote_image_loaded(GObject *source, GAsyncResult *result, gpoint
     }
 
     g_autoptr(GBytes) bytes = g_bytes_new_take(contents, length);
+    if (data->generation != switcher->generation || switcher->panel == NULL) {
+        if (waiters != NULL) {
+            g_ptr_array_unref(waiters);
+        }
+        remote_image_data_free(data);
+        return;
+    }
+
     GdkTexture *texture = create_cover_texture_from_bytes(bytes, data->width, data->height, &error);
     if (texture != NULL) {
         if (switcher->image_cache != NULL) {
@@ -390,6 +409,7 @@ static void load_remote_image(ChannelSwitcherOverlay *switcher, GtkWidget *image
 
     RemoteImageData *data = g_new0(RemoteImageData, 1);
     data->switcher = switcher;
+    data->generation = switcher->generation;
     data->url = g_strdup(url);
     data->cache_key = g_strdup(cache_key);
     data->width = width;
@@ -970,6 +990,7 @@ static void start_live_channel_fetch(ChannelSwitcherOverlay *switcher, char **ch
             switcher->previews = NULL;
         }
         clear_preview_cards(switcher);
+        clear_image_cache(switcher);
         g_clear_pointer(&switcher->cached_channels_key, g_free);
         switcher->cached_at_us = 0;
         show_status(switcher, "No channels configured");
@@ -986,6 +1007,7 @@ static void start_live_channel_fetch(ChannelSwitcherOverlay *switcher, char **ch
         switcher->previews = NULL;
     }
     clear_preview_cards(switcher);
+    clear_image_cache(switcher);
     g_free(switcher->cached_channels_key);
     switcher->cached_channels_key = g_strdup(channels_key);
     switcher->cached_at_us = 0;
@@ -1249,6 +1271,7 @@ void channel_switcher_overlay_hide(ChannelSwitcherOverlay *switcher)
         gtk_editable_set_text(GTK_EDITABLE(switcher->direct_channel_entry), "");
     }
     clear_grid(switcher);
+    clear_image_cache(switcher);
 }
 
 gboolean channel_switcher_overlay_is_visible(ChannelSwitcherOverlay *switcher)
