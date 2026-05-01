@@ -972,29 +972,51 @@ static void schedule_video_fullscreen_focus(StreamTile *tile)
     state->video_fullscreen_focus_source = g_timeout_add(50, apply_pending_video_fullscreen_focus, state);
 }
 
+static void restore_video_fullscreen_layout(GridAppState *state, StreamTile *tile)
+{
+    gboolean restore_tile_focused = state->video_fullscreen_active &&
+        state->video_fullscreen_restore_tile_focused;
+    guint restore_focused_tile = state->video_fullscreen_restore_focused_tile;
+
+    remove_source_if_active(&state->video_fullscreen_focus_source);
+    state->video_fullscreen_active = FALSE;
+
+    if (restore_tile_focused &&
+        restore_focused_tile < MAX_TILES &&
+        state->grid_items[restore_focused_tile] != NULL) {
+        focus_tile(&state->tiles[restore_focused_tile]);
+    } else {
+        restore_grid_layout(state);
+    }
+
+    update_tile_focus_buttons(state);
+    if (tile != NULL) {
+        show_tile_overlay(tile);
+    }
+}
+
 static void request_tile_fullscreen_toggle(StreamTile *tile)
 {
     GridAppState *state = tile->app;
+    gboolean video_fullscreen_active = state->video_fullscreen_active;
 
-    if (state->video_fullscreen_active) {
-        remove_source_if_active(&state->video_fullscreen_focus_source);
+    if (grid_player_fullscreen_should_restore(
+            video_fullscreen_active,
+            state->fullscreen,
+            state->tile_focused,
+            state->focused_tile,
+            tile->index
+        )) {
+        gboolean exit_app_fullscreen = grid_player_fullscreen_should_exit_app(
+            state->fullscreen,
+            video_fullscreen_active,
+            state->video_fullscreen_restore_app_fullscreen
+        );
 
-        if (!state->video_fullscreen_restore_app_fullscreen &&
-            state->fullscreen &&
-            state->fullscreen_callback != NULL) {
+        restore_video_fullscreen_layout(state, tile);
+        if (exit_app_fullscreen && state->fullscreen_callback != NULL) {
             state->fullscreen_callback(state->fullscreen_user_data);
         }
-
-        if (state->video_fullscreen_restore_tile_focused &&
-            state->video_fullscreen_restore_focused_tile < MAX_TILES &&
-            state->grid_items[state->video_fullscreen_restore_focused_tile] != NULL) {
-            focus_tile(&state->tiles[state->video_fullscreen_restore_focused_tile]);
-        } else {
-            restore_grid_layout(state);
-        }
-        state->video_fullscreen_active = FALSE;
-        update_tile_focus_buttons(state);
-        show_tile_overlay(tile);
         return;
     }
 
@@ -1790,8 +1812,11 @@ void grid_player_set_fullscreen(GridPlayer *player, gboolean fullscreen)
     if (player != NULL) {
         player->fullscreen = fullscreen;
         if (!fullscreen) {
-            player->video_fullscreen_active = FALSE;
-            remove_source_if_active(&player->video_fullscreen_focus_source);
+            if (player->video_fullscreen_active) {
+                restore_video_fullscreen_layout(player, NULL);
+            } else {
+                remove_source_if_active(&player->video_fullscreen_focus_source);
+            }
         }
     }
 }

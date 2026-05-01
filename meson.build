@@ -104,3 +104,10 @@ test_chat_panel = executable(
   dependencies: [gtk_dep, gio_dep],
 )
 test('chat-panel', test_chat_panel)
+
+test_grid_player = executable(
+  'test-grid-player',
+  'tests/test_grid_player.c',
+  dependencies: [gtk_dep, mpv_dep],
+)
+test('grid-player', test_grid_player)

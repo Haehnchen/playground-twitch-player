@@ -12,6 +12,26 @@ typedef struct _GridAppState GridPlayer;
 typedef void (*GridPlayerFullscreenCallback)(gpointer user_data);
 typedef void (*GridPlayerSettingsCallback)(gpointer user_data);
 
+static inline gboolean grid_player_fullscreen_should_restore(
+    gboolean video_fullscreen_active,
+    gboolean app_fullscreen,
+    gboolean tile_focused,
+    guint focused_tile,
+    guint tile_index
+)
+{
+    return video_fullscreen_active || (app_fullscreen && tile_focused && focused_tile == tile_index);
+}
+
+static inline gboolean grid_player_fullscreen_should_exit_app(
+    gboolean app_fullscreen,
+    gboolean video_fullscreen_active,
+    gboolean restore_app_fullscreen
+)
+{
+    return app_fullscreen && (!video_fullscreen_active || !restore_app_fullscreen);
+}
+
 GridPlayer *grid_player_new(
     GtkWindow *window,
     AppSettings *settings,
