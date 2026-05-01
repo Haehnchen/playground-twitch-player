@@ -35,6 +35,7 @@ typedef struct {
     GtkWidget *footer;
     GtkWidget *channel_combo;
     GtkWidget *channel_label;
+    GtkWidget *channel_refresh_button;
     GtkWidget *stream_title_label;
     GtkWidget *close_button;
     GtkWidget *empty_label;
@@ -430,6 +431,9 @@ static void update_tile_empty_state(StreamTile *tile)
     if (tile->volume_scale != NULL) {
         gtk_widget_set_sensitive(tile->volume_scale, has_stream && player_session_is_ready(tile->session));
     }
+    if (tile->channel_refresh_button != NULL) {
+        gtk_widget_set_visible(tile->channel_refresh_button, has_stream);
+    }
 
     update_tile_channel_label(tile);
 }
@@ -444,6 +448,7 @@ static void load_tile_stream(StreamTile *tile)
 
     set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
     player_session_load_stream(tile->session, url, tile->label, tile->channel);
+    update_tile_empty_state(tile);
     request_tile_title_update(tile, TRUE);
 }
 
@@ -637,6 +642,23 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
         check_mpv(mpv_command(mpv, keypress_cmd), "toggle stream info");
     }
 
+    show_tile_overlay(tile);
+}
+
+static void on_channel_refresh_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    StreamTile *tile = user_data;
+
+    if (!player_session_is_playing(tile->session)) {
+        return;
+    }
+
+    player_session_reenable_video(tile->session);
+    start_render_warmup(tile);
+    if (tile->gl_area != NULL) {
+        gtk_gl_area_queue_render(GTK_GL_AREA(tile->gl_area));
+    }
     show_tile_overlay(tile);
 }
 
@@ -1136,17 +1158,33 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_add_css_class(box, "player-footer");
     gtk_widget_add_css_class(box, "tile-footer");
 
+    GtkWidget *channel_selector = gtk_overlay_new();
+    gtk_widget_add_css_class(channel_selector, "channel-selector");
+    gtk_widget_set_size_request(channel_selector, GRID_CHANNEL_DROPDOWN_WIDTH, -1);
+    gtk_widget_set_hexpand(channel_selector, FALSE);
+
     tile->channel_combo = gtk_button_new();
     gtk_widget_add_css_class(tile->channel_combo, "channel-dropdown");
     tile->channel_label = gtk_label_new("");
     gtk_widget_add_css_class(tile->channel_label, "channel-button-label");
     gtk_widget_set_halign(tile->channel_label, GTK_ALIGN_START);
+    gtk_widget_set_margin_end(tile->channel_label, 20);
     gtk_label_set_xalign(GTK_LABEL(tile->channel_label), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(tile->channel_label), PANGO_ELLIPSIZE_END);
     gtk_button_set_child(GTK_BUTTON(tile->channel_combo), tile->channel_label);
-    gtk_widget_set_size_request(tile->channel_combo, GRID_CHANNEL_DROPDOWN_WIDTH, -1);
-    gtk_widget_set_hexpand(tile->channel_combo, FALSE);
+    gtk_widget_set_halign(tile->channel_combo, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand(tile->channel_combo, TRUE);
     g_signal_connect(tile->channel_combo, "clicked", G_CALLBACK(on_channel_button_clicked), tile);
+
+    gtk_overlay_set_child(GTK_OVERLAY(channel_selector), tile->channel_combo);
+
+    tile->channel_refresh_button = create_overlay_button(player_refresh_icon_new(), "Refresh video");
+    gtk_widget_add_css_class(tile->channel_refresh_button, "channel-refresh-button");
+    gtk_widget_set_halign(tile->channel_refresh_button, GTK_ALIGN_END);
+    gtk_widget_set_valign(tile->channel_refresh_button, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_end(tile->channel_refresh_button, 3);
+    gtk_overlay_add_overlay(GTK_OVERLAY(channel_selector), tile->channel_refresh_button);
+    g_signal_connect(tile->channel_refresh_button, "clicked", G_CALLBACK(on_channel_refresh_clicked), tile);
 
     tile->close_button = create_overlay_button(player_trash_icon_new(), "Clear slot");
     gtk_widget_add_css_class(tile->close_button, "tile-close-button");
@@ -1186,7 +1224,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     tile->stream_info_button = create_overlay_button(player_info_icon_new(), PLAYER_STREAM_INFO_TOOLTIP);
     g_signal_connect(tile->stream_info_button, "clicked", G_CALLBACK(on_stream_info_clicked), tile);
 
-    gtk_box_append(GTK_BOX(box), tile->channel_combo);
+    gtk_box_append(GTK_BOX(box), channel_selector);
     gtk_box_append(GTK_BOX(box), tile->close_button);
     gtk_box_append(GTK_BOX(box), tile->stream_title_label);
     gtk_box_append(GTK_BOX(box), spacer);
@@ -1386,10 +1424,18 @@ static void install_css(void)
         "  min-width: 119px;"
         "  min-height: 24px;"
         "}"
+        ".channel-selector {"
+        "  min-width: 119px;"
+        "}"
         ".channel-dropdown,"
         ".channel-dropdown > button {"
         "  padding: 2px 8px;"
         "  min-height: 24px;"
+        "}"
+        ".channel-refresh-button {"
+        "  min-width: 20px;"
+        "  min-height: 22px;"
+        "  padding: 3px;"
         "}"
         ".channel-button-label {"
         "  color: white;"
@@ -1517,6 +1563,7 @@ void grid_player_free(GridPlayer *player)
         tile->footer = NULL;
         tile->channel_combo = NULL;
         tile->channel_label = NULL;
+        tile->channel_refresh_button = NULL;
         tile->stream_title_label = NULL;
         tile->close_button = NULL;
         tile->empty_label = NULL;

@@ -30,6 +30,7 @@ typedef enum {
 
 GtkWidget *player_settings_icon_new(void);
 GtkWidget *player_info_icon_new(void);
+GtkWidget *player_refresh_icon_new(void);
 GtkWidget *player_trash_icon_new(void);
 GtkWidget *player_plus_icon_new(void);
 GtkWidget *player_window_icon_new(PlayerWindowIconKind kind);

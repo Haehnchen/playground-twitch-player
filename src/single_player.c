@@ -41,6 +41,7 @@ struct _SinglePlayer {
     GtkWidget *bottom_panel;
     GtkWidget *footer_spacer;
     GtkWidget *stream_combo;
+    GtkWidget *stream_refresh_button;
     GtkWidget *stream_title_label;
     GtkWidget *empty_button;
     GtkWidget *mute_button;
@@ -95,6 +96,9 @@ static void update_empty_button(SinglePlayer *state)
 {
     if (state->empty_button != NULL) {
         gtk_widget_set_visible(state->empty_button, !state->stream_playing);
+    }
+    if (state->stream_refresh_button != NULL) {
+        gtk_widget_set_visible(state->stream_refresh_button, state->stream_playing);
     }
 }
 
@@ -819,6 +823,23 @@ static void on_stream_info_clicked(GtkButton *button, gpointer user_data)
     show_footer(state);
 }
 
+static void on_stream_refresh_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    SinglePlayer *state = user_data;
+
+    if (!player_session_is_playing(state->session)) {
+        return;
+    }
+
+    player_session_reenable_video(state->session);
+    start_render_warmup(state);
+    if (state->gl_area != NULL) {
+        gtk_gl_area_queue_render(GTK_GL_AREA(state->gl_area));
+    }
+    show_footer(state);
+}
+
 static void on_stream_button_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
@@ -976,18 +997,35 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_widget_add_css_class(box, "player-footer");
     gtk_widget_add_css_class(box, "video-footer");
 
+    GtkWidget *stream_selector = gtk_overlay_new();
+    gtk_widget_add_css_class(stream_selector, "stream-selector");
+    gtk_widget_set_halign(stream_selector, GTK_ALIGN_START);
+    gtk_widget_set_size_request(stream_selector, STREAM_DROPDOWN_WIDTH, -1);
+    gtk_widget_set_hexpand(stream_selector, FALSE);
+
     state->stream_combo = gtk_button_new();
     gtk_widget_add_css_class(state->stream_combo, "stream-dropdown");
     GtkWidget *stream_label = gtk_label_new("");
     gtk_widget_add_css_class(stream_label, "stream-button-label");
     gtk_widget_set_halign(stream_label, GTK_ALIGN_START);
+    gtk_widget_set_margin_end(stream_label, 22);
     gtk_label_set_xalign(GTK_LABEL(stream_label), 0.0);
     gtk_button_set_child(GTK_BUTTON(state->stream_combo), stream_label);
-    gtk_widget_set_halign(state->stream_combo, GTK_ALIGN_START);
-    gtk_widget_set_size_request(state->stream_combo, STREAM_DROPDOWN_WIDTH, -1);
-    gtk_widget_set_hexpand(state->stream_combo, FALSE);
+    gtk_widget_set_halign(state->stream_combo, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand(state->stream_combo, TRUE);
     g_signal_connect(state->stream_combo, "clicked", G_CALLBACK(on_stream_button_clicked), state);
     update_stream_combo_label(state);
+
+    gtk_overlay_set_child(GTK_OVERLAY(stream_selector), state->stream_combo);
+
+    state->stream_refresh_button = create_overlay_button(player_refresh_icon_new(), "Refresh video");
+    gtk_widget_add_css_class(state->stream_refresh_button, "stream-refresh-button");
+    gtk_widget_set_halign(state->stream_refresh_button, GTK_ALIGN_END);
+    gtk_widget_set_valign(state->stream_refresh_button, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_end(state->stream_refresh_button, 3);
+    gtk_overlay_add_overlay(GTK_OVERLAY(stream_selector), state->stream_refresh_button);
+    g_signal_connect(state->stream_refresh_button, "clicked", G_CALLBACK(on_stream_refresh_clicked), state);
+    update_empty_button(state);
 
     state->stream_title_label = gtk_label_new("");
     gtk_widget_add_css_class(state->stream_title_label, "stream-title-label");
@@ -1011,7 +1049,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
     );
     gtk_widget_add_css_class(state->mute_button, "volume-mute-button");
 
-    gtk_box_append(GTK_BOX(box), state->stream_combo);
+    gtk_box_append(GTK_BOX(box), stream_selector);
     gtk_box_append(GTK_BOX(box), state->stream_title_label);
     state->footer_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(state->footer_spacer, FALSE);
@@ -1212,6 +1250,7 @@ static void single_player_destroy(SinglePlayer *state)
     state->chat_toggle_button = NULL;
     state->bottom_panel = NULL;
     state->stream_combo = NULL;
+    state->stream_refresh_button = NULL;
     state->stream_title_label = NULL;
     state->empty_button = NULL;
     state->mute_button = NULL;

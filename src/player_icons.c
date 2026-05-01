@@ -370,6 +370,14 @@ GtkWidget *player_info_icon_new(void)
     return icon;
 }
 
+GtkWidget *player_refresh_icon_new(void)
+{
+    GtkWidget *icon = gtk_image_new_from_icon_name("view-refresh-symbolic");
+    gtk_widget_set_halign(icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
+    return icon;
+}
+
 GtkWidget *player_trash_icon_new(void)
 {
     GtkWidget *icon = gtk_drawing_area_new();
