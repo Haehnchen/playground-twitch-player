@@ -54,6 +54,9 @@ struct _ChannelSwitcherOverlay {
 typedef struct {
     ChannelSwitcherOverlay *switcher;
     char *url;
+    char *cache_key;
+    int width;
+    int height;
 } RemoteImageData;
 
 typedef struct {
@@ -211,6 +214,7 @@ static void remote_image_data_free(RemoteImageData *data)
     }
 
     g_free(data->url);
+    g_free(data->cache_key);
     g_free(data);
 }
 
@@ -232,49 +236,73 @@ static void clear_preview_cards(ChannelSwitcherOverlay *switcher)
     }
 }
 
-static void draw_remote_image(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data)
+static void set_remote_image_texture(GtkWidget *image, GdkTexture *texture)
 {
-    (void)user_data;
-    GdkPixbuf *pixbuf = g_object_get_data(G_OBJECT(area), "remote-image-pixbuf");
-
-    cairo_set_source_rgba(cr, 1, 1, 1, 0.08);
-    cairo_rectangle(cr, 0, 0, width, height);
-    cairo_fill(cr);
-
-    if (pixbuf == NULL || width <= 0 || height <= 0) {
+    if (!GTK_IS_PICTURE(image) || texture == NULL) {
         return;
     }
 
-    int pixbuf_width = gdk_pixbuf_get_width(pixbuf);
-    int pixbuf_height = gdk_pixbuf_get_height(pixbuf);
-    if (pixbuf_width <= 0 || pixbuf_height <= 0) {
-        return;
-    }
-
-    double scale = MAX(width / (double)pixbuf_width, height / (double)pixbuf_height);
-    double draw_width = pixbuf_width * scale;
-    double draw_height = pixbuf_height * scale;
-    double offset_x = (width - draw_width) / 2.0;
-    double offset_y = (height - draw_height) / 2.0;
-
-    cairo_save(cr);
-    cairo_rectangle(cr, 0, 0, width, height);
-    cairo_clip(cr);
-    cairo_translate(cr, offset_x, offset_y);
-    cairo_scale(cr, scale, scale);
-    gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
-    cairo_paint(cr);
-    cairo_restore(cr);
+    gtk_picture_set_paintable(GTK_PICTURE(image), GDK_PAINTABLE(texture));
 }
 
-static void set_remote_image_pixbuf(GtkWidget *image, GdkPixbuf *pixbuf)
+static char *build_image_cache_key(const char *url, int width, int height)
 {
-    if (image == NULL || pixbuf == NULL) {
-        return;
+    return g_strdup_printf("%s\n%d:%d", url, width, height);
+}
+
+static GdkTexture *create_cover_texture_from_bytes(GBytes *bytes, int width, int height, GError **error)
+{
+    if (width <= 0 || height <= 0) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "invalid image target size");
+        return NULL;
     }
 
-    g_object_set_data_full(G_OBJECT(image), "remote-image-pixbuf", g_object_ref(pixbuf), g_object_unref);
-    gtk_widget_queue_draw(image);
+    g_autoptr(GInputStream) stream = g_memory_input_stream_new_from_bytes(bytes);
+    g_autoptr(GdkPixbuf) source = gdk_pixbuf_new_from_stream(stream, NULL, error);
+    if (source == NULL) {
+        return NULL;
+    }
+
+    int source_width = gdk_pixbuf_get_width(source);
+    int source_height = gdk_pixbuf_get_height(source);
+    if (source_width <= 0 || source_height <= 0) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "invalid image dimensions");
+        return NULL;
+    }
+
+    double scale = MAX(width / (double)source_width, height / (double)source_height);
+    double scaled_width = source_width * scale;
+    double scaled_height = source_height * scale;
+    double offset_x = (width - scaled_width) / 2.0;
+    double offset_y = (height - scaled_height) / 2.0;
+
+    g_autoptr(GdkPixbuf) target = gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, width, height);
+    if (target == NULL) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "could not allocate image target");
+        return NULL;
+    }
+
+    gdk_pixbuf_fill(target, 0x00000000);
+    gdk_pixbuf_composite(
+        source,
+        target,
+        0,
+        0,
+        width,
+        height,
+        offset_x,
+        offset_y,
+        scale,
+        scale,
+        GDK_INTERP_BILINEAR,
+        255
+    );
+
+    gsize stride = (gsize)gdk_pixbuf_get_rowstride(target);
+    gsize length = stride * (gsize)height;
+    g_autoptr(GBytes) texture_bytes = g_bytes_new(gdk_pixbuf_get_pixels(target), length);
+
+    return gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, texture_bytes, stride);
 }
 
 static void live_fetch_callback_data_free(LiveFetchCallbackData *data)
@@ -295,10 +323,10 @@ static void on_remote_image_loaded(GObject *source, GAsyncResult *result, gpoint
         return;
     }
 
-    GPtrArray *waiters = g_hash_table_lookup(switcher->image_waiters, data->url);
+    GPtrArray *waiters = g_hash_table_lookup(switcher->image_waiters, data->cache_key);
     if (waiters != NULL) {
         g_ptr_array_ref(waiters);
-        g_hash_table_remove(switcher->image_waiters, data->url);
+        g_hash_table_remove(switcher->image_waiters, data->cache_key);
     }
 
     if (!g_file_load_contents_finish(G_FILE(source), result, &contents, &length, NULL, &error)) {
@@ -311,18 +339,17 @@ static void on_remote_image_loaded(GObject *source, GAsyncResult *result, gpoint
     }
 
     g_autoptr(GBytes) bytes = g_bytes_new_take(contents, length);
-    g_autoptr(GInputStream) stream = g_memory_input_stream_new_from_bytes(bytes);
-    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_stream(stream, NULL, &error);
-    if (pixbuf != NULL) {
+    GdkTexture *texture = create_cover_texture_from_bytes(bytes, data->width, data->height, &error);
+    if (texture != NULL) {
         if (switcher->image_cache != NULL) {
-            g_hash_table_insert(switcher->image_cache, g_strdup(data->url), g_object_ref(pixbuf));
+            g_hash_table_insert(switcher->image_cache, g_strdup(data->cache_key), g_object_ref(texture));
         }
         if (waiters != NULL) {
             for (guint i = 0; i < waiters->len; i++) {
-                set_remote_image_pixbuf(g_ptr_array_index(waiters, i), pixbuf);
+                set_remote_image_texture(g_ptr_array_index(waiters, i), texture);
             }
         }
-        g_object_unref(pixbuf);
+        g_object_unref(texture);
     } else if (error != NULL) {
         g_debug("image decode failed for %s: %s", data->url, error->message);
     }
@@ -334,7 +361,7 @@ static void on_remote_image_loaded(GObject *source, GAsyncResult *result, gpoint
     remote_image_data_free(data);
 }
 
-static void load_remote_image(ChannelSwitcherOverlay *switcher, GtkWidget *image, const char *url)
+static void load_remote_image(ChannelSwitcherOverlay *switcher, GtkWidget *image, const char *url, int width, int height)
 {
     if (url == NULL || url[0] == '\0') {
         return;
@@ -344,13 +371,14 @@ static void load_remote_image(ChannelSwitcherOverlay *switcher, GtkWidget *image
         return;
     }
 
-    GdkPixbuf *cached = g_hash_table_lookup(switcher->image_cache, url);
+    g_autofree char *cache_key = build_image_cache_key(url, width, height);
+    GdkTexture *cached = g_hash_table_lookup(switcher->image_cache, cache_key);
     if (cached != NULL) {
-        set_remote_image_pixbuf(image, cached);
+        set_remote_image_texture(image, cached);
         return;
     }
 
-    GPtrArray *waiters = g_hash_table_lookup(switcher->image_waiters, url);
+    GPtrArray *waiters = g_hash_table_lookup(switcher->image_waiters, cache_key);
     if (waiters != NULL) {
         g_ptr_array_add(waiters, g_object_ref(image));
         return;
@@ -358,11 +386,14 @@ static void load_remote_image(ChannelSwitcherOverlay *switcher, GtkWidget *image
 
     waiters = g_ptr_array_new_with_free_func(g_object_unref);
     g_ptr_array_add(waiters, g_object_ref(image));
-    g_hash_table_insert(switcher->image_waiters, g_strdup(url), waiters);
+    g_hash_table_insert(switcher->image_waiters, g_strdup(cache_key), waiters);
 
     RemoteImageData *data = g_new0(RemoteImageData, 1);
     data->switcher = switcher;
     data->url = g_strdup(url);
+    data->cache_key = g_strdup(cache_key);
+    data->width = width;
+    data->height = height;
 
     GFile *file = g_file_new_for_uri(url);
     g_file_load_contents_async(file, NULL, on_remote_image_loaded, data);
@@ -599,18 +630,18 @@ static void on_direct_channel_icon_pressed(GtkEntry *entry, GtkEntryIconPosition
 
 static GtkWidget *create_image_picture(ChannelSwitcherOverlay *switcher, const char *url, int width, int height, const char *css_class)
 {
-    GtkWidget *image = gtk_drawing_area_new();
+    GtkWidget *image = gtk_picture_new();
     gtk_widget_add_css_class(image, css_class);
+    gtk_widget_set_focusable(image, FALSE);
     gtk_widget_set_size_request(image, width, height);
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(image), width);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(image), height);
     gtk_widget_set_halign(image, GTK_ALIGN_START);
     gtk_widget_set_valign(image, GTK_ALIGN_START);
     gtk_widget_set_hexpand(image, FALSE);
     gtk_widget_set_vexpand(image, FALSE);
     gtk_widget_set_overflow(image, GTK_OVERFLOW_HIDDEN);
-    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(image), draw_remote_image, NULL, NULL);
-    load_remote_image(switcher, image, url);
+    gtk_picture_set_content_fit(GTK_PICTURE(image), GTK_CONTENT_FIT_COVER);
+    gtk_picture_set_can_shrink(GTK_PICTURE(image), TRUE);
+    load_remote_image(switcher, image, url, width, height);
     return image;
 }
 
