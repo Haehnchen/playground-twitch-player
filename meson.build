@@ -33,6 +33,7 @@ executable(
     'src/player_icons.c',
     'src/player_motion.c',
     'src/player_style.c',
+    'src/player_footer.c',
     'src/player_stream_settings.c',
     'src/player_volume.c',
     'src/channel_switcher_overlay.c',

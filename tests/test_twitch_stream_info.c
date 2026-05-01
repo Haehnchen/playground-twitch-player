@@ -55,27 +55,31 @@ static void test_build_live_channels_request_body_skips_empty_channels(void)
     g_assert_cmpstr(json_array_get_string_element(logins, 1), ==, "rocketbeans");
 }
 
-static void test_parse_current_stream_response_returns_title_and_viewers(void)
+static void test_parse_current_stream_response_returns_title_viewers_and_category(void)
 {
-    const char *json = "{\"data\":{\"user\":{\"stream\":{\"title\":\"Live now\",\"viewersCount\":1234}}}}";
+    const char *json =
+        "{\"data\":{\"user\":{\"stream\":{\"title\":\"Live now\",\"viewersCount\":1234,"
+        "\"game\":{\"name\":\"Games + Demos\"}}}}}";
     g_autoptr(GError) error = NULL;
     g_autoptr(TwitchCurrentStream) stream = parse_current_stream_response(json, strlen(json), &error);
 
     g_assert_no_error(error);
     g_assert_nonnull(stream);
     g_assert_cmpstr(stream->title, ==, "Live now");
+    g_assert_cmpstr(stream->category_name, ==, "Games + Demos");
     g_assert_cmpuint(stream->viewer_count, ==, 1234);
 }
 
 static void test_parse_current_stream_response_handles_missing_optional_fields(void)
 {
-    const char *json = "{\"data\":{\"user\":{\"stream\":{\"title\":null,\"viewersCount\":null}}}}";
+    const char *json = "{\"data\":{\"user\":{\"stream\":{\"title\":null,\"viewersCount\":null,\"game\":null}}}}";
     g_autoptr(GError) error = NULL;
     g_autoptr(TwitchCurrentStream) stream = parse_current_stream_response(json, strlen(json), &error);
 
     g_assert_no_error(error);
     g_assert_nonnull(stream);
     g_assert_cmpstr(stream->title, ==, "");
+    g_assert_null(stream->category_name);
     g_assert_cmpuint(stream->viewer_count, ==, 0);
 }
 
@@ -121,22 +125,28 @@ static void test_format_viewer_count_compacts_large_counts(void)
     g_assert_cmpstr(millions, ==, "1.2M");
 }
 
-static void test_format_current_stream_title_joins_viewers_and_title(void)
+static void test_format_current_stream_title_and_metadata_separately(void)
 {
     TwitchCurrentStream stream = {
         .title = "Live now",
+        .category_name = "Games + Demos",
         .viewer_count = 1234,
     };
     TwitchCurrentStream untitled_stream = {
         .title = "",
+        .category_name = "Just Chatting",
         .viewer_count = 42,
     };
 
     g_autofree char *title = twitch_stream_info_format_current_stream_title(&stream);
     g_autofree char *untitled = twitch_stream_info_format_current_stream_title(&untitled_stream);
+    g_autofree char *metadata = twitch_stream_info_format_current_stream_metadata(&stream);
+    g_autofree char *untitled_metadata = twitch_stream_info_format_current_stream_metadata(&untitled_stream);
 
-    g_assert_cmpstr(title, ==, "1.2K • Live now");
-    g_assert_cmpstr(untitled, ==, "42");
+    g_assert_cmpstr(title, ==, "Live now");
+    g_assert_cmpstr(untitled, ==, "");
+    g_assert_cmpstr(metadata, ==, "1.2K • Games + Demos");
+    g_assert_cmpstr(untitled_metadata, ==, "42 • Just Chatting");
 }
 
 static void test_parse_live_channels_response_returns_only_live_streams(void)
@@ -325,11 +335,11 @@ int main(int argc, char **argv)
     g_test_add_func("/twitch-stream-info/build-request-body", test_build_stream_title_request_body);
     g_test_add_func("/twitch-stream-info/build-live-request-body", test_build_live_channels_request_body);
     g_test_add_func("/twitch-stream-info/build-live-request-body/skips-empty", test_build_live_channels_request_body_skips_empty_channels);
-    g_test_add_func("/twitch-stream-info/parse-response/current-stream", test_parse_current_stream_response_returns_title_and_viewers);
+    g_test_add_func("/twitch-stream-info/parse-response/current-stream", test_parse_current_stream_response_returns_title_viewers_and_category);
     g_test_add_func("/twitch-stream-info/parse-response/current-stream-missing-optional", test_parse_current_stream_response_handles_missing_optional_fields);
     g_test_add_func("/twitch-stream-info/parse-response/stream-qualities", test_parse_stream_qualities_playlist_returns_sorted_variants);
     g_test_add_func("/twitch-stream-info/format/viewer-count", test_format_viewer_count_compacts_large_counts);
-    g_test_add_func("/twitch-stream-info/format/current-stream-title", test_format_current_stream_title_joins_viewers_and_title);
+    g_test_add_func("/twitch-stream-info/format/current-stream-title", test_format_current_stream_title_and_metadata_separately);
     g_test_add_func("/twitch-stream-info/parse-live-response/only-live", test_parse_live_channels_response_returns_only_live_streams);
     g_test_add_func("/twitch-stream-info/parse-live-response/missing-optional-fields", test_parse_live_channels_response_handles_missing_optional_fields);
     g_test_add_func("/twitch-stream-info/parse-live-response/tie-sort", test_parse_live_channels_response_sorts_equal_viewers_by_display_name);

@@ -13,6 +13,7 @@
 #include "channel_switcher_overlay.h"
 #include "chat_panel.h"
 #include "player_defaults.h"
+#include "player_footer.h"
 #include "player_icons.h"
 #include "player_motion.h"
 #include "player_stream_settings.h"
@@ -44,7 +45,6 @@ struct _SinglePlayer {
     GtkWidget *footer_spacer;
     GtkWidget *stream_combo;
     GtkWidget *stream_refresh_button;
-    GtkWidget *stream_title_label;
     GtkWidget *empty_button;
     GtkWidget *mute_button;
     GtkWidget *volume_scale;
@@ -62,6 +62,7 @@ struct _SinglePlayer {
     GCancellable *title_cancel;
     GCancellable *quality_cancel;
     GPtrArray *stream_qualities;
+    PlayerFooterStreamInfo *stream_info;
     char *selected_quality_url;
     char *selected_quality_label;
     gint64 stream_qualities_fetched_at;
@@ -182,14 +183,9 @@ static void set_status(SinglePlayer *state, const char *message)
     }
 }
 
-static void set_stream_title(SinglePlayer *state, const char *title)
+static void set_stream_title(SinglePlayer *state, const char *title, const char *metadata)
 {
-    if (state->stream_title_label == NULL) {
-        return;
-    }
-
-    gtk_label_set_text(GTK_LABEL(state->stream_title_label), title != NULL ? title : "");
-    gtk_widget_set_tooltip_text(state->stream_title_label, title != NULL && title[0] != '\0' ? title : NULL);
+    player_footer_stream_info_set(state->stream_info, title, metadata);
 }
 
 static const char *get_active_stream_channel(SinglePlayer *state)
@@ -321,7 +317,8 @@ static void on_stream_title_fetched(GObject *source_object, GAsyncResult *result
     }
 
     g_autofree char *title = twitch_stream_info_format_current_stream_title(stream);
-    set_stream_title(state, title);
+    g_autofree char *metadata = twitch_stream_info_format_current_stream_metadata(stream);
+    set_stream_title(state, title, metadata);
     g_free(data);
 }
 
@@ -376,7 +373,7 @@ static void reset_stream_title(SinglePlayer *state)
         g_clear_object(&state->title_cancel);
     }
     state->title_fetch_in_progress = FALSE;
-    set_stream_title(state, "");
+    set_stream_title(state, "", "");
 }
 
 static void start_chat(SinglePlayer *state, const char *channel)
@@ -1241,14 +1238,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
     g_signal_connect(state->stream_refresh_button, "clicked", G_CALLBACK(on_stream_refresh_clicked), state);
     update_empty_button(state);
 
-    state->stream_title_label = gtk_label_new("");
-    gtk_widget_add_css_class(state->stream_title_label, "stream-title-label");
-    gtk_widget_set_halign(state->stream_title_label, GTK_ALIGN_START);
-    gtk_widget_set_valign(state->stream_title_label, GTK_ALIGN_CENTER);
-    gtk_widget_set_hexpand(state->stream_title_label, TRUE);
-    gtk_label_set_xalign(GTK_LABEL(state->stream_title_label), 0.0);
-    gtk_label_set_ellipsize(GTK_LABEL(state->stream_title_label), PANGO_ELLIPSIZE_END);
-    gtk_label_set_single_line_mode(GTK_LABEL(state->stream_title_label), TRUE);
+    state->stream_info = player_footer_stream_info_new();
 
     state->volume_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, PLAYER_VOLUME_MIN, PLAYER_VOLUME_MAX, 1);
     gtk_widget_add_css_class(state->volume_scale, "volume-scale");
@@ -1264,7 +1254,7 @@ static GtkWidget *create_controls(SinglePlayer *state)
     gtk_widget_add_css_class(state->mute_button, "volume-mute-button");
 
     gtk_box_append(GTK_BOX(box), stream_selector);
-    gtk_box_append(GTK_BOX(box), state->stream_title_label);
+    gtk_box_append(GTK_BOX(box), player_footer_stream_info_get_widget(state->stream_info));
     state->footer_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(state->footer_spacer, FALSE);
     gtk_box_append(GTK_BOX(box), state->footer_spacer);
@@ -1476,7 +1466,7 @@ static void single_player_destroy(SinglePlayer *state)
     state->bottom_panel = NULL;
     state->stream_combo = NULL;
     state->stream_refresh_button = NULL;
-    state->stream_title_label = NULL;
+    g_clear_pointer(&state->stream_info, player_footer_stream_info_free);
     state->empty_button = NULL;
     state->mute_button = NULL;
     state->volume_scale = NULL;

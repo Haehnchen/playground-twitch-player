@@ -8,7 +8,7 @@
 
 #define TWITCH_GQL_URI "https://gql.twitch.tv/gql"
 #define TWITCH_GQL_CLIENT_ID "kimne78kx3ncx6brgo4mv6wki5h1ko"
-#define TWITCH_GQL_QUERY "query($login:String!){user(login:$login){stream{title viewersCount}}}"
+#define TWITCH_GQL_QUERY "query($login:String!){user(login:$login){stream{title viewersCount game{name}}}}"
 #define TWITCH_GQL_LIVE_CHANNELS_QUERY "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:240,height:135) game{name}}}}"
 #define TWITCH_GQL_PLAYBACK_ACCESS_TOKEN_QUERY "query($login:String!){streamPlaybackAccessToken(channelName:$login,params:{platform:\"web\",playerBackend:\"mediaplayer\",playerType:\"site\"}){value signature}}"
 #define TWITCH_GQL_MAX_LOGINS 100
@@ -100,6 +100,7 @@ void twitch_current_stream_free(TwitchCurrentStream *stream)
     }
 
     g_free(stream->title);
+    g_free(stream->category_name);
     g_free(stream);
 }
 
@@ -131,12 +132,25 @@ char *twitch_stream_info_format_current_stream_title(const TwitchCurrentStream *
         return g_strdup("");
     }
 
-    g_autofree char *viewers = twitch_stream_info_format_viewer_count(stream->viewer_count);
     if (stream->title == NULL || stream->title[0] == '\0') {
-        return g_strdup(viewers);
+        return g_strdup("");
     }
 
-    return g_strdup_printf("%s • %s", viewers, stream->title);
+    return g_strdup(stream->title);
+}
+
+char *twitch_stream_info_format_current_stream_metadata(const TwitchCurrentStream *stream)
+{
+    if (stream == NULL) {
+        return g_strdup("");
+    }
+
+    g_autofree char *viewers = twitch_stream_info_format_viewer_count(stream->viewer_count);
+    if (stream->category_name != NULL && stream->category_name[0] != '\0') {
+        return g_strdup_printf("%s • %s", viewers, stream->category_name);
+    }
+
+    return g_strdup(viewers);
 }
 
 void twitch_followed_channel_free(TwitchFollowedChannel *channel)
@@ -277,8 +291,15 @@ static TwitchCurrentStream *parse_current_stream_response(const char *json, gsiz
 
     JsonObject *stream = json_node_get_object(stream_node);
     const char *title = json_object_get_string_or_null(stream, "title");
+    const char *category_name = NULL;
+    JsonNode *game_node = json_object_get_member(stream, "game");
+    if (game_node != NULL && JSON_NODE_HOLDS_OBJECT(game_node)) {
+        category_name = json_object_get_string_or_null(json_node_get_object(game_node), "name");
+    }
+
     TwitchCurrentStream *current_stream = g_new0(TwitchCurrentStream, 1);
     current_stream->title = title != NULL ? g_strdup(title) : g_strdup("");
+    current_stream->category_name = category_name != NULL ? g_strdup(category_name) : NULL;
     current_stream->viewer_count = json_object_get_uint_or_zero(stream, "viewersCount");
     return current_stream;
 }

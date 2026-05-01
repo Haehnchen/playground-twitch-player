@@ -10,6 +10,7 @@
 
 #include "channel_switcher_overlay.h"
 #include "grid_player.h"
+#include "player_footer.h"
 #include "player_icons.h"
 #include "player_motion.h"
 #include "player_defaults.h"
@@ -38,7 +39,6 @@ typedef struct {
     GtkWidget *channel_combo;
     GtkWidget *channel_label;
     GtkWidget *channel_refresh_button;
-    GtkWidget *stream_title_label;
     GtkWidget *close_button;
     GtkWidget *empty_label;
     GtkWidget *focus_button;
@@ -53,6 +53,7 @@ typedef struct {
     GCancellable *title_cancel;
     GCancellable *quality_cancel;
     GPtrArray *stream_qualities;
+    PlayerFooterStreamInfo *stream_info;
     char *selected_quality_url;
     char *selected_quality_label;
     gint64 stream_qualities_fetched_at;
@@ -297,14 +298,9 @@ static char *target_to_label(const char *target, const char *channel)
     return target != NULL && target[0] != '\0' ? g_strdup(target) : NULL;
 }
 
-static void set_tile_stream_title(StreamTile *tile, const char *title)
+static void set_tile_stream_title(StreamTile *tile, const char *title, const char *metadata)
 {
-    if (tile->stream_title_label == NULL) {
-        return;
-    }
-
-    gtk_label_set_text(GTK_LABEL(tile->stream_title_label), title != NULL ? title : "");
-    gtk_widget_set_tooltip_text(tile->stream_title_label, title != NULL && title[0] != '\0' ? title : NULL);
+    player_footer_stream_info_set(tile->stream_info, title, metadata);
 }
 
 static void reset_tile_stream_title(StreamTile *tile)
@@ -315,7 +311,7 @@ static void reset_tile_stream_title(StreamTile *tile)
         g_clear_object(&tile->title_cancel);
     }
     tile->title_fetch_in_progress = FALSE;
-    set_tile_stream_title(tile, "");
+    set_tile_stream_title(tile, "", "");
 }
 
 static void clear_tile_stream_qualities(StreamTile *tile)
@@ -404,7 +400,8 @@ static void on_tile_title_fetched(GObject *source_object, GAsyncResult *result, 
     }
 
     g_autofree char *title = twitch_stream_info_format_current_stream_title(stream);
-    set_tile_stream_title(tile, title);
+    g_autofree char *metadata = twitch_stream_info_format_current_stream_metadata(stream);
+    set_tile_stream_title(tile, title, metadata);
     g_free(data);
 }
 
@@ -1369,14 +1366,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
     gtk_widget_add_css_class(tile->close_button, "tile-close-button");
     g_signal_connect(tile->close_button, "clicked", G_CALLBACK(on_tile_close_clicked), tile);
 
-    tile->stream_title_label = gtk_label_new("");
-    gtk_widget_add_css_class(tile->stream_title_label, "stream-title-label");
-    gtk_widget_set_halign(tile->stream_title_label, GTK_ALIGN_START);
-    gtk_widget_set_valign(tile->stream_title_label, GTK_ALIGN_CENTER);
-    gtk_widget_set_hexpand(tile->stream_title_label, TRUE);
-    gtk_label_set_xalign(GTK_LABEL(tile->stream_title_label), 0.0);
-    gtk_label_set_ellipsize(GTK_LABEL(tile->stream_title_label), PANGO_ELLIPSIZE_END);
-    gtk_label_set_single_line_mode(GTK_LABEL(tile->stream_title_label), TRUE);
+    tile->stream_info = player_footer_stream_info_new();
 
     GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(spacer, FALSE);
@@ -1415,7 +1405,7 @@ static GtkWidget *create_tile_footer(StreamTile *tile)
 
     gtk_box_append(GTK_BOX(box), channel_selector);
     gtk_box_append(GTK_BOX(box), tile->close_button);
-    gtk_box_append(GTK_BOX(box), tile->stream_title_label);
+    gtk_box_append(GTK_BOX(box), player_footer_stream_info_get_widget(tile->stream_info));
     gtk_box_append(GTK_BOX(box), spacer);
     gtk_box_append(GTK_BOX(box), tile->mute_button);
     gtk_box_append(GTK_BOX(box), tile->volume_scale);
@@ -1613,7 +1603,11 @@ static void install_css(void)
         "}"
         ".stream-title-label {"
         "  color: rgba(255, 255, 255, 0.88);"
-        "  font-size: 13px;"
+        "  font-size: 12px;"
+        "}"
+        ".stream-metadata-label {"
+        "  color: rgba(255, 255, 255, 0.76);"
+        "  font-size: 11px;"
         "}"
         ".channel-popover contents {"
         "  background: rgba(28, 28, 28, 0.98);"
@@ -1735,7 +1729,7 @@ void grid_player_free(GridPlayer *player)
         tile->channel_combo = NULL;
         tile->channel_label = NULL;
         tile->channel_refresh_button = NULL;
-        tile->stream_title_label = NULL;
+        g_clear_pointer(&tile->stream_info, player_footer_stream_info_free);
         tile->close_button = NULL;
         tile->empty_label = NULL;
         tile->stream_info_button = NULL;
