@@ -9,6 +9,7 @@
 #include "player_icons.h"
 #include "player_motion.h"
 #include "player_session.h"
+#include "player_style.h"
 #include "single_player.h"
 #include "grid_player.h"
 #include "settings_window.h"
@@ -70,6 +71,38 @@ typedef struct {
 static void set_layout_mode(AppState *state, ContentMode mode);
 static void show_window_overlay(AppState *state);
 static void show_settings_window(AppState *state, SettingsWindowPage initial_page);
+
+static char *dup_twitch_channel_name(const char *value)
+{
+    if (value == NULL || value[0] == '\0') {
+        return NULL;
+    }
+
+    const char *prefix = "twitch.tv/";
+    const char *start = strstr(value, prefix);
+    gboolean from_twitch_url = start != NULL;
+
+    if (from_twitch_url) {
+        start += strlen(prefix);
+    } else {
+        start = value;
+    }
+
+    while (*start == '/') {
+        start++;
+    }
+
+    const char *end = start;
+    while (g_ascii_isalnum(*end) || *end == '_') {
+        end++;
+    }
+
+    if (end == start || (!from_twitch_url && *end != '\0')) {
+        return NULL;
+    }
+
+    return g_ascii_strdown(start, end - start);
+}
 
 static void configure_rendering_defaults(void)
 {
@@ -383,7 +416,8 @@ static void capture_grid_handoff(AppState *state)
 
     g_clear_pointer(&state->single_target, g_free);
     if (player_session_is_playing(state->primary_session)) {
-        state->single_target = player_session_dup_url(state->primary_session);
+        const char *channel = player_session_get_channel(state->primary_session);
+        state->single_target = channel != NULL && channel[0] != '\0' ? g_strdup(channel) : NULL;
     } else {
         state->single_target = grid_player_dup_first_target(state->grid_player);
     }
@@ -416,10 +450,15 @@ static void create_single_content(AppState *state)
 static void create_grid_content(AppState *state)
 {
     const char *targets[GRID_PLAYER_MAX_TILES] = {0};
+    char *target_storage[GRID_PLAYER_MAX_TILES] = {0};
     guint target_count = 0;
 
     if (state->single_target != NULL && state->single_target[0] != '\0') {
-        targets[target_count++] = state->single_target;
+        target_storage[target_count] = dup_twitch_channel_name(state->single_target);
+        if (target_storage[target_count] != NULL) {
+            targets[target_count] = target_storage[target_count];
+            target_count++;
+        }
     }
 
     for (guint i = 0; i < state->grid_target_count && target_count < GRID_PLAYER_MAX_TILES; i++) {
@@ -431,7 +470,25 @@ static void create_grid_content(AppState *state)
             continue;
         }
 
-        targets[target_count++] = target;
+        g_autofree char *channel = dup_twitch_channel_name(target);
+        if (channel == NULL) {
+            continue;
+        }
+
+        gboolean duplicate = FALSE;
+        for (guint existing = 0; existing < target_count; existing++) {
+            if (g_ascii_strcasecmp(channel, targets[existing]) == 0) {
+                duplicate = TRUE;
+                break;
+            }
+        }
+        if (duplicate) {
+            continue;
+        }
+
+        target_storage[target_count] = g_steal_pointer(&channel);
+        targets[target_count] = target_storage[target_count];
+        target_count++;
     }
 
     state->grid_player = grid_player_new(
@@ -451,6 +508,10 @@ static void create_grid_content(AppState *state)
     state->content_mode = CONTENT_MODE_GRID;
     gtk_widget_set_tooltip_text(state->layout_button, "Switch to single player");
     gtk_button_set_child(GTK_BUTTON(state->layout_button), player_layout_icon_new(PLAYER_LAYOUT_ICON_SINGLE));
+
+    for (guint i = 0; i < GRID_PLAYER_MAX_TILES; i++) {
+        g_free(target_storage[i]);
+    }
 }
 
 static void set_layout_mode(AppState *state, ContentMode mode)
@@ -702,36 +763,23 @@ static void install_css(void)
         ".video-footer menubutton > button:hover {"
         "  background: rgba(54, 54, 54, 0.90);"
         "}"
-        ".video-footer .overlay-icon-button {"
+        ".video-footer button.overlay-icon-button {"
         "  background: transparent;"
         "  background-color: transparent;"
         "  background-image: none;"
         "  border: none;"
+        "  border-color: transparent;"
+        "  outline-color: transparent;"
         "  box-shadow: none;"
         "  color: rgba(255, 255, 255, 0.88);"
         "  min-width: 26px;"
         "  min-height: 24px;"
         "  padding: 4px 5px;"
         "}"
-        ".video-footer button.overlay-icon-button:not(:hover) {"
-        "  background: transparent;"
-        "  background-color: transparent;"
-        "  background-image: none;"
-        "  box-shadow: none;"
-        "}"
         ".video-footer button.overlay-icon-button:hover {"
         "  background: rgba(255, 255, 255, 0.14);"
         "  background-image: none;"
         "  color: white;"
-        "}"
-        ".video-footer .volume-mute-button {"
-        "  margin-right: 0;"
-        "}"
-        ".video-footer .volume-scale {"
-        "  margin-left: 0;"
-        "  margin-right: 0;"
-        "  padding-left: 0;"
-        "  padding-right: 0;"
         "}"
         ".stream-dropdown {"
         "  min-width: 140px;"
@@ -795,23 +843,6 @@ static void install_css(void)
         ".stream-menu-item:hover {"
         "  background: rgba(74, 74, 74, 0.98);"
         "  color: white;"
-        "}"
-        ".video-footer scale trough {"
-        "  background: rgba(255, 255, 255, 0.20);"
-        "  min-height: 3px;"
-        "}"
-        ".video-footer scale highlight {"
-        "  background: rgba(255, 255, 255, 0.72);"
-        "}"
-        ".video-footer scale slider {"
-        "  background: rgba(255, 255, 255, 0.95);"
-        "  border-color: rgba(0, 0, 0, 0.45);"
-        "  min-width: 10px;"
-        "  min-height: 10px;"
-        "  margin-top: -4px;"
-        "  margin-bottom: -4px;"
-        "  margin-left: 0;"
-        "  margin-right: 0;"
         "}"
         ".settings-window {"
         "  background: #141417;"
@@ -944,6 +975,7 @@ static void install_css(void)
     );
 
     g_object_unref(provider);
+    player_style_install_footer_volume_css();
 }
 
 static void install_app_icon(void)

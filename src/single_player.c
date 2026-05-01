@@ -18,7 +18,7 @@
 #include "player_volume.h"
 #include "twitch_stream_info.h"
 
-#define STREAM_TITLE_REFRESH_SECONDS 60
+#define STREAM_TITLE_REFRESH_SECONDS (3 * 60)
 #define STREAM_DROPDOWN_WIDTH 140
 #define DEFAULT_CHAT_WIDTH 280
 #define MIN_CHAT_WIDTH 180
@@ -972,6 +972,7 @@ static void on_gl_unrealize(GtkGLArea *area, gpointer user_data)
 static GtkWidget *create_controls(SinglePlayer *state)
 {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_add_css_class(box, "player-footer");
     gtk_widget_add_css_class(box, "video-footer");
 
     state->stream_combo = gtk_button_new();
