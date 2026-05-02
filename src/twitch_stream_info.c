@@ -9,7 +9,7 @@
 #define TWITCH_GQL_URI "https://gql.twitch.tv/gql"
 #define TWITCH_GQL_CLIENT_ID "kimne78kx3ncx6brgo4mv6wki5h1ko"
 #define TWITCH_GQL_QUERY "query($login:String!){user(login:$login){stream{title viewersCount createdAt game{name}}}}"
-#define TWITCH_GQL_LIVE_CHANNELS_QUERY "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:240,height:135) game{name}}}}"
+#define TWITCH_GQL_LIVE_CHANNELS_QUERY "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:320,height:180) game{name}}}}"
 #define TWITCH_GQL_PLAYBACK_ACCESS_TOKEN_QUERY "query($login:String!){streamPlaybackAccessToken(channelName:$login,params:{platform:\"web\",playerBackend:\"mediaplayer\",playerType:\"site\"}){value signature}}"
 #define TWITCH_GQL_MAX_LOGINS 100
 #define TWITCH_HELIX_USERS_URI "https://api.twitch.tv/helix/users"

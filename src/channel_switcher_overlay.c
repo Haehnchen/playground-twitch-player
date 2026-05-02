@@ -20,10 +20,10 @@
 #define PANEL_HORIZONTAL_PADDING 16
 #define PANEL_SCROLLBAR_RESERVE_WIDTH 18
 #define CARD_WIDTH 226
-#define CARD_HORIZONTAL_PADDING 14
+#define CARD_HORIZONTAL_PADDING 10
 #define CARD_SPACING 6
-#define PREVIEW_WIDTH 210
-#define PREVIEW_HEIGHT 118
+#define PREVIEW_WIDTH 226
+#define PREVIEW_HEIGHT 127
 #define AVATAR_SIZE 24
 #define CARD_OUTER_WIDTH (CARD_WIDTH + CARD_HORIZONTAL_PADDING)
 
@@ -38,6 +38,10 @@ struct _ChannelSwitcherOverlay {
     AppSettings *settings;
     GPtrArray *previews;
     GPtrArray *preview_cards;
+    guint preview_card_columns;
+    int preview_card_width;
+    int preview_width;
+    int preview_height;
     GHashTable *image_cache;
     GHashTable *image_waiters;
     char *cached_channels_key;
@@ -163,7 +167,7 @@ static void install_css(void)
         "  box-shadow: none;"
         "  border-radius: 5px;"
         "  margin: 0;"
-        "  padding: 7px;"
+        "  padding: 5px;"
         "}"
         ".channel-switcher-item:hover {"
         "  background: rgba(255, 255, 255, 0.13);"
@@ -171,8 +175,8 @@ static void install_css(void)
         ".channel-switcher-preview {"
         "  background: rgba(255, 255, 255, 0.08);"
         "  border-radius: 4px;"
-        "  min-width: 210px;"
-        "  min-height: 118px;"
+        "  min-width: 226px;"
+        "  min-height: 127px;"
         "}"
         ".channel-switcher-avatar {"
         "  background: rgba(0, 0, 0, 0.55);"
@@ -235,6 +239,10 @@ static void clear_preview_cards(ChannelSwitcherOverlay *switcher)
     if (switcher->preview_cards != NULL) {
         g_ptr_array_set_size(switcher->preview_cards, 0);
     }
+    switcher->preview_card_columns = 0;
+    switcher->preview_card_width = 0;
+    switcher->preview_width = 0;
+    switcher->preview_height = 0;
 }
 
 static void clear_image_cache(ChannelSwitcherOverlay *switcher)
@@ -314,6 +322,19 @@ static GdkTexture *create_cover_texture_from_bytes(GBytes *bytes, int width, int
     g_autoptr(GBytes) texture_bytes = g_bytes_new(gdk_pixbuf_get_pixels(target), length);
 
     return gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, texture_bytes, stride);
+}
+
+static GdkTexture *create_placeholder_texture(int width, int height)
+{
+    if (width <= 0 || height <= 0) {
+        return NULL;
+    }
+
+    gsize stride = (gsize)width * 4;
+    gsize length = stride * (gsize)height;
+    g_autoptr(GBytes) bytes = g_bytes_new_take(g_malloc0(length), length);
+
+    return gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, bytes, stride);
 }
 
 static void live_fetch_callback_data_free(LiveFetchCallbackData *data)
@@ -438,18 +459,44 @@ static int calculate_panel_width(int overlay_width)
 {
     int available_width = MAX(1, overlay_width - PANEL_MARGIN * 2);
     int max_panel_width = MIN(PANEL_MAX_WIDTH, available_width);
-    int max_grid_width = MAX(1, max_panel_width - PANEL_HORIZONTAL_PADDING - PANEL_SCROLLBAR_RESERVE_WIDTH);
-    guint columns = MIN(
-        (guint)PANEL_MAX_COLUMNS,
-        MAX(1, (guint)((max_grid_width + CARD_SPACING) / (CARD_OUTER_WIDTH + CARD_SPACING)))
-    );
-    int fitted_grid_width = (int)(columns * CARD_OUTER_WIDTH + (columns - 1) * CARD_SPACING);
-    int fitted_width = fitted_grid_width + PANEL_HORIZONTAL_PADDING + PANEL_SCROLLBAR_RESERVE_WIDTH;
-
-    return CLAMP(fitted_width, MIN(PANEL_MIN_WIDTH, available_width), max_panel_width);
+    return CLAMP(max_panel_width, MIN(PANEL_MIN_WIDTH, available_width), max_panel_width);
 }
 
-static guint get_grid_columns(ChannelSwitcherOverlay *switcher)
+static int calculate_grid_width(int panel_width)
+{
+    return MAX(1, panel_width - PANEL_HORIZONTAL_PADDING - PANEL_SCROLLBAR_RESERVE_WIDTH);
+}
+
+static guint calculate_grid_columns(int grid_width)
+{
+    guint columns = MIN(
+        (guint)PANEL_MAX_COLUMNS,
+        MAX(1, (guint)((grid_width + CARD_SPACING) / (CARD_OUTER_WIDTH + CARD_SPACING)))
+    );
+
+    return columns;
+}
+
+static int calculate_card_width(int grid_width, guint columns)
+{
+    int spacing_width = (int)(columns > 0 ? columns - 1 : 0) * CARD_SPACING;
+    int card_outer_width = (grid_width - spacing_width) / (int)MAX(1, columns);
+
+    return MAX(CARD_WIDTH, card_outer_width - CARD_HORIZONTAL_PADDING);
+}
+
+static int calculate_preview_height(int preview_width)
+{
+    return MAX(1, (preview_width * 9 + 8) / 16);
+}
+
+static void calculate_card_layout(
+    ChannelSwitcherOverlay *switcher,
+    guint *columns,
+    int *card_width,
+    int *preview_width,
+    int *preview_height
+)
 {
     int panel_width = 0;
 
@@ -459,11 +506,30 @@ static guint get_grid_columns(ChannelSwitcherOverlay *switcher)
         panel_width = gtk_widget_get_width(switcher->panel);
     }
 
-    int grid_width = MAX(1, panel_width - PANEL_HORIZONTAL_PADDING - PANEL_SCROLLBAR_RESERVE_WIDTH);
-    return MIN(
-        (guint)PANEL_MAX_COLUMNS,
-        MAX(1, (guint)((grid_width + CARD_SPACING) / (CARD_OUTER_WIDTH + CARD_SPACING)))
-    );
+    int grid_width = calculate_grid_width(panel_width);
+    guint calculated_columns = calculate_grid_columns(grid_width);
+    int calculated_card_width = calculate_card_width(grid_width, calculated_columns);
+
+    if (columns != NULL) {
+        *columns = calculated_columns;
+    }
+    if (card_width != NULL) {
+        *card_width = calculated_card_width;
+    }
+    if (preview_width != NULL) {
+        *preview_width = calculated_card_width;
+    }
+    if (preview_height != NULL) {
+        *preview_height = calculate_preview_height(calculated_card_width);
+    }
+}
+
+static guint get_grid_columns(ChannelSwitcherOverlay *switcher)
+{
+    guint columns = 1;
+
+    calculate_card_layout(switcher, &columns, NULL, NULL, NULL);
+    return columns;
 }
 
 static void show_status(ChannelSwitcherOverlay *switcher, const char *message)
@@ -505,7 +571,7 @@ static void position_panel(ChannelSwitcherOverlay *switcher)
         ? PANEL_TOP_SAFE_MARGIN - (int)root_y
         : PANEL_MARGIN;
     int panel_width = calculate_panel_width(overlay_width);
-    int grid_width = MAX(1, panel_width - PANEL_HORIZONTAL_PADDING - PANEL_SCROLLBAR_RESERVE_WIDTH);
+    int grid_width = calculate_grid_width(panel_width);
     int scroller_height = MAX(
         1,
         overlay_height - top_margin - PANEL_BOTTOM_MARGIN - PANEL_EXTRA_VERTICAL_SPACE
@@ -651,6 +717,8 @@ static void on_direct_channel_icon_pressed(GtkEntry *entry, GtkEntryIconPosition
 static GtkWidget *create_image_picture(ChannelSwitcherOverlay *switcher, const char *url, int width, int height, const char *css_class)
 {
     GtkWidget *image = gtk_picture_new();
+    g_autoptr(GdkTexture) placeholder = create_placeholder_texture(width, height);
+
     gtk_widget_add_css_class(image, css_class);
     gtk_widget_set_focusable(image, FALSE);
     gtk_widget_set_size_request(image, width, height);
@@ -661,6 +729,9 @@ static GtkWidget *create_image_picture(ChannelSwitcherOverlay *switcher, const c
     gtk_widget_set_overflow(image, GTK_OVERFLOW_HIDDEN);
     gtk_picture_set_content_fit(GTK_PICTURE(image), GTK_CONTENT_FIT_COVER);
     gtk_picture_set_can_shrink(GTK_PICTURE(image), TRUE);
+    if (placeholder != NULL) {
+        gtk_picture_set_paintable(GTK_PICTURE(image), GDK_PAINTABLE(placeholder));
+    }
     load_remote_image(switcher, image, url, width, height);
     return image;
 }
@@ -695,7 +766,13 @@ static char *format_meta_text(TwitchStreamPreview *preview)
     return g_strdup_printf("%s • %s", viewers, duration != NULL ? duration : "live");
 }
 
-static GtkWidget *create_channel_card(ChannelSwitcherOverlay *switcher, TwitchStreamPreview *preview)
+static GtkWidget *create_channel_card(
+    ChannelSwitcherOverlay *switcher,
+    TwitchStreamPreview *preview,
+    int card_width,
+    int preview_width,
+    int preview_height
+)
 {
     const AppSettingsChannel *channel = find_settings_channel(switcher, preview->channel);
     const char *label = channel != NULL && channel->label != NULL && channel->label[0] != '\0'
@@ -706,26 +783,26 @@ static GtkWidget *create_channel_card(ChannelSwitcherOverlay *switcher, TwitchSt
     gtk_widget_add_css_class(button, "channel-switcher-item");
     gtk_widget_set_halign(button, GTK_ALIGN_START);
     gtk_widget_set_hexpand(button, FALSE);
-    gtk_widget_set_size_request(button, CARD_WIDTH, -1);
+    gtk_widget_set_size_request(button, card_width, -1);
     g_object_set_data_full(G_OBJECT(button), "channel-name", g_strdup(preview->channel), g_free);
     g_object_set_data_full(G_OBJECT(button), "channel-label", g_strdup(label), g_free);
     g_signal_connect(button, "clicked", G_CALLBACK(on_channel_button_clicked), switcher);
 
-    GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 7);
+    GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
     gtk_widget_set_halign(card, GTK_ALIGN_START);
     gtk_widget_set_hexpand(card, FALSE);
-    gtk_widget_set_size_request(card, CARD_WIDTH, -1);
+    gtk_widget_set_size_request(card, card_width, -1);
 
     GtkWidget *preview_frame = create_fixed_picture_frame(
         create_image_picture(
             switcher,
             preview->preview_url,
-            PREVIEW_WIDTH,
-            PREVIEW_HEIGHT,
+            preview_width,
+            preview_height,
             "channel-switcher-preview"
         ),
-        PREVIEW_WIDTH,
-        PREVIEW_HEIGHT
+        preview_width,
+        preview_height
     );
     gtk_widget_set_halign(preview_frame, GTK_ALIGN_CENTER);
 
@@ -817,18 +894,37 @@ static gboolean preview_matches_filter(TwitchStreamPreview *preview, const char 
 
 static void ensure_preview_cards(ChannelSwitcherOverlay *switcher)
 {
+    guint columns = 1;
+    int card_width = CARD_WIDTH;
+    int preview_width = PREVIEW_WIDTH;
+    int preview_height = PREVIEW_HEIGHT;
+
+    calculate_card_layout(switcher, &columns, &card_width, &preview_width, &preview_height);
+
     if (switcher->preview_cards == NULL) {
         switcher->preview_cards = g_ptr_array_new_with_free_func(g_object_unref);
     }
 
-    if (switcher->previews == NULL || switcher->preview_cards->len == switcher->previews->len) {
+    if (switcher->previews == NULL) {
+        return;
+    }
+
+    if (switcher->preview_cards->len == switcher->previews->len &&
+        switcher->preview_card_columns == columns &&
+        switcher->preview_card_width == card_width &&
+        switcher->preview_width == preview_width &&
+        switcher->preview_height == preview_height) {
         return;
     }
 
     clear_preview_cards(switcher);
+    switcher->preview_card_columns = columns;
+    switcher->preview_card_width = card_width;
+    switcher->preview_width = preview_width;
+    switcher->preview_height = preview_height;
     for (guint i = 0; i < switcher->previews->len; i++) {
         TwitchStreamPreview *preview = g_ptr_array_index(switcher->previews, i);
-        GtkWidget *card = create_channel_card(switcher, preview);
+        GtkWidget *card = create_channel_card(switcher, preview, card_width, preview_width, preview_height);
         g_ptr_array_add(switcher->preview_cards, g_object_ref_sink(card));
     }
 }
@@ -848,7 +944,7 @@ static void render_live_channels(ChannelSwitcherOverlay *switcher)
     guint visible_count = 0;
 
     clear_grid(switcher);
-    guint columns = get_grid_columns(switcher);
+    guint columns = switcher->preview_card_columns > 0 ? switcher->preview_card_columns : get_grid_columns(switcher);
     for (guint i = 0; i < switcher->previews->len && i < switcher->preview_cards->len; i++) {
         TwitchStreamPreview *preview = g_ptr_array_index(switcher->previews, i);
         if (!preview_matches_filter(preview, filter)) {
