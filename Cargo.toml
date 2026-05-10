@@ -1,0 +1,46 @@
+[package]
+name = "twitch-player"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "twitch_player_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "twitch-player"
+path = "src/main.rs"
+
+[[test]]
+name = "twitch-chat"
+path = "tests/test_twitch_chat.rs"
+harness = false
+
+[[test]]
+name = "twitch-stream-info"
+path = "tests/test_twitch_stream_info.rs"
+harness = false
+
+[[test]]
+name = "settings"
+path = "tests/test_settings.rs"
+harness = false
+
+[[test]]
+name = "chat-assets"
+path = "tests/test_chat_assets.rs"
+harness = false
+
+[[test]]
+name = "chat-panel"
+path = "tests/test_chat_panel.rs"
+harness = false
+
+[[test]]
+name = "grid-player"
+path = "tests/test_grid_player.rs"
+harness = false
+
+[profile.release]
+strip = "symbols"

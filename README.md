@@ -30,7 +30,7 @@ settings file.
 On Ubuntu/Debian:
 
 ```bash
-sudo apt install build-essential meson ninja-build pkg-config libgtk-4-dev libmpv-dev libepoxy-dev mpv yt-dlp
+sudo apt install build-essential cargo rustc pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libjson-glib-dev libsoup-3.0-dev mpv yt-dlp
 ```
 
 Check the local machine:
@@ -45,6 +45,8 @@ Check the local machine:
 make build
 ```
 
+This uses `cargo build --release` and strips the resulting binary.
+
 Or build and copy to `~/.local/bin`
 
 ```bash
@@ -54,22 +56,22 @@ make install
 ## Run
 
 ```bash
-./build/twitch-player
+./target/release/twitch-player
 ```
 
 Start with a channel or URL:
 
 ```bash
-./build/twitch-player papaplatte
-./build/twitch-player https://www.twitch.tv/montanablack88
+./target/release/twitch-player papaplatte
+./target/release/twitch-player https://www.twitch.tv/montanablack88
 ```
 
 Switch between the normal player and the 2x2 grid from the overlay controls.
 Start directly in grid mode with up to four channels:
 
 ```bash
-./build/twitch-player --grid papaplatte rumathra
-./build/twitch-player --grid papaplatte rumathra montanablack88 another_channel
+./target/release/twitch-player --grid papaplatte rumathra
+./target/release/twitch-player --grid papaplatte rumathra montanablack88 another_channel
 ```
 
 ## AppImage

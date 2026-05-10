@@ -5,8 +5,12 @@ APP_ID="local.twitch-player"
 APP_NAME="Twitch Player"
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
-APPIMAGE_BUILD_DIR="${APPIMAGE_BUILD_DIR:-$PROJECT_ROOT/build/appimage}"
+CARGO="${CARGO:-cargo}"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+STRIP="${STRIP:-strip}"
+STRIP_FLAGS="${STRIP_FLAGS:---strip-unneeded}"
+RELEASE_BIN="$CARGO_TARGET_DIR/release/twitch-player"
+APPIMAGE_BUILD_DIR="${APPIMAGE_BUILD_DIR:-$PROJECT_ROOT/target/appimage}"
 APPDIR="${APPDIR:-$APPIMAGE_BUILD_DIR/AppDir}"
 DIST_DIR="${DIST_DIR:-$PROJECT_ROOT/dist}"
 BUNDLE_YTDLP="${BUNDLE_YTDLP:-1}"
@@ -260,15 +264,13 @@ main() {
   require_packaging_tools "$arch"
 
   log "building project"
-  if [ ! -d "$BUILD_DIR" ]; then
-    meson setup "$BUILD_DIR"
-  fi
-  meson compile -C "$BUILD_DIR"
+  CARGO_TARGET_DIR="$CARGO_TARGET_DIR" "$CARGO" build --release
+  "$STRIP" $STRIP_FLAGS "$RELEASE_BIN"
 
   log "creating AppDir"
   rm -rf "$APPDIR"
   mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/twitch-player" "$DIST_DIR"
-  install -Dm755 "$BUILD_DIR/twitch-player" "$APPDIR/usr/lib/twitch-player/twitch-player"
+  install -Dm755 "$RELEASE_BIN" "$APPDIR/usr/lib/twitch-player/twitch-player"
   ln -s ../lib/twitch-player/twitch-player "$APPDIR/usr/bin/twitch-player"
   copy_desktop_files
 

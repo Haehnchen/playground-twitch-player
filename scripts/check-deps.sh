@@ -17,12 +17,15 @@ check_pkg() {
   fi
 }
 
-check_cmd meson
-check_cmd ninja
+check_cmd cargo
+check_cmd rustc
+check_cmd strip
 check_cmd mpv
 check_cmd yt-dlp
 
 check_pkg gtk4
+check_pkg gio-2.0
+check_pkg gdk-pixbuf-2.0
 check_pkg mpv
 check_pkg epoxy
 check_pkg json-glib-1.0
@@ -32,7 +35,7 @@ if [ "$missing" -ne 0 ]; then
   cat <<'EOF'
 
 Ubuntu/Debian packages:
-  sudo apt install build-essential meson ninja-build pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libjson-glib-dev libsoup-3.0-dev mpv yt-dlp
+  sudo apt install build-essential cargo rustc pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libjson-glib-dev libsoup-3.0-dev mpv yt-dlp
 EOF
   exit 1
 fi

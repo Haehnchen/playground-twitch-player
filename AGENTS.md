@@ -2,38 +2,40 @@
 
 ## Project Layout
 
-- `src/main.c`: GTK window, libmpv rendering, controls, stream selection.
-- `src/chat_panel.c`: chat panel UI and message rendering.
-- `src/twitch_chat.c`: anonymous/read-only Twitch IRC client.
-- `meson.build`: build definition.
+- `src/main.rs`: Rust executable entry point.
+- `src/lib.rs`: Rust core module root.
+- `src/app_main.rs`: GTK window, libmpv rendering, controls, stream selection.
+- `src/chat_panel.rs`: chat panel UI and message rendering.
+- `src/twitch_chat.rs`: anonymous/read-only Twitch IRC client.
+- `Cargo.toml`: Cargo build definition.
+- `build.rs`: pkg-config based system library linking for Cargo.
 - `scripts/check-deps.sh`: local dependency check.
 
 ## Build and Run
 
 ```bash
 ./scripts/check-deps.sh
-meson setup build
-meson compile -C build
-meson test -C build
-./build/twitch-player
-./build/twitch-player papaplatte
+make build
+make test
+./target/release/twitch-player
+./target/release/twitch-player papaplatte
 ```
 
-Run `meson compile -C build` after code changes. Run `meson test -C build`
-after changes that touch tested helpers or behavior, and use failing tests to
-guide the fix before finishing.
+Run `make build` after code changes. Run `make test` after changes that touch
+tested helpers or behavior, and use failing tests to guide the fix before
+finishing.
 
 ## Style
 
-Use the existing C style: 4-space indentation, `snake_case` names, small focused
+Use the existing Rust style: `rustfmt`, `snake_case` names, small focused
 functions, and GLib helpers where already used. Keep changes in the matching
-module: chat UI in `chat_panel.c`, Twitch IRC in `twitch_chat.c`, GTK/libmpv app
-logic in `main.c`.
+module: chat UI in `chat_panel.rs`, Twitch IRC in `twitch_chat.rs`, GTK/libmpv
+app logic in `app_main.rs`.
 
 ## Testing
 
-Automated tests live in `tests/` and are wired through Meson. Use
-`meson test -C build` to run them.
+Automated tests live in `tests/` and are wired through Cargo. Use `make test` to
+run them.
 
 Manually smoke test startup, stream playback, chat connection, channel
 switching, fullscreen, window dragging, and resizing when the change affects
