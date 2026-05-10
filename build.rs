@@ -1,10 +1,25 @@
-use std::process::Command;
+use std::{env, process::Command};
+
+const DEFAULT_BUILD_VERSION: &str = "nightly";
+const DEFAULT_BUILD_DATE: &str = "local";
+const APP_AUTHOR: &str = "Daniel Espendiller";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=BUILD_VERSION");
+    println!("cargo:rerun-if-env-changed=BUILD_DATE");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR");
+    println!(
+        "cargo:rustc-env=TWITCH_PLAYER_BUILD_VERSION={}",
+        env::var("BUILD_VERSION").unwrap_or_else(|_| DEFAULT_BUILD_VERSION.to_string())
+    );
+    println!(
+        "cargo:rustc-env=TWITCH_PLAYER_BUILD_DATE={}",
+        env::var("BUILD_DATE").unwrap_or_else(|_| build_date())
+    );
+    println!("cargo:rustc-env=TWITCH_PLAYER_AUTHOR={APP_AUTHOR}");
 
     let packages = [
         "gtk4",
@@ -40,4 +55,17 @@ fn main() {
             println!("cargo:rustc-link-arg={token}");
         }
     }
+}
+
+fn build_date() -> String {
+    Command::new("date")
+        .arg("-u")
+        .arg("+%Y-%m-%d")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|date| date.trim().to_string())
+        .filter(|date| !date.is_empty())
+        .unwrap_or_else(|| DEFAULT_BUILD_DATE.to_string())
 }

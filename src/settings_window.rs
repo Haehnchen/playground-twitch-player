@@ -28,6 +28,7 @@ const GTK_POLICY_AUTOMATIC: c_int = 1;
 const GTK_POLICY_NEVER: c_int = 2;
 const GTK_SELECTION_SINGLE: c_int = 1;
 const SETTINGS_WINDOW_PAGE_CHANNELS: c_int = 1;
+const SETTINGS_WINDOW_PAGE_ABOUT: c_int = 2;
 const TWITCH_AUTH_CLIENT_ID: &[u8] = b"8l1fzyh4jhs1cxhtqs6p4swmxuejh6\0";
 
 pub struct SettingsWindow {
@@ -279,6 +280,8 @@ fn is_valid_channel_name_bytes(channel: &[u8]) -> bool {
 unsafe fn page_name_for_page(page: c_int) -> *const c_char {
     if page == SETTINGS_WINDOW_PAGE_CHANNELS {
         b"channels\0".as_ptr() as *const c_char
+    } else if page == SETTINGS_WINDOW_PAGE_ABOUT {
+        b"about\0".as_ptr() as *const c_char
     } else {
         b"general\0".as_ptr() as *const c_char
     }
@@ -841,8 +844,13 @@ unsafe fn create_sidebar(view: *mut SettingsWindow, initial_page: c_int) -> *mut
         b"channels\0".as_ptr() as *const c_char,
         b"Channels\0".as_ptr() as *const c_char,
     );
+    let about_row = create_sidebar_row(
+        b"about\0".as_ptr() as *const c_char,
+        b"About\0".as_ptr() as *const c_char,
+    );
     gtk_list_box_append(sidebar as *mut GtkListBox, general_row);
     gtk_list_box_append(sidebar as *mut GtkListBox, channels_row);
+    gtk_list_box_append(sidebar as *mut GtkListBox, about_row);
     g_signal_connect_data(
         sidebar as *mut c_void,
         b"row-selected\0".as_ptr() as *const c_char,
@@ -853,7 +861,9 @@ unsafe fn create_sidebar(view: *mut SettingsWindow, initial_page: c_int) -> *mut
     );
     gtk_list_box_select_row(
         sidebar as *mut GtkListBox,
-        if initial_page == SETTINGS_WINDOW_PAGE_CHANNELS {
+        if initial_page == SETTINGS_WINDOW_PAGE_ABOUT {
+            about_row
+        } else if initial_page == SETTINGS_WINDOW_PAGE_CHANNELS {
             channels_row
         } else {
             general_row
@@ -1038,6 +1048,80 @@ unsafe fn create_channels_page(view: *mut SettingsWindow) -> *mut GtkWidget {
     page
 }
 
+unsafe fn create_about_row(title: *const c_char, value: *const c_char) -> *mut GtkWidget {
+    let row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_add_css_class(row, b"settings-about-row\0".as_ptr() as *const c_char);
+
+    let title_label = gtk_label_new(title);
+    gtk_widget_add_css_class(
+        title_label,
+        b"settings-about-key\0".as_ptr() as *const c_char,
+    );
+    gtk_label_set_xalign(title_label as *mut GtkLabel, 0.0);
+    gtk_widget_set_size_request(title_label, 96, -1);
+    gtk_box_append(row as *mut GtkBox, title_label);
+
+    let value_label = gtk_label_new(value);
+    gtk_widget_add_css_class(
+        value_label,
+        b"settings-about-value\0".as_ptr() as *const c_char,
+    );
+    gtk_label_set_xalign(value_label as *mut GtkLabel, 0.0);
+    gtk_label_set_wrap(value_label as *mut GtkLabel, 1);
+    gtk_widget_set_hexpand(value_label, 1);
+    gtk_box_append(row as *mut GtkBox, value_label);
+
+    row
+}
+
+unsafe fn create_about_page() -> *mut GtkWidget {
+    let page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_add_css_class(page, b"settings-page\0".as_ptr() as *const c_char);
+    gtk_widget_set_hexpand(page, 1);
+    gtk_widget_set_vexpand(page, 1);
+
+    let title = gtk_label_new(b"About\0".as_ptr() as *const c_char);
+    gtk_widget_add_css_class(title, b"settings-page-title\0".as_ptr() as *const c_char);
+    gtk_label_set_xalign(title as *mut GtkLabel, 0.0);
+    gtk_box_append(page as *mut GtkBox, title);
+
+    let build_title = gtk_label_new(b"Build\0".as_ptr() as *const c_char);
+    gtk_widget_add_css_class(
+        build_title,
+        b"settings-section-title\0".as_ptr() as *const c_char,
+    );
+    gtk_label_set_xalign(build_title as *mut GtkLabel, 0.0);
+    gtk_box_append(page as *mut GtkBox, build_title);
+
+    gtk_box_append(
+        page as *mut GtkBox,
+        create_about_row(
+            b"Version\0".as_ptr() as *const c_char,
+            concat!(env!("TWITCH_PLAYER_BUILD_VERSION"), "\0").as_ptr() as *const c_char,
+        ),
+    );
+    gtk_box_append(
+        page as *mut GtkBox,
+        create_about_row(
+            b"Build date\0".as_ptr() as *const c_char,
+            concat!(env!("TWITCH_PLAYER_BUILD_DATE"), "\0").as_ptr() as *const c_char,
+        ),
+    );
+    gtk_box_append(
+        page as *mut GtkBox,
+        create_about_row(
+            b"Author\0".as_ptr() as *const c_char,
+            concat!(env!("TWITCH_PLAYER_AUTHOR"), "\0").as_ptr() as *const c_char,
+        ),
+    );
+
+    let spacer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_vexpand(spacer, 1);
+    gtk_box_append(page as *mut GtkBox, spacer);
+
+    page
+}
+
 unsafe fn create_footer(view: *mut SettingsWindow) -> *mut GtkWidget {
     let footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_add_css_class(footer, b"settings-footer\0".as_ptr() as *const c_char);
@@ -1132,6 +1216,11 @@ pub unsafe fn settings_window_show<W>(
         (*view).stack as *mut GtkStack,
         create_channels_page(view),
         b"channels\0".as_ptr() as *const c_char,
+    );
+    gtk_stack_add_named(
+        (*view).stack as *mut GtkStack,
+        create_about_page(),
+        b"about\0".as_ptr() as *const c_char,
     );
 
     let content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
