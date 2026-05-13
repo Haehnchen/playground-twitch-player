@@ -423,6 +423,7 @@ pub unsafe fn player_session_reenable_video(session: *mut PlayerSession) {
         return;
     }
 
+    // Rebind video after a new libmpv render context is attached to a GTK GLArea.
     check_mpv(
         mpv_set_property_string(
             (*session).mpv,
@@ -438,6 +439,19 @@ pub unsafe fn player_session_reenable_video(session: *mut PlayerSession) {
             b"auto\0".as_ptr() as *const c_char,
         ),
         b"enable video\0".as_ptr() as *const c_char,
+    );
+}
+
+pub unsafe fn player_session_drop_buffers(session: *mut PlayerSession) {
+    if player_session_is_playing(session) == 0 {
+        return;
+    }
+
+    // Discard live stream buffers so audio/video can resync without reloading the URL.
+    let cmd = [b"drop-buffers\0".as_ptr() as *const c_char, ptr::null()];
+    check_mpv(
+        mpv_command_async((*session).mpv, 0, cmd.as_ptr()),
+        b"drop buffers\0".as_ptr() as *const c_char,
     );
 }
 

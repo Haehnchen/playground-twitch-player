@@ -20,12 +20,12 @@ use crate::player_icons::{
 use crate::player_motion::{player_motion_tracker_ignore_stationary, PlayerMotionTracker};
 use crate::player_overlay_controls::player_overlay_button_new;
 use crate::player_session::{
-    player_session_free, player_session_get_channel, player_session_get_label,
-    player_session_get_mpv, player_session_get_muted, player_session_get_volume,
-    player_session_is_playing, player_session_is_ready, player_session_load_stream,
-    player_session_new, player_session_reenable_video, player_session_set_hwdec_enabled,
-    player_session_set_wakeup_callback, player_session_stop, player_session_toggle_stream_info,
-    MpvHandle, PlayerSession,
+    player_session_drop_buffers, player_session_free, player_session_get_channel,
+    player_session_get_label, player_session_get_mpv, player_session_get_muted,
+    player_session_get_volume, player_session_is_playing, player_session_is_ready,
+    player_session_load_stream, player_session_new, player_session_reenable_video,
+    player_session_set_hwdec_enabled, player_session_set_wakeup_callback, player_session_stop,
+    player_session_toggle_stream_info, MpvHandle, PlayerSession,
 };
 use crate::player_stream_quality::{
     player_stream_quality_state_begin_fetch, player_stream_quality_state_cache_is_valid,
@@ -1506,7 +1506,7 @@ unsafe extern "C" fn on_channel_refresh_clicked(_button: *mut GtkButton, user_da
         return;
     }
 
-    player_session_reenable_video((*tile).session);
+    player_session_drop_buffers((*tile).session);
     start_render_warmup(tile);
     if !(*tile).gl_area.is_null() {
         gtk_gl_area_queue_render((*tile).gl_area as *mut GtkGLArea);
@@ -2074,6 +2074,7 @@ unsafe fn create_mpv_render_context(tile: *mut StreamTile) -> c_int {
         Some(on_mpv_render_update),
         tile as *mut c_void,
     );
+    // The session may already be playing; force mpv to bind video to this new GLArea.
     player_session_reenable_video((*tile).session);
     start_render_warmup(tile);
     gtk_gl_area_queue_render((*tile).gl_area as *mut GtkGLArea);
@@ -2131,7 +2132,7 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
     gtk_overlay_set_child(channel_selector as *mut GtkOverlay, (*tile).channel_combo);
 
     (*tile).channel_refresh_button =
-        player_overlay_button_new(player_refresh_icon_new(), cstr!("Refresh video"));
+        player_overlay_button_new(player_refresh_icon_new(), cstr!("Resync video"));
     gtk_widget_add_css_class(
         (*tile).channel_refresh_button,
         cstr!("channel-refresh-button"),

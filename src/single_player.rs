@@ -23,10 +23,10 @@ use crate::player_icons::{
 use crate::player_motion::{player_motion_tracker_ignore_stationary, PlayerMotionTracker};
 use crate::player_overlay_controls::player_overlay_button_new;
 use crate::player_session::{
-    player_session_dup_url, player_session_get_channel, player_session_get_mpv,
-    player_session_get_muted, player_session_get_url, player_session_get_volume,
-    player_session_is_playing, player_session_is_ready, player_session_load_stream,
-    player_session_reenable_video, player_session_set_hwdec_enabled,
+    player_session_drop_buffers, player_session_dup_url, player_session_get_channel,
+    player_session_get_mpv, player_session_get_muted, player_session_get_url,
+    player_session_get_volume, player_session_is_playing, player_session_is_ready,
+    player_session_load_stream, player_session_reenable_video, player_session_set_hwdec_enabled,
     player_session_set_wakeup_callback, player_session_toggle_stream_info, MpvHandle,
     PlayerSession,
 };
@@ -1546,7 +1546,7 @@ unsafe extern "C" fn on_stream_refresh_clicked(_button: *mut GtkButton, user_dat
         return;
     }
 
-    player_session_reenable_video((*state).session);
+    player_session_drop_buffers((*state).session);
     start_render_warmup(state);
     if !(*state).gl_area.is_null() {
         gtk_gl_area_queue_render((*state).gl_area as *mut GtkGLArea);
@@ -1706,6 +1706,7 @@ unsafe extern "C" fn on_gl_realize(area: *mut GtkGLArea, user_data: *mut c_void)
         Some(on_mpv_render_update),
         state as *mut c_void,
     );
+    // The session may already be playing; force mpv to bind video to this new GLArea.
     player_session_reenable_video((*state).session);
     start_render_warmup(state);
     gtk_gl_area_queue_render(area);
@@ -1768,7 +1769,7 @@ unsafe fn create_controls(state: *mut SinglePlayer) -> *mut GtkWidget {
     gtk_overlay_set_child(stream_selector as *mut GtkOverlay, (*state).stream_combo);
 
     (*state).stream_refresh_button =
-        player_overlay_button_new(player_refresh_icon_new(), cstr!("Refresh video"));
+        player_overlay_button_new(player_refresh_icon_new(), cstr!("Resync video"));
     gtk_widget_add_css_class(
         (*state).stream_refresh_button,
         cstr!("stream-refresh-button"),
