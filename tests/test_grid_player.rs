@@ -39,6 +39,9 @@ fn main() {
     assert!(should_restore(true, true, true, 0, 0));
     assert!(!should_exit_app(true, true, true));
 
+    assert!(!should_restore(false, false, false, 0, 1));
+    assert!(!should_exit_app(false, false, false));
+
     assert!(!should_restore(false, true, true, 0, 1));
     assert!(!should_restore(false, false, true, 0, 0));
 }

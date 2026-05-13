@@ -414,7 +414,6 @@ unsafe extern "C" {
     fn g_malloc0(n_bytes: usize) -> *mut c_void;
     fn g_object_add_weak_pointer(object: *mut GObject, weak_pointer_location: *mut *mut c_void);
     fn g_object_get_data(object: *mut GObject, key: *const c_char) -> *mut c_void;
-    fn g_object_ref(object: *mut c_void) -> *mut c_void;
     fn g_object_unref(object: *mut c_void);
     fn g_ptr_array_unref(array: *mut GPtrArray);
     fn g_realloc_n(mem: *mut c_void, n_blocks: usize, n_block_bytes: usize) -> *mut c_void;
@@ -1360,7 +1359,6 @@ unsafe fn set_chat_visible(state: *mut SinglePlayer, visible: c_int) {
             (*state).chat_paned_position = position;
         }
         (*state).chat_visible = FALSE;
-        g_object_ref(chat_panel_get_widget::<GtkWidget>((*state).chat_panel) as *mut c_void);
         gtk_paned_set_end_child((*state).main_area as *mut GtkPaned, ptr::null_mut());
     }
 

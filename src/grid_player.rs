@@ -460,9 +460,7 @@ pub struct GridAppState {
     visible_footer_tile: *mut StreamTile,
     footer_hide_source: c_uint,
     title_refresh_source: c_uint,
-    video_fullscreen_focus_source: c_uint,
     focused_tile: c_uint,
-    video_fullscreen_pending_tile: c_uint,
     motion_tracker: PlayerMotionTracker,
     fullscreen_callback: GridPlayerFullscreenCallback,
     fullscreen_user_data: *mut c_void,
@@ -1235,6 +1233,19 @@ unsafe fn reset_owned_tile_session(tile: *mut StreamTile) {
     }
 }
 
+unsafe fn detach_tile_session(tile: *mut StreamTile) -> *mut PlayerSession {
+    let session = (*tile).session;
+
+    if !session.is_null() {
+        clear_tile_render_context(tile);
+        player_session_set_wakeup_callback(session, None, ptr::null_mut());
+        (*tile).session = ptr::null_mut();
+        (*tile).owns_session = FALSE;
+    }
+
+    session
+}
+
 unsafe fn stop_tile_stream(tile: *mut StreamTile) {
     reset_owned_tile_session(tile);
     clear_pointer(&mut (*tile).label);
@@ -1686,36 +1697,18 @@ unsafe fn toggle_tile_focus(tile: *mut StreamTile) {
     show_tile_overlay(tile);
 }
 
-unsafe extern "C" fn apply_pending_video_fullscreen_focus(user_data: *mut c_void) -> c_int {
-    let state = user_data as *mut GridAppState;
+unsafe fn apply_video_fullscreen_focus(tile: *mut StreamTile) {
+    let state = (*tile).app;
 
-    (*state).video_fullscreen_focus_source = 0;
-
-    if (*state).closing != 0 || (*state).video_fullscreen_pending_tile >= MAX_TILES as c_uint {
-        return G_SOURCE_REMOVE;
+    if (*state).closing != 0 {
+        return;
     }
 
-    let tile =
-        &mut (*state).tiles[(*state).video_fullscreen_pending_tile as usize] as *mut StreamTile;
     if !is_tile_focused(tile) {
         focus_tile(tile);
         update_tile_focus_buttons(state);
     }
     show_tile_overlay(tile);
-
-    G_SOURCE_REMOVE
-}
-
-unsafe fn schedule_video_fullscreen_focus(tile: *mut StreamTile) {
-    let state = (*tile).app;
-
-    remove_source_if_active(&mut (*state).video_fullscreen_focus_source);
-    (*state).video_fullscreen_pending_tile = (*tile).index;
-    (*state).video_fullscreen_focus_source = g_timeout_add(
-        50,
-        Some(apply_pending_video_fullscreen_focus),
-        state as *mut c_void,
-    );
 }
 
 unsafe fn restore_video_fullscreen_layout(state: *mut GridAppState, tile: *mut StreamTile) {
@@ -1723,7 +1716,6 @@ unsafe fn restore_video_fullscreen_layout(state: *mut GridAppState, tile: *mut S
         && (*state).video_fullscreen_restore_tile_focused != 0;
     let restore_focused_tile = (*state).video_fullscreen_restore_focused_tile;
 
-    remove_source_if_active(&mut (*state).video_fullscreen_focus_source);
     (*state).video_fullscreen_active = FALSE;
 
     if restore_tile_focused
@@ -1772,13 +1764,13 @@ unsafe fn request_tile_fullscreen_toggle(tile: *mut StreamTile) {
     (*state).video_fullscreen_restore_focused_tile = (*state).focused_tile;
     (*state).video_fullscreen_active = TRUE;
 
+    apply_video_fullscreen_focus(tile);
+
     if (*state).fullscreen == 0 {
         if let Some(callback) = (*state).fullscreen_callback {
             callback((*state).fullscreen_user_data);
         }
     }
-
-    schedule_video_fullscreen_focus(tile);
 }
 
 unsafe extern "C" fn on_tile_focus_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
@@ -2477,7 +2469,6 @@ pub unsafe fn grid_player_free(player: *mut GridAppState) {
 
     remove_source_if_active(&mut (*state).footer_hide_source);
     remove_source_if_active(&mut (*state).title_refresh_source);
-    remove_source_if_active(&mut (*state).video_fullscreen_focus_source);
 
     for i in 0..MAX_TILES {
         let tile = &mut (*state).tiles[i] as *mut StreamTile;
@@ -2637,17 +2628,22 @@ pub unsafe fn grid_player_take_first_session(player: *mut GridAppState) -> *mut 
         return ptr::null_mut();
     }
 
+    let primary_session = (*player).primary_session;
     for i in 0..MAX_TILES {
         let tile = &mut (*player).tiles[i] as *mut StreamTile;
         if player_session_is_playing((*tile).session) == 0 {
             continue;
         }
 
-        let session = (*tile).session;
-        clear_tile_render_context(tile);
-        player_session_set_wakeup_callback(session, None, ptr::null_mut());
-        (*tile).session = ptr::null_mut();
-        (*tile).owns_session = FALSE;
+        let session = detach_tile_session(tile);
+        if session != primary_session {
+            for primary_tile_index in 0..MAX_TILES {
+                let primary_tile = &mut (*player).tiles[primary_tile_index] as *mut StreamTile;
+                if (*primary_tile).session == primary_session {
+                    detach_tile_session(primary_tile);
+                }
+            }
+        }
         return session;
     }
 
@@ -2685,8 +2681,6 @@ pub unsafe fn grid_player_set_fullscreen(player: *mut GridAppState, fullscreen: 
         if fullscreen == 0 {
             if (*player).video_fullscreen_active != 0 {
                 restore_video_fullscreen_layout(player, ptr::null_mut());
-            } else {
-                remove_source_if_active(&mut (*player).video_fullscreen_focus_source);
             }
         }
     }

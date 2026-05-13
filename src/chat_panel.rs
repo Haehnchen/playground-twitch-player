@@ -41,11 +41,15 @@ pub struct ChatPanel {
 
 pub struct ChatPanelPrivate {
     scroller: *mut GtkWidget,
+    scroll_controller: *mut GtkEventController,
     view: *mut GtkWidget,
     buffer: *mut GtkTextBuffer,
+    adjustment: *mut GtkAdjustment,
     username_tags: *mut GHashTable,
     assets: *mut ChatAssets,
     reply_tag: *mut GtkTextTag,
+    scroll_handler: usize,
+    adjustment_changed_handler: usize,
     scroll_source: c_uint,
     scroll_state_source: c_uint,
     line_count: c_uint,
@@ -169,10 +173,14 @@ unsafe extern "C" {
         destroy_data: *mut c_void,
         connect_flags: c_int,
     ) -> usize;
+    fn g_signal_handler_disconnect(instance: *mut c_void, handler_id: usize);
     fn g_source_destroy(source: *mut GSource);
     fn g_str_equal(v1: *const c_void, v2: *const c_void) -> c_int;
     fn g_str_hash(v: *const c_void) -> c_uint;
     fn g_strdup(str: *const c_char) -> *mut c_char;
+
+    fn g_object_ref_sink(object: *mut c_void) -> *mut c_void;
+    fn g_object_unref(object: *mut c_void);
 
     fn gdk_rgba_parse(rgba: *mut GdkRGBA, spec: *const c_char) -> c_int;
     fn gtk_adjustment_get_page_size(adjustment: *mut GtkAdjustment) -> c_double;
@@ -352,6 +360,15 @@ unsafe fn remove_source_if_active(source_id: *mut c_uint) {
     *source_id = 0;
 }
 
+unsafe fn disconnect_signal_handler(instance: *mut c_void, handler_id: *mut usize) {
+    if instance.is_null() || *handler_id == 0 {
+        return;
+    }
+
+    g_signal_handler_disconnect(instance, *handler_id);
+    *handler_id = 0;
+}
+
 unsafe fn is_scrolled_to_bottom(panel: *mut ChatPanel) -> bool {
     let priv_ = (*panel).priv_;
     let adjustment =
@@ -362,6 +379,10 @@ unsafe fn is_scrolled_to_bottom(panel: *mut ChatPanel) -> bool {
 
 unsafe extern "C" fn scroll_to_end_idle(user_data: *mut c_void) -> c_int {
     let panel = user_data as *mut ChatPanel;
+    if panel.is_null() || (*panel).priv_.is_null() {
+        return G_SOURCE_REMOVE;
+    }
+
     let priv_ = (*panel).priv_;
 
     (*priv_).scroll_source = 0;
@@ -400,6 +421,10 @@ unsafe fn queue_scroll_to_end(panel: *mut ChatPanel) {
 
 unsafe extern "C" fn update_scroll_state_idle(user_data: *mut c_void) -> c_int {
     let panel = user_data as *mut ChatPanel;
+    if panel.is_null() || (*panel).priv_.is_null() {
+        return G_SOURCE_REMOVE;
+    }
+
     let priv_ = (*panel).priv_;
 
     (*priv_).scroll_state_source = 0;
@@ -431,6 +456,10 @@ unsafe extern "C" fn on_chat_scroll(
     user_data: *mut c_void,
 ) -> c_int {
     let panel = user_data as *mut ChatPanel;
+    if panel.is_null() || (*panel).priv_.is_null() {
+        return GDK_EVENT_PROPAGATE;
+    }
+
     let priv_ = (*panel).priv_;
 
     if dy < 0.0 {
@@ -447,8 +476,12 @@ unsafe extern "C" fn on_chat_adjustment_changed(
     user_data: *mut c_void,
 ) {
     let panel = user_data as *mut ChatPanel;
+    if panel.is_null() || (*panel).priv_.is_null() {
+        return;
+    }
 
-    if (*(*panel).priv_).follow_tail != 0 {
+    let priv_ = (*panel).priv_;
+    if (*priv_).closing == 0 && (*priv_).follow_tail != 0 {
         queue_scroll_to_end(panel);
     }
 }
@@ -639,11 +672,15 @@ unsafe extern "C" fn on_chat_line(line: *const TwitchChatLine, user_data: *mut c
 pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
     let priv_ = Box::into_raw(Box::new(ChatPanelPrivate {
         scroller: ptr::null_mut(),
+        scroll_controller: ptr::null_mut(),
         view: ptr::null_mut(),
         buffer: ptr::null_mut(),
+        adjustment: ptr::null_mut(),
         username_tags: ptr::null_mut(),
         assets: ptr::null_mut(),
         reply_tag: ptr::null_mut(),
+        scroll_handler: 0,
+        adjustment_changed_handler: 0,
         scroll_source: 0,
         scroll_state_source: 0,
         line_count: 0,
@@ -657,6 +694,7 @@ pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
     }));
 
     (*panel).widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    g_object_ref_sink((*panel).widget as *mut c_void);
     gtk_widget_add_css_class((*panel).widget, b"chat-panel\0".as_ptr() as *const c_char);
     gtk_widget_set_size_request((*panel).widget, width, -1);
     gtk_widget_set_vexpand((*panel).widget, 1);
@@ -676,7 +714,8 @@ pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
     gtk_box_append((*panel).widget as *mut GtkBox, (*priv_).scroller);
 
     let scroll_controller = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
-    g_signal_connect_data(
+    (*priv_).scroll_controller = scroll_controller;
+    (*priv_).scroll_handler = g_signal_connect_data(
         scroll_controller as *mut c_void,
         b"scroll\0".as_ptr() as *const c_char,
         on_chat_scroll as *const c_void,
@@ -721,7 +760,8 @@ pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
     let adjustment =
         gtk_scrolled_window_get_vadjustment((*priv_).scroller as *mut GtkScrolledWindow);
     if !adjustment.is_null() {
-        g_signal_connect_data(
+        (*priv_).adjustment = adjustment;
+        (*priv_).adjustment_changed_handler = g_signal_connect_data(
             adjustment as *mut c_void,
             b"changed\0".as_ptr() as *const c_char,
             on_chat_adjustment_changed as *const c_void,
@@ -768,6 +808,14 @@ pub unsafe fn chat_panel_free(panel: *mut ChatPanel) {
     if !(*panel).priv_.is_null() {
         let priv_ = (*panel).priv_;
 
+        disconnect_signal_handler(
+            (*priv_).adjustment as *mut c_void,
+            &mut (*priv_).adjustment_changed_handler,
+        );
+        disconnect_signal_handler(
+            (*priv_).scroll_controller as *mut c_void,
+            &mut (*priv_).scroll_handler,
+        );
         remove_source_if_active(&mut (*priv_).scroll_source);
         remove_source_if_active(&mut (*priv_).scroll_state_source);
 
@@ -778,7 +826,13 @@ pub unsafe fn chat_panel_free(panel: *mut ChatPanel) {
             chat_assets_free((*priv_).assets);
         }
 
+        (*panel).priv_ = ptr::null_mut();
         drop(Box::from_raw(priv_));
+    }
+
+    if !(*panel).widget.is_null() {
+        g_object_unref((*panel).widget as *mut c_void);
+        (*panel).widget = ptr::null_mut();
     }
 
     drop(Box::from_raw(panel));
