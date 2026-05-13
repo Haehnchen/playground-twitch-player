@@ -25,7 +25,7 @@ use crate::settings::{
 };
 use crate::settings_window::settings_window_show;
 use crate::single_player::{
-    single_player_dup_current_target, single_player_free, single_player_get_chat_paned_position,
+    single_player_dup_current_target, single_player_free, single_player_get_chat_width,
     single_player_get_widget, single_player_handle_key, single_player_new,
     single_player_set_fullscreen, single_player_set_settings, single_player_show_overlay,
     SinglePlayer,
@@ -98,7 +98,7 @@ struct AppState {
     grid_target_count: c_uint,
     single_target: *mut c_char,
     has_single_target_handoff: c_int,
-    single_chat_paned_position: c_int,
+    single_chat_width: c_int,
     content_mode: c_int,
     overlay_hide_source: c_uint,
     maximize_restore_source: c_uint,
@@ -852,8 +852,7 @@ unsafe fn capture_single_handoff(state: *mut AppState) {
     clear_single_target(state);
     (*state).single_target = single_player_dup_current_target((*state).single_player);
     (*state).has_single_target_handoff = TRUE;
-    (*state).single_chat_paned_position =
-        single_player_get_chat_paned_position((*state).single_player);
+    (*state).single_chat_width = single_player_get_chat_width((*state).single_player);
 }
 
 unsafe fn capture_grid_handoff(state: *mut AppState) {
@@ -894,7 +893,7 @@ unsafe fn create_single_content(state: *mut AppState) {
         (*state).primary_session,
         target,
         is_nonempty(target) as c_int,
-        (*state).single_chat_paned_position,
+        (*state).single_chat_width,
         Some(on_content_fullscreen_requested),
         state as *mut c_void,
         Some(on_content_settings_requested),
@@ -1632,7 +1631,7 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         },
         single_target: ptr::null_mut(),
         has_single_target_handoff: FALSE,
-        single_chat_paned_position: 0,
+        single_chat_width: 0,
         content_mode: CONTENT_MODE_SINGLE,
         overlay_hide_source: 0,
         maximize_restore_source: 0,

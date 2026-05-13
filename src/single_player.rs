@@ -159,6 +159,11 @@ struct GObject {
 }
 
 #[repr(C)]
+struct GParamSpec {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 struct GSource {
     _private: [u8; 0],
 }
@@ -301,7 +306,8 @@ pub struct SinglePlayer {
     title_cancel: *mut GCancellable,
     stream_info: *mut PlayerFooterStreamInfo,
     stream_quality: PlayerStreamQualityState,
-    chat_paned_position: c_int,
+    chat_width: c_int,
+    last_chat_paned_width: c_int,
     last_render_width: c_int,
     last_render_height: c_int,
     render_queued: c_int,
@@ -613,21 +619,58 @@ fn clamp_chat_paned_position(position: c_int, width: c_int) -> c_int {
     position.clamp(min_position, max_position)
 }
 
-fn get_default_chat_paned_position(width: c_int) -> c_int {
+fn get_default_chat_width() -> c_int {
+    DEFAULT_CHAT_WIDTH
+}
+
+fn get_chat_width_for_position(width: c_int, position: c_int) -> c_int {
+    if width > 1 && position > 0 {
+        (width - position).max(MIN_CHAT_WIDTH)
+    } else {
+        get_default_chat_width()
+    }
+}
+
+fn get_chat_paned_position_for_width(chat_width: c_int, width: c_int) -> c_int {
+    // Store chat width as the stable value; GtkPaned still needs a left-side divider position.
+    let chat_width = if chat_width > 0 {
+        chat_width
+    } else {
+        get_default_chat_width()
+    };
+
     if width > 1 {
-        width - DEFAULT_CHAT_WIDTH
+        clamp_chat_paned_position(width - chat_width, width)
     } else {
         0
     }
 }
 
-unsafe fn get_chat_paned_position_for_width(state: *mut SinglePlayer, width: c_int) -> c_int {
-    let position = if (*state).chat_paned_position > 0 {
-        (*state).chat_paned_position
-    } else {
-        get_default_chat_paned_position(width)
-    };
-    clamp_chat_paned_position(position, width)
+unsafe fn capture_chat_width_from_paned(state: *mut SinglePlayer) {
+    if (*state).chat_visible == 0 || !is_instance((*state).main_area, gtk_paned_get_type()) {
+        return;
+    }
+
+    // Persist the end pane width, not the divider position, so window resizes keep chat fixed.
+    let width = gtk_widget_get_width((*state).main_area);
+    let position = gtk_paned_get_position((*state).main_area as *mut GtkPaned);
+    if width > 1 && position > 0 {
+        (*state).chat_width = get_chat_width_for_position(width, position);
+    }
+}
+
+unsafe fn apply_stored_chat_width(state: *mut SinglePlayer, width: c_int) {
+    // Recompute the divider after fullscreen/window size changes so the end pane does not scale.
+    let position = get_chat_paned_position_for_width((*state).chat_width, width);
+    gtk_paned_set_position((*state).main_area as *mut GtkPaned, position);
+    (*state).last_chat_paned_width = width;
+}
+
+unsafe fn queue_chat_position_update(state: *mut SinglePlayer) {
+    if (*state).chat_position_source == 0 {
+        (*state).chat_position_source =
+            g_timeout_add(50, Some(apply_chat_position), state as *mut c_void);
+    }
 }
 
 unsafe extern "C" fn apply_chat_position(user_data: *mut c_void) -> c_int {
@@ -643,14 +686,34 @@ unsafe extern "C" fn apply_chat_position(user_data: *mut c_void) -> c_int {
         return G_SOURCE_CONTINUE;
     }
 
-    (*state).chat_paned_position = get_chat_paned_position_for_width(state, width);
-    gtk_paned_set_position(
-        (*state).main_area as *mut GtkPaned,
-        (*state).chat_paned_position,
-    );
+    apply_stored_chat_width(state, width);
     (*state).chat_position_source = 0;
 
     G_SOURCE_REMOVE
+}
+
+unsafe extern "C" fn on_chat_paned_layout_changed(
+    _paned: *mut GtkPaned,
+    _pspec: *mut GParamSpec,
+    user_data: *mut c_void,
+) {
+    let state = user_data as *mut SinglePlayer;
+    if (*state).closing != 0 || (*state).chat_visible == 0 || (*state).main_area.is_null() {
+        return;
+    }
+
+    let width = gtk_widget_get_width((*state).main_area);
+    if width <= 1 {
+        return;
+    }
+
+    if width != (*state).last_chat_paned_width {
+        // Parent resize/fullscreen: keep the remembered chat width, move only the divider.
+        apply_stored_chat_width(state, width);
+    } else {
+        // Same parent width means the user moved the divider; remember the new chat width.
+        capture_chat_width_from_paned(state);
+    }
 }
 
 unsafe fn set_status(state: *mut SinglePlayer, message: *const c_char) {
@@ -1343,21 +1406,13 @@ unsafe fn set_chat_visible(state: *mut SinglePlayer, visible: c_int) {
         );
         let width = gtk_widget_get_width((*state).main_area);
         if width > 1 {
-            (*state).chat_paned_position = get_chat_paned_position_for_width(state, width);
-            gtk_paned_set_position(
-                (*state).main_area as *mut GtkPaned,
-                (*state).chat_paned_position,
-            );
-        } else if (*state).chat_position_source == 0 {
-            (*state).chat_position_source =
-                g_timeout_add(50, Some(apply_chat_position), state as *mut c_void);
+            apply_stored_chat_width(state, width);
+        } else {
+            queue_chat_position_update(state);
         }
     } else {
         remove_source_if_active(&mut (*state).chat_position_source);
-        let position = gtk_paned_get_position((*state).main_area as *mut GtkPaned);
-        if position > 0 {
-            (*state).chat_paned_position = position;
-        }
+        capture_chat_width_from_paned(state);
         (*state).chat_visible = FALSE;
         gtk_paned_set_end_child((*state).main_area as *mut GtkPaned, ptr::null_mut());
     }
@@ -2058,10 +2113,7 @@ unsafe fn single_player_destroy(state: *mut SinglePlayer) {
     (*state).session = ptr::null_mut();
 
     if is_instance((*state).main_area, gtk_paned_get_type()) {
-        let position = gtk_paned_get_position((*state).main_area as *mut GtkPaned);
-        if position > 0 {
-            (*state).chat_paned_position = position;
-        }
+        capture_chat_width_from_paned(state);
         gtk_paned_set_end_child((*state).main_area as *mut GtkPaned, ptr::null_mut());
     }
 
@@ -2104,7 +2156,7 @@ pub unsafe fn single_player_new<W>(
     session: *mut PlayerSession,
     startup_target: *const c_char,
     auto_start: c_int,
-    chat_paned_position: c_int,
+    chat_width: c_int,
     fullscreen_callback: SinglePlayerFullscreenCallback,
     fullscreen_user_data: *mut c_void,
     settings_callback: SinglePlayerSettingsCallback,
@@ -2138,7 +2190,12 @@ pub unsafe fn single_player_new<W>(
         title_cancel: ptr::null_mut(),
         stream_info: ptr::null_mut(),
         stream_quality: PlayerStreamQualityState::new(),
-        chat_paned_position,
+        chat_width: if chat_width > 0 {
+            chat_width
+        } else {
+            get_default_chat_width()
+        },
+        last_chat_paned_width: 0,
         last_render_width: 0,
         last_render_height: 0,
         render_queued: 0,
@@ -2184,6 +2241,22 @@ pub unsafe fn single_player_new<W>(
     gtk_paned_set_shrink_start_child((*state).main_area as *mut GtkPaned, FALSE);
     gtk_paned_set_resize_end_child((*state).main_area as *mut GtkPaned, FALSE);
     gtk_paned_set_shrink_end_child((*state).main_area as *mut GtkPaned, FALSE);
+    g_signal_connect_data(
+        (*state).main_area as *mut c_void,
+        cstr!("notify::position"),
+        on_chat_paned_layout_changed as *const c_void,
+        state as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
+    g_signal_connect_data(
+        (*state).main_area as *mut c_void,
+        cstr!("notify::max-position"),
+        on_chat_paned_layout_changed as *const c_void,
+        state as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
 
     (*state).gl_area = gtk_gl_area_new();
     add_weak_pointer((*state).gl_area, &mut (*state).gl_area);
@@ -2381,24 +2454,23 @@ pub unsafe fn single_player_dup_current_target(player: *mut SinglePlayer) -> *mu
     player_session_dup_url((*player).session)
 }
 
-pub unsafe fn single_player_get_chat_paned_position(player: *mut SinglePlayer) -> c_int {
+pub unsafe fn single_player_get_chat_width(player: *mut SinglePlayer) -> c_int {
     if player.is_null() {
         return 0;
     }
 
-    if is_instance((*player).main_area, gtk_paned_get_type()) {
-        let position = gtk_paned_get_position((*player).main_area as *mut GtkPaned);
-        if position > 0 {
-            (*player).chat_paned_position = position;
-        }
-    }
+    capture_chat_width_from_paned(player);
 
-    (*player).chat_paned_position
+    (*player).chat_width
 }
 
 pub unsafe fn single_player_set_fullscreen(player: *mut SinglePlayer, fullscreen: c_int) {
     if !player.is_null() {
+        capture_chat_width_from_paned(player);
         (*player).fullscreen = fullscreen;
+        if (*player).chat_visible != 0 {
+            queue_chat_position_update(player);
+        }
     }
 }
 
@@ -2449,6 +2521,14 @@ pub unsafe fn single_player_set_settings(player: *mut SinglePlayer, settings: *m
     g_free(current_channel as *mut c_void);
     update_stream_combo_label(player);
     show_footer(player);
+}
+
+pub fn single_player_test_chat_width_for_position(width: c_int, position: c_int) -> c_int {
+    get_chat_width_for_position(width, position)
+}
+
+pub fn single_player_test_chat_position_for_width(chat_width: c_int, width: c_int) -> c_int {
+    get_chat_paned_position_for_width(chat_width, width)
 }
 
 pub unsafe fn single_player_free(player: *mut SinglePlayer) {
