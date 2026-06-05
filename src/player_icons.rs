@@ -9,7 +9,7 @@ const CAIRO_LINE_JOIN_ROUND: c_int = 1;
 const PLAYER_WINDOW_ICON_MINIMIZE: c_int = 0;
 const PLAYER_WINDOW_ICON_FULLSCREEN: c_int = 1;
 const PLAYER_LAYOUT_ICON_SINGLE: c_int = 0;
-const PLAYER_CHAT_ICON_OPEN: c_int = 0;
+const PLAYER_CHAT_ICON_CLOSE: c_int = 1;
 const PLAYER_VOLUME_ICON_MUTED: c_int = 1;
 const PLAYER_TILE_FOCUS_ICON_EXPAND: c_int = 0;
 
@@ -394,25 +394,23 @@ unsafe extern "C" fn draw_chat_icon(
         cairo_fill(cr);
     }
 
-    let badge_x = x + size * 0.68;
-    let badge_y = y + size * 0.62;
-    let badge_r = size * 0.20;
+    if kind == PLAYER_CHAT_ICON_CLOSE {
+        let badge_x = x + size * 0.68;
+        let badge_y = y + size * 0.62;
+        let badge_r = size * 0.20;
 
-    cairo_set_source_rgba(cr, 0.05, 0.05, 0.05, 0.95);
-    cairo_arc(cr, badge_x, badge_y, badge_r, 0.0, 2.0 * PI);
-    cairo_fill_preserve(cr);
+        cairo_set_source_rgba(cr, 0.05, 0.05, 0.05, 0.95);
+        cairo_arc(cr, badge_x, badge_y, badge_r, 0.0, 2.0 * PI);
+        cairo_fill_preserve(cr);
 
-    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
-    cairo_set_line_width(cr, 1.7_f64.max(size * 0.08));
-    cairo_stroke(cr);
+        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
+        cairo_set_line_width(cr, 1.7_f64.max(size * 0.08));
+        cairo_stroke(cr);
 
-    cairo_move_to(cr, badge_x - badge_r * 0.48, badge_y);
-    cairo_line_to(cr, badge_x + badge_r * 0.48, badge_y);
-    if kind == PLAYER_CHAT_ICON_OPEN {
-        cairo_move_to(cr, badge_x, badge_y - badge_r * 0.48);
-        cairo_line_to(cr, badge_x, badge_y + badge_r * 0.48);
+        cairo_move_to(cr, badge_x - badge_r * 0.48, badge_y);
+        cairo_line_to(cr, badge_x + badge_r * 0.48, badge_y);
+        cairo_stroke(cr);
     }
-    cairo_stroke(cr);
 }
 
 unsafe extern "C" fn draw_volume_icon(
