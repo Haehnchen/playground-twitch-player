@@ -56,21 +56,15 @@ const FOOTER_CSS: &str = r#"
   outline-color: transparent;
   box-shadow: none;
   color: rgba(255, 255, 255, 0.88);
-  min-width: 26px;
-  min-height: 24px;
-  padding: 4px 5px;
+  min-width: 24px;
+  min-height: 22px;
+  padding: 2px 3px;
 }
 .player-footer .overlay-icon-button:hover,
 .player-footer button.overlay-icon-button:hover {
   background: rgba(255, 255, 255, 0.14);
   background-image: none;
   color: white;
-}
-.player-footer .player-refresh-button,
-.player-footer button.player-refresh-button {
-  min-width: 20px;
-  min-height: 22px;
-  padding: 3px;
 }
 .player-footer .volume-mute-button {
   margin-right: 0;

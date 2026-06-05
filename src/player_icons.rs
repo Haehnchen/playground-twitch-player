@@ -427,42 +427,44 @@ unsafe extern "C" fn draw_volume_icon(
     let x = (width as f64 - size) / 2.0;
     let y = (height as f64 - size) / 2.0;
     let left = x + size * 0.06;
-    let right = x + size * 0.58;
-    let top = y + size * 0.20;
-    let bottom = y + size * 0.80;
-    let body_right = x + size * 0.31;
+    let right = x + size * 0.60;
+    let top = y + size * 0.12;
+    let bottom = y + size * 0.88;
+    let body_right = x + size * 0.34;
+    let body_top = y + size * 0.28;
+    let body_bottom = y + size * 0.72;
     let center_y = y + size * 0.50;
 
     cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.94);
-    cairo_set_line_width(cr, 1.8_f64.max(size * 0.11));
+    cairo_set_line_width(cr, 1.5_f64.max(size * 0.095));
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
 
-    cairo_move_to(cr, left, y + size * 0.37);
-    cairo_line_to(cr, body_right, y + size * 0.37);
+    cairo_move_to(cr, left, body_top);
+    cairo_line_to(cr, body_right, body_top);
     cairo_line_to(cr, right, top);
     cairo_line_to(cr, right, bottom);
-    cairo_line_to(cr, body_right, y + size * 0.63);
-    cairo_line_to(cr, left, y + size * 0.63);
+    cairo_line_to(cr, body_right, body_bottom);
+    cairo_line_to(cr, left, body_bottom);
     cairo_close_path(cr);
     cairo_stroke(cr);
 
     if kind == PLAYER_VOLUME_ICON_MUTED {
         let cx = x + size * 0.80;
         let cy = center_y;
-        let mark = size * 0.17;
+        let mark = size * 0.22;
 
-        cairo_set_line_width(cr, 1.8_f64.max(size * 0.11));
+        cairo_set_line_width(cr, 1.5_f64.max(size * 0.095));
         cairo_move_to(cr, cx - mark, cy - mark);
         cairo_line_to(cr, cx + mark, cy + mark);
         cairo_move_to(cr, cx + mark, cy - mark);
         cairo_line_to(cr, cx - mark, cy + mark);
     } else {
-        cairo_set_line_width(cr, 1.6_f64.max(size * 0.10));
+        cairo_set_line_width(cr, 1.35_f64.max(size * 0.085));
         cairo_new_sub_path(cr);
-        cairo_arc(cr, x + size * 0.56, center_y, size * 0.23, -0.68, 0.68);
+        cairo_arc(cr, x + size * 0.52, center_y, size * 0.29, -0.82, 0.82);
         cairo_new_sub_path(cr);
-        cairo_arc(cr, x + size * 0.56, center_y, size * 0.39, -0.62, 0.62);
+        cairo_arc(cr, x + size * 0.51, center_y, size * 0.46, -0.73, 0.73);
     }
 
     cairo_stroke(cr);
