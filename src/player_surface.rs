@@ -9,13 +9,16 @@ use crate::channel_switcher_overlay::{
     channel_switcher_overlay_new, channel_switcher_overlay_set_settings,
     channel_switcher_overlay_show_at, ChannelSwitcherOverlay,
 };
+use crate::chat_panel::{
+    chat_panel_free, chat_panel_get_widget, chat_panel_new, chat_panel_start, ChatPanel,
+};
 use crate::player_footer::{
     player_footer_stream_info_free, player_footer_stream_info_get_widget,
     player_footer_stream_info_new, player_footer_stream_info_set, PlayerFooterStreamInfo,
 };
 use crate::player_icons::{
-    player_plus_icon_new, player_refresh_icon_new, player_stream_settings_icon_new,
-    player_tile_focus_icon_new, player_trash_icon_new,
+    player_chat_icon_new, player_plus_icon_new, player_refresh_icon_new,
+    player_stream_settings_icon_new, player_tile_focus_icon_new, player_trash_icon_new,
 };
 use crate::player_motion::{player_motion_tracker_ignore_stationary, PlayerMotionTracker};
 use crate::player_overlay_controls::player_overlay_button_new;
@@ -64,8 +67,13 @@ const MAX_TILES: usize = 4;
 const MPV_MAINLOOP_PRIORITY: c_int = -100;
 const STREAM_TITLE_REFRESH_SECONDS: c_uint = 3 * 60;
 const STREAM_QUALITY_CACHE_SECONDS: c_uint = 2 * 60;
-const GRID_CHANNEL_DROPDOWN_WIDTH: c_int = 119;
-const GRID_VOLUME_SCALE_WIDTH: c_int = 82;
+const STREAM_DROPDOWN_WIDTH: c_int = 140;
+const PLAYER_VOLUME_SCALE_WIDTH: c_int = 96;
+const DEFAULT_CHAT_WIDTH: c_int = 220;
+const MIN_CHAT_WIDTH: c_int = 120;
+const MAX_CHAT_WIDTH: c_int = 280;
+const MIN_VIDEO_WIDTH: c_int = 180;
+const MAX_CHAT_WIDTH_PERCENT: c_int = 45;
 
 const FALSE: c_int = 0;
 const TRUE: c_int = 1;
@@ -74,7 +82,7 @@ const G_SOURCE_CONTINUE: c_int = 1;
 const G_IO_ERROR_CANCELLED: c_int = 19;
 const G_LOG_LEVEL_DEBUG: c_int = 1 << 7;
 const G_LOG_LEVEL_WARNING: c_int = 1 << 4;
-const G_LOG_DOMAIN: &[u8] = b"twitch-player-grid\0";
+const G_LOG_DOMAIN: &[u8] = b"twitch-player-surface\0";
 
 const GTK_ALIGN_FILL: c_int = 0;
 const GTK_ALIGN_START: c_int = 1;
@@ -94,6 +102,9 @@ const GDK_MOTION_NOTIFY: c_int = 1;
 const GDK_BUTTON_PRESS: c_int = 2;
 const GDK_BUTTON_RELEASE: c_int = 3;
 const GDK_BUTTON1_MASK: c_uint = 1 << 8;
+const GDK_CONTROL_MASK: c_uint = 1 << 2;
+const GDK_KEY_M_UPPER: c_uint = 0x04d;
+const GDK_KEY_M_LOWER: c_uint = 0x06d;
 
 const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 const GL_FRAMEBUFFER_BINDING: c_uint = 0x8CA6;
@@ -117,6 +128,8 @@ const MPV_RENDER_UPDATE_FRAME: u64 = 1 << 0;
 const PANGO_ELLIPSIZE_END: c_int = 3;
 const PLAYER_TILE_FOCUS_ICON_EXPAND: c_int = 0;
 const PLAYER_TILE_FOCUS_ICON_RESTORE: c_int = 1;
+const PLAYER_CHAT_ICON_OPEN: c_int = 0;
+const PLAYER_CHAT_ICON_CLOSE: c_int = 1;
 const PLAYER_EMPTY_STREAM_LABEL: *const c_char = cstr!("Select");
 const PLAYER_STARTING_STREAM_STATUS: *const c_char = cstr!("Starting stream");
 const PLAYER_VOLUME_MIN: c_double = 0.0;
@@ -139,14 +152,29 @@ const GRID_CSS: &str = concat!(
     ".tile-top {",
     "  border-bottom: 1px solid rgba(255, 255, 255, 0.12);",
     "}",
+    ".tile-container.single-template {",
+    "  border-right: none;",
+    "  border-bottom: none;",
+    "}",
+    "paned.tile-container > separator,",
+    "paned.tile-container > separator.wide,",
+    ".tile-container separator,",
+    ".tile-container separator.wide {",
+    "  background: transparent;",
+    "  background-image: none;",
+    "  border: none;",
+    "  outline: none;",
+    "  box-shadow: none;",
+    "  min-width: 1px;",
+    "}",
     ".tile-footer {",
-    "  background: rgba(0, 0, 0, 0.62);",
+    "  background: rgba(0, 0, 0, 0.58);",
     "  color: white;",
     "  padding: 4px 6px;",
     "}",
     ".tile-footer .stream-info-labels {",
     "  margin-left: 2px;",
-    "  margin-right: 2px;",
+    "  margin-right: 4px;",
     "}",
     ".tile-footer button,",
     ".tile-footer menubutton,",
@@ -169,11 +197,11 @@ const GRID_CSS: &str = concat!(
     "  background: rgba(54, 54, 54, 0.90);",
     "}",
     ".channel-dropdown {",
-    "  min-width: 119px;",
+    "  min-width: 140px;",
     "  min-height: 24px;",
     "}",
     ".channel-selector {",
-    "  min-width: 119px;",
+    "  min-width: 140px;",
     "}",
     ".channel-dropdown,",
     ".channel-dropdown > button {",
@@ -270,6 +298,11 @@ struct GdkToplevel {
 
 #[repr(C)]
 struct GObject {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct GParamSpec {
     _private: [u8; 0],
 }
 
@@ -374,6 +407,11 @@ struct GtkOverlay {
 }
 
 #[repr(C)]
+struct GtkPaned {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 struct GtkPopover {
     _private: [u8; 0],
 }
@@ -409,7 +447,7 @@ struct MpvRenderContext {
 }
 
 struct StreamTile {
-    app: *mut GridAppState,
+    app: *mut PlayerSurface,
     index: c_uint,
     label: *mut c_char,
     channel: *mut c_char,
@@ -423,6 +461,7 @@ struct StreamTile {
     close_button: *mut GtkWidget,
     empty_label: *mut GtkWidget,
     focus_button: *mut GtkWidget,
+    chat_toggle_button: *mut GtkWidget,
     stream_info_button: *mut GtkWidget,
     mute_button: *mut GtkWidget,
     volume_scale: *mut GtkWidget,
@@ -430,6 +469,7 @@ struct StreamTile {
     quality_list_box: *mut GtkWidget,
     quality_status_label: *mut GtkWidget,
     channel_switcher: *mut ChannelSwitcherOverlay,
+    chat_panel: *mut ChatPanel,
     session: *mut PlayerSession,
     title_cancel: *mut GCancellable,
     stream_info: *mut PlayerFooterStreamInfo,
@@ -442,11 +482,15 @@ struct StreamTile {
     render_warmup_source: c_uint,
     title_generation: c_uint,
     render_warmup_frames: c_int,
+    chat_width: c_int,
+    last_chat_paned_width: c_int,
+    chat_position_source: c_uint,
+    chat_visible: c_int,
     owns_session: c_int,
     title_fetch_in_progress: c_int,
 }
 
-pub struct GridAppState {
+pub struct PlayerSurface {
     targets: [*mut c_char; MAX_TILES],
     target_count: c_uint,
     window: *mut GtkWidget,
@@ -462,9 +506,9 @@ pub struct GridAppState {
     title_refresh_source: c_uint,
     focused_tile: c_uint,
     motion_tracker: PlayerMotionTracker,
-    fullscreen_callback: GridPlayerFullscreenCallback,
+    fullscreen_callback: PlayerSurfaceFullscreenCallback,
     fullscreen_user_data: *mut c_void,
-    settings_callback: GridPlayerSettingsCallback,
+    settings_callback: PlayerSurfaceSettingsCallback,
     settings_user_data: *mut c_void,
     move_press_x: c_double,
     move_press_y: c_double,
@@ -472,6 +516,8 @@ pub struct GridAppState {
     closing: c_int,
     fullscreen: c_int,
     tile_focused: c_int,
+    single_template_active: c_int,
+    single_template_tile: c_uint,
     video_fullscreen_active: c_int,
     video_fullscreen_restore_app_fullscreen: c_int,
     video_fullscreen_restore_tile_focused: c_int,
@@ -536,8 +582,8 @@ struct MpvRenderParam {
 
 type GSourceFunc = unsafe extern "C" fn(*mut c_void) -> c_int;
 type GType = usize;
-pub type GridPlayerFullscreenCallback = Option<unsafe extern "C" fn(*mut c_void)>;
-pub type GridPlayerSettingsCallback = Option<unsafe extern "C" fn(*mut c_void)>;
+pub type PlayerSurfaceFullscreenCallback = Option<unsafe extern "C" fn(*mut c_void)>;
+pub type PlayerSurfaceSettingsCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 
 unsafe extern "C" {
     static epoxy_eglGetProcAddress: unsafe extern "C" fn(*const c_char) -> *mut c_void;
@@ -653,6 +699,16 @@ unsafe extern "C" {
     fn gtk_overlay_add_overlay(overlay: *mut GtkOverlay, widget: *mut GtkWidget);
     fn gtk_overlay_new() -> *mut GtkWidget;
     fn gtk_overlay_set_child(overlay: *mut GtkOverlay, child: *mut GtkWidget);
+    fn gtk_paned_get_position(paned: *mut GtkPaned) -> c_int;
+    fn gtk_paned_new(orientation: c_int) -> *mut GtkWidget;
+    fn gtk_paned_set_end_child(paned: *mut GtkPaned, child: *mut GtkWidget);
+    fn gtk_paned_set_position(paned: *mut GtkPaned, position: c_int);
+    fn gtk_paned_set_resize_end_child(paned: *mut GtkPaned, resize: c_int);
+    fn gtk_paned_set_resize_start_child(paned: *mut GtkPaned, resize: c_int);
+    fn gtk_paned_set_shrink_end_child(paned: *mut GtkPaned, resize: c_int);
+    fn gtk_paned_set_shrink_start_child(paned: *mut GtkPaned, resize: c_int);
+    fn gtk_paned_set_start_child(paned: *mut GtkPaned, child: *mut GtkWidget);
+    fn gtk_paned_set_wide_handle(paned: *mut GtkPaned, wide: c_int);
     fn gtk_popover_popdown(popover: *mut GtkPopover);
     fn gtk_popover_popup(popover: *mut GtkPopover);
     fn gtk_range_set_value(range: *mut GtkRange, value: c_double);
@@ -678,6 +734,7 @@ unsafe extern "C" {
     fn gtk_widget_get_sensitive(widget: *mut GtkWidget) -> c_int;
     fn gtk_widget_get_visible(widget: *mut GtkWidget) -> c_int;
     fn gtk_widget_get_width(widget: *mut GtkWidget) -> c_int;
+    fn gtk_widget_remove_css_class(widget: *mut GtkWidget, css_class: *const c_char);
     fn gtk_widget_set_halign(widget: *mut GtkWidget, align: c_int);
     fn gtk_widget_set_hexpand(widget: *mut GtkWidget, expand: c_int);
     fn gtk_widget_set_margin_end(widget: *mut GtkWidget, margin: c_int);
@@ -744,7 +801,66 @@ unsafe fn log_warning(format: *const c_char, message: *const c_char) {
     );
 }
 
-fn grid_player_fullscreen_should_restore(
+fn get_default_chat_width() -> c_int {
+    DEFAULT_CHAT_WIDTH
+}
+
+fn get_max_chat_width_for_pane(width: c_int) -> c_int {
+    if width <= 1 {
+        return get_default_chat_width();
+    }
+
+    // Tile chat must never take over the whole tile; keep video readable in 2x2.
+    let by_fraction = (width * MAX_CHAT_WIDTH_PERCENT / 100).max(1);
+    let by_video = (width - MIN_VIDEO_WIDTH).max(1);
+
+    MAX_CHAT_WIDTH.min(by_fraction).min(by_video).max(1)
+}
+
+fn clamp_chat_width_for_pane(width: c_int, chat_width: c_int) -> c_int {
+    if width <= 1 {
+        return if chat_width > 0 {
+            chat_width.min(MAX_CHAT_WIDTH)
+        } else {
+            get_default_chat_width()
+        };
+    }
+
+    let max_width = get_max_chat_width_for_pane(width);
+    let min_width = MIN_CHAT_WIDTH.min(max_width);
+    let preferred = if chat_width > 0 {
+        chat_width
+    } else {
+        get_default_chat_width()
+    };
+
+    preferred.clamp(min_width, max_width)
+}
+
+fn get_chat_width_for_position(width: c_int, position: c_int) -> c_int {
+    if width > 1 && position > 0 {
+        clamp_chat_width_for_pane(width, width - position)
+    } else {
+        get_default_chat_width()
+    }
+}
+
+fn get_chat_paned_position_for_width(chat_width: c_int, width: c_int) -> c_int {
+    let chat_width = if chat_width > 0 {
+        chat_width
+    } else {
+        get_default_chat_width()
+    };
+
+    if width > 1 {
+        // GtkPaned stores divider position from the video side; we store chat width instead.
+        width - clamp_chat_width_for_pane(width, chat_width)
+    } else {
+        0
+    }
+}
+
+fn player_surface_fullscreen_should_restore(
     video_fullscreen_active: c_int,
     app_fullscreen: c_int,
     tile_focused: c_int,
@@ -755,7 +871,7 @@ fn grid_player_fullscreen_should_restore(
         || (app_fullscreen != 0 && tile_focused != 0 && focused_tile == tile_index)
 }
 
-fn grid_player_fullscreen_should_exit_app(
+fn player_surface_fullscreen_should_exit_app(
     app_fullscreen: c_int,
     video_fullscreen_active: c_int,
     restore_app_fullscreen: c_int,
@@ -763,14 +879,14 @@ fn grid_player_fullscreen_should_exit_app(
     app_fullscreen != 0 && (video_fullscreen_active == 0 || restore_app_fullscreen == 0)
 }
 
-pub fn grid_player_test_fullscreen_should_restore(
+pub fn player_surface_test_fullscreen_should_restore(
     video_fullscreen_active: c_int,
     app_fullscreen: c_int,
     tile_focused: c_int,
     focused_tile: c_uint,
     tile_index: c_uint,
 ) -> c_int {
-    grid_player_fullscreen_should_restore(
+    player_surface_fullscreen_should_restore(
         video_fullscreen_active,
         app_fullscreen,
         tile_focused,
@@ -779,16 +895,24 @@ pub fn grid_player_test_fullscreen_should_restore(
     ) as c_int
 }
 
-pub fn grid_player_test_fullscreen_should_exit_app(
+pub fn player_surface_test_fullscreen_should_exit_app(
     app_fullscreen: c_int,
     video_fullscreen_active: c_int,
     restore_app_fullscreen: c_int,
 ) -> c_int {
-    grid_player_fullscreen_should_exit_app(
+    player_surface_fullscreen_should_exit_app(
         app_fullscreen,
         video_fullscreen_active,
         restore_app_fullscreen,
     ) as c_int
+}
+
+pub fn player_surface_test_chat_width_for_position(width: c_int, position: c_int) -> c_int {
+    get_chat_width_for_position(width, position)
+}
+
+pub fn player_surface_test_chat_position_for_width(chat_width: c_int, width: c_int) -> c_int {
+    get_chat_paned_position_for_width(chat_width, width)
 }
 
 unsafe fn tile_mpv(tile: *mut StreamTile) -> *mut MpvHandle {
@@ -820,11 +944,15 @@ unsafe extern "C" fn queue_mpv_render(user_data: *mut c_void) -> c_int {
 
     g_atomic_int_set(&mut (*tile).render_queued, 0);
 
+    queue_tile_render(tile);
+
+    G_SOURCE_REMOVE
+}
+
+unsafe fn queue_tile_render(tile: *mut StreamTile) {
     if (*(*tile).app).closing == 0 && !(*tile).gl_area.is_null() {
         gtk_gl_area_queue_render((*tile).gl_area as *mut GtkGLArea);
     }
-
-    G_SOURCE_REMOVE
 }
 
 unsafe extern "C" fn warmup_tile_render(user_data: *mut c_void) -> c_int {
@@ -1009,6 +1137,7 @@ unsafe fn reload_tile_stream_with_quality(
         (*tile).channel,
     );
     update_tile_empty_state(tile);
+    sync_chat_for_tile(tile);
     request_tile_title_update(tile, TRUE);
 }
 
@@ -1049,7 +1178,7 @@ unsafe extern "C" fn on_tile_title_fetched(
             g_log(
                 G_LOG_DOMAIN.as_ptr() as *const c_char,
                 G_LOG_LEVEL_DEBUG,
-                cstr!("grid stream title fetch failed: %s"),
+                cstr!("surface stream title fetch failed: %s"),
                 (*error).message,
             );
         }
@@ -1100,8 +1229,8 @@ unsafe fn request_tile_title_update(tile: *mut StreamTile, force: c_int) {
     );
 }
 
-unsafe extern "C" fn refresh_grid_stream_titles(user_data: *mut c_void) -> c_int {
-    let state = user_data as *mut GridAppState;
+unsafe extern "C" fn refresh_surface_stream_titles(user_data: *mut c_void) -> c_int {
+    let state = user_data as *mut PlayerSurface;
 
     if (*state).closing != 0 {
         (*state).title_refresh_source = 0;
@@ -1180,11 +1309,184 @@ unsafe fn update_tile_empty_state(tile: *mut StreamTile) {
             (has_stream != 0 && player_session_is_ready((*tile).session) != 0) as c_int,
         );
     }
+    if !(*tile).chat_toggle_button.is_null() {
+        gtk_widget_set_sensitive((*tile).chat_toggle_button, has_stream);
+    }
     if !(*tile).channel_refresh_button.is_null() {
         gtk_widget_set_visible((*tile).channel_refresh_button, has_stream);
     }
 
     update_tile_channel_label(tile);
+}
+
+unsafe fn update_chat_button(tile: *mut StreamTile) {
+    if (*tile).chat_toggle_button.is_null() {
+        return;
+    }
+
+    let active = (*tile).chat_visible != 0;
+    gtk_widget_set_tooltip_text(
+        (*tile).chat_toggle_button,
+        if active {
+            cstr!("Close chat")
+        } else {
+            cstr!("Open chat")
+        },
+    );
+    gtk_button_set_child(
+        (*tile).chat_toggle_button as *mut GtkButton,
+        player_chat_icon_new(if active {
+            PLAYER_CHAT_ICON_CLOSE
+        } else {
+            PLAYER_CHAT_ICON_OPEN
+        }),
+    );
+}
+
+unsafe fn start_chat_for_tile(tile: *mut StreamTile) {
+    if (*tile).chat_panel.is_null() || !is_nonempty((*tile).channel) {
+        return;
+    }
+
+    chat_panel_start((*tile).chat_panel, (*tile).channel);
+}
+
+unsafe fn capture_chat_width_from_paned(tile: *mut StreamTile) {
+    if (*tile).chat_visible == 0 || (*tile).container.is_null() {
+        return;
+    }
+
+    let width = gtk_widget_get_width((*tile).container);
+    let position = gtk_paned_get_position((*tile).container as *mut GtkPaned);
+    if width > 1 && position > 0 {
+        (*tile).chat_width = get_chat_width_for_position(width, position);
+    }
+}
+
+unsafe fn apply_stored_chat_width(tile: *mut StreamTile, width: c_int) {
+    // Recompute the divider after tile/window resizes so chat stays bounded per tile.
+    let position = get_chat_paned_position_for_width((*tile).chat_width, width);
+    let chat_width = if width > 1 {
+        width - position
+    } else {
+        clamp_chat_width_for_pane(width, (*tile).chat_width)
+    };
+    let chat_widget: *mut GtkWidget = chat_panel_get_widget((*tile).chat_panel);
+    if !chat_widget.is_null() {
+        gtk_widget_set_size_request(chat_widget, chat_width, -1);
+    }
+    gtk_paned_set_position((*tile).container as *mut GtkPaned, position);
+    (*tile).chat_width = chat_width;
+    (*tile).last_chat_paned_width = width;
+}
+
+unsafe fn queue_chat_position_update(tile: *mut StreamTile) {
+    if (*tile).chat_position_source == 0 {
+        (*tile).chat_position_source =
+            g_timeout_add(50, Some(apply_chat_position), tile as *mut c_void);
+    }
+}
+
+unsafe extern "C" fn apply_chat_position(user_data: *mut c_void) -> c_int {
+    let tile = user_data as *mut StreamTile;
+    let state = (*tile).app;
+
+    if (*state).closing != 0 || (*tile).container.is_null() {
+        (*tile).chat_position_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    let width = gtk_widget_get_width((*tile).container);
+    if width <= 1 {
+        return G_SOURCE_CONTINUE;
+    }
+
+    apply_stored_chat_width(tile, width);
+    (*tile).chat_position_source = 0;
+
+    G_SOURCE_REMOVE
+}
+
+unsafe extern "C" fn on_chat_paned_layout_changed(
+    _paned: *mut GtkPaned,
+    _pspec: *mut GParamSpec,
+    user_data: *mut c_void,
+) {
+    let tile = user_data as *mut StreamTile;
+    let state = (*tile).app;
+    if (*state).closing != 0 || (*tile).chat_visible == 0 || (*tile).container.is_null() {
+        return;
+    }
+
+    let width = gtk_widget_get_width((*tile).container);
+    if width <= 1 {
+        return;
+    }
+
+    if width != (*tile).last_chat_paned_width {
+        apply_stored_chat_width(tile, width);
+    } else {
+        capture_chat_width_from_paned(tile);
+    }
+}
+
+unsafe fn activate_tile_chat(tile: *mut StreamTile, visible: c_int) {
+    if (*tile).container.is_null() || (*tile).chat_panel.is_null() {
+        return;
+    }
+
+    if visible != 0 {
+        if !is_nonempty((*tile).channel) {
+            return;
+        }
+
+        // Each tile owns its chat panel; there is intentionally no global right sidebar.
+        start_chat_for_tile(tile);
+        if (*tile).chat_visible == 0 {
+            let width = gtk_widget_get_width((*tile).container);
+            if width > 1 {
+                let chat_widget: *mut GtkWidget = chat_panel_get_widget((*tile).chat_panel);
+                if !chat_widget.is_null() {
+                    gtk_widget_set_size_request(
+                        chat_widget,
+                        clamp_chat_width_for_pane(width, (*tile).chat_width),
+                        -1,
+                    );
+                }
+            }
+            gtk_paned_set_end_child(
+                (*tile).container as *mut GtkPaned,
+                chat_panel_get_widget((*tile).chat_panel),
+            );
+            if width > 1 {
+                apply_stored_chat_width(tile, width);
+            }
+            queue_chat_position_update(tile);
+        }
+        (*tile).chat_visible = TRUE;
+    } else {
+        remove_source_if_active(&mut (*tile).chat_position_source);
+        capture_chat_width_from_paned(tile);
+        (*tile).chat_visible = FALSE;
+        gtk_paned_set_end_child((*tile).container as *mut GtkPaned, ptr::null_mut());
+    }
+
+    update_chat_button(tile);
+}
+
+unsafe fn sync_chat_for_tile(tile: *mut StreamTile) {
+    if (*tile).chat_visible != 0 {
+        start_chat_for_tile(tile);
+        update_chat_button(tile);
+    }
+}
+
+unsafe extern "C" fn on_tile_chat_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
+    let tile = user_data as *mut StreamTile;
+    let close_active = (*tile).chat_visible != 0;
+
+    activate_tile_chat(tile, (!close_active) as c_int);
+    show_tile_overlay(tile);
 }
 
 unsafe fn load_tile_stream(tile: *mut StreamTile) {
@@ -1199,6 +1501,7 @@ unsafe fn load_tile_stream(tile: *mut StreamTile) {
     player_session_load_stream((*tile).session, url, (*tile).label, (*tile).channel);
     g_free(url as *mut c_void);
     update_tile_empty_state(tile);
+    sync_chat_for_tile(tile);
     request_tile_title_update(tile, TRUE);
 }
 
@@ -1233,30 +1536,18 @@ unsafe fn reset_owned_tile_session(tile: *mut StreamTile) {
     }
 }
 
-unsafe fn detach_tile_session(tile: *mut StreamTile) -> *mut PlayerSession {
-    let session = (*tile).session;
-
-    if !session.is_null() {
-        clear_tile_render_context(tile);
-        player_session_set_wakeup_callback(session, None, ptr::null_mut());
-        (*tile).session = ptr::null_mut();
-        (*tile).owns_session = FALSE;
+unsafe fn stop_tile_stream(tile: *mut StreamTile) {
+    if (*tile).chat_visible != 0 {
+        activate_tile_chat(tile, FALSE);
     }
 
-    session
-}
-
-unsafe fn stop_tile_stream(tile: *mut StreamTile) {
     reset_owned_tile_session(tile);
     clear_pointer(&mut (*tile).label);
     clear_pointer(&mut (*tile).channel);
     reset_tile_quality_selection(tile);
     reset_tile_stream_title(tile);
     update_tile_empty_state(tile);
-
-    if !(*tile).gl_area.is_null() {
-        gtk_gl_area_queue_render((*tile).gl_area as *mut GtkGLArea);
-    }
+    queue_tile_render(tile);
 }
 
 unsafe fn ensure_tile_session(tile: *mut StreamTile) -> c_int {
@@ -1418,7 +1709,7 @@ unsafe extern "C" fn on_tile_stream_qualities_fetched(
             g_log(
                 G_LOG_DOMAIN.as_ptr() as *const c_char,
                 G_LOG_LEVEL_DEBUG,
-                cstr!("grid stream quality fetch failed: %s"),
+                cstr!("surface stream quality fetch failed: %s"),
                 (*error).message,
             );
         }
@@ -1526,7 +1817,7 @@ unsafe fn is_channel_menu_open(tile: *mut StreamTile) -> bool {
 }
 
 unsafe extern "C" fn hide_footers(user_data: *mut c_void) -> c_int {
-    let state = user_data as *mut GridAppState;
+    let state = user_data as *mut PlayerSurface;
 
     (*state).footer_hide_source = 0;
 
@@ -1554,7 +1845,7 @@ unsafe extern "C" fn hide_footers(user_data: *mut c_void) -> c_int {
     G_SOURCE_REMOVE
 }
 
-unsafe fn schedule_footer_hide(state: *mut GridAppState) {
+unsafe fn schedule_footer_hide(state: *mut PlayerSurface) {
     remove_source_if_active(&mut (*state).footer_hide_source);
     (*state).footer_hide_source = g_timeout_add(1800, Some(hide_footers), state as *mut c_void);
 }
@@ -1581,7 +1872,7 @@ unsafe fn show_tile_overlay(tile: *mut StreamTile) {
 }
 
 unsafe fn get_grid_layout_child(
-    state: *mut GridAppState,
+    state: *mut PlayerSurface,
     child: *mut GtkWidget,
 ) -> *mut GtkGridLayoutChild {
     let layout = gtk_widget_get_layout_manager((*state).grid);
@@ -1595,7 +1886,7 @@ unsafe fn get_grid_layout_child(
 }
 
 unsafe fn set_grid_item_layout(
-    state: *mut GridAppState,
+    state: *mut PlayerSurface,
     widget: *mut GtkWidget,
     column: c_int,
     row: c_int,
@@ -1614,17 +1905,28 @@ unsafe fn set_grid_item_layout(
     gtk_grid_layout_child_set_row_span(child, row_span);
 }
 
-unsafe fn restore_grid_layout(state: *mut GridAppState) {
+unsafe fn restore_grid_layout_with_primary_slot(state: *mut PlayerSurface, primary_index: c_uint) {
+    let primary_index = primary_index.min((MAX_TILES - 1) as c_uint) as usize;
+    let mut next_slot = 1;
+
     for i in 0..MAX_TILES {
         if (*state).grid_items[i].is_null() {
             continue;
         }
 
+        let slot = if i == primary_index {
+            0
+        } else {
+            let slot = next_slot;
+            next_slot += 1;
+            slot
+        };
+
         set_grid_item_layout(
             state,
             (*state).grid_items[i],
-            (i % 2) as c_int,
-            (i / 2) as c_int,
+            (slot % 2) as c_int,
+            (slot / 2) as c_int,
             1,
             1,
         );
@@ -1632,6 +1934,40 @@ unsafe fn restore_grid_layout(state: *mut GridAppState) {
     }
 
     (*state).tile_focused = FALSE;
+    (*state).focused_tile = primary_index as c_uint;
+}
+
+unsafe fn tile_has_stream(tile: *mut StreamTile) -> bool {
+    is_nonempty((*tile).channel)
+}
+
+unsafe fn tile_has_visible_stream(tile: *mut StreamTile) -> bool {
+    tile_has_stream(tile) || player_session_is_playing((*tile).session) != 0
+}
+
+unsafe fn preferred_single_tile(state: *mut PlayerSurface) -> *mut StreamTile {
+    if (*state).tile_focused != 0 && (*state).focused_tile < MAX_TILES as c_uint {
+        let tile = &mut (*state).tiles[(*state).focused_tile as usize] as *mut StreamTile;
+        if tile_has_visible_stream(tile) {
+            return tile;
+        }
+    }
+
+    for i in 0..MAX_TILES {
+        let tile = &mut (*state).tiles[i] as *mut StreamTile;
+        if player_session_is_playing((*tile).session) != 0 {
+            return tile;
+        }
+    }
+
+    for i in 0..MAX_TILES {
+        let tile = &mut (*state).tiles[i] as *mut StreamTile;
+        if tile_has_stream(tile) {
+            return tile;
+        }
+    }
+
+    &mut (*state).tiles[0] as *mut StreamTile
 }
 
 unsafe fn is_tile_focused(tile: *mut StreamTile) -> bool {
@@ -1640,7 +1976,7 @@ unsafe fn is_tile_focused(tile: *mut StreamTile) -> bool {
     (*state).tile_focused != 0 && (*state).focused_tile == (*tile).index
 }
 
-unsafe fn update_tile_focus_buttons(state: *mut GridAppState) {
+unsafe fn update_tile_focus_buttons(state: *mut PlayerSurface) {
     for i in 0..MAX_TILES {
         let tile = &mut (*state).tiles[i] as *mut StreamTile;
         if (*tile).focus_button.is_null() {
@@ -1659,7 +1995,7 @@ unsafe fn update_tile_focus_buttons(state: *mut GridAppState) {
         gtk_widget_set_tooltip_text(
             (*tile).focus_button,
             if focused {
-                cstr!("Restore grid")
+                cstr!("Restore 2x2")
             } else {
                 cstr!("Focus tile")
             },
@@ -1684,17 +2020,122 @@ unsafe fn focus_tile(tile: *mut StreamTile) {
     (*state).tile_focused = TRUE;
 }
 
+unsafe fn set_tile_single_presentation(tile: *mut StreamTile, single: c_int) {
+    if (*tile).container.is_null() {
+        return;
+    }
+
+    if single != 0 {
+        gtk_widget_add_css_class((*tile).container, cstr!("single-template"));
+    } else {
+        gtk_widget_remove_css_class((*tile).container, cstr!("single-template"));
+    }
+}
+
+unsafe fn set_all_tiles_single_presentation(state: *mut PlayerSurface, selected: *mut StreamTile) {
+    for i in 0..MAX_TILES {
+        let tile = &mut (*state).tiles[i] as *mut StreamTile;
+        set_tile_single_presentation(tile, (tile == selected) as c_int);
+    }
+}
+
+unsafe fn reset_tile_for_template_switch(tile: *mut StreamTile) {
+    if (*tile).chat_visible != 0 {
+        activate_tile_chat(tile, FALSE);
+    }
+    remove_source_if_active(&mut (*tile).chat_position_source);
+
+    // Template switches are state resets for discarded tiles, not hidden grid slots.
+    if !(*tile).title_cancel.is_null() {
+        g_cancellable_cancel((*tile).title_cancel);
+        clear_object(&mut (*tile).title_cancel);
+    }
+    (*tile).title_fetch_in_progress = FALSE;
+    clear_tile_render_context(tile);
+    clear_tile_stream_qualities(tile);
+    set_tile_stream_title(tile, cstr!(""), cstr!(""));
+    clear_pointer(&mut (*tile).label);
+    clear_pointer(&mut (*tile).channel);
+
+    if !(*tile).session.is_null() {
+        player_session_set_wakeup_callback((*tile).session, None, ptr::null_mut());
+        player_session_stop((*tile).session);
+        if (*tile).owns_session != 0 {
+            player_session_free((*tile).session);
+        }
+        (*tile).session = ptr::null_mut();
+        (*tile).owns_session = TRUE;
+    }
+
+    update_tile_empty_state(tile);
+    queue_tile_render(tile);
+}
+
+unsafe fn clear_surface_targets(state: *mut PlayerSurface) {
+    for i in 0..MAX_TILES {
+        clear_pointer(&mut (*state).targets[i]);
+    }
+    (*state).target_count = 0;
+}
+
+unsafe fn enter_single_template(state: *mut PlayerSurface, tile: *mut StreamTile) {
+    if tile.is_null() {
+        return;
+    }
+
+    clear_surface_targets(state);
+
+    for i in 0..MAX_TILES {
+        let other = &mut (*state).tiles[i] as *mut StreamTile;
+        if other != tile {
+            reset_tile_for_template_switch(other);
+        }
+    }
+
+    // The selected GLArea/session stays mounted; the template change only resizes it.
+    set_all_tiles_single_presentation(state, tile);
+    focus_tile(tile);
+    (*state).single_template_active = TRUE;
+    (*state).single_template_tile = (*tile).index;
+    (*state).video_fullscreen_active = FALSE;
+    update_tile_focus_buttons(state);
+    show_tile_overlay(tile);
+}
+
+unsafe fn leave_single_template(state: *mut PlayerSurface) {
+    let single_tile = if (*state).focused_tile < MAX_TILES as c_uint {
+        (*state).focused_tile
+    } else {
+        0
+    };
+
+    (*state).single_template_active = FALSE;
+    set_all_tiles_single_presentation(state, ptr::null_mut());
+    restore_grid_layout_with_primary_slot(state, single_tile);
+    update_tile_focus_buttons(state);
+
+    for i in 0..MAX_TILES {
+        let tile = &mut (*state).tiles[i] as *mut StreamTile;
+        if !tile_has_stream(tile) || player_session_is_playing((*tile).session) != 0 {
+            continue;
+        }
+
+        if ensure_tile_session(tile) != 0 {
+            load_tile_stream(tile);
+        }
+    }
+}
+
 unsafe fn toggle_tile_focus(tile: *mut StreamTile) {
     let state = (*tile).app;
 
-    if (*state).tile_focused != 0 && (*state).focused_tile == (*tile).index {
-        restore_grid_layout(state);
-    } else {
-        focus_tile(tile);
+    if (*state).single_template_active != 0 && (*state).single_template_tile == (*tile).index {
+        leave_single_template(state);
+        show_tile_overlay(tile);
+        return;
     }
 
-    update_tile_focus_buttons(state);
-    show_tile_overlay(tile);
+    enter_single_template(state, tile);
 }
 
 unsafe fn apply_video_fullscreen_focus(tile: *mut StreamTile) {
@@ -1704,27 +2145,46 @@ unsafe fn apply_video_fullscreen_focus(tile: *mut StreamTile) {
         return;
     }
 
+    if (*state).single_template_active != 0 {
+        if !is_tile_focused(tile) {
+            focus_tile(tile);
+        }
+        set_all_tiles_single_presentation(state, tile);
+        show_tile_overlay(tile);
+        return;
+    }
+
+    // Video fullscreen from 2x2 is temporary focus, not a template switch; keep other sessions.
+    set_all_tiles_single_presentation(state, tile);
     if !is_tile_focused(tile) {
         focus_tile(tile);
-        update_tile_focus_buttons(state);
     }
     show_tile_overlay(tile);
 }
 
-unsafe fn restore_video_fullscreen_layout(state: *mut GridAppState, tile: *mut StreamTile) {
+unsafe fn restore_video_fullscreen_layout(state: *mut PlayerSurface, tile: *mut StreamTile) {
     let restore_tile_focused = (*state).video_fullscreen_active != 0
         && (*state).video_fullscreen_restore_tile_focused != 0;
     let restore_focused_tile = (*state).video_fullscreen_restore_focused_tile;
 
     (*state).video_fullscreen_active = FALSE;
 
-    if restore_tile_focused
+    if (*state).single_template_active != 0
+        && (*state).single_template_tile < MAX_TILES as c_uint
+        && !(*state).grid_items[(*state).single_template_tile as usize].is_null()
+    {
+        let single_tile = &mut (*state).tiles[(*state).single_template_tile as usize];
+        set_all_tiles_single_presentation(state, single_tile);
+        focus_tile(single_tile);
+    } else if restore_tile_focused
         && restore_focused_tile < MAX_TILES as c_uint
         && !(*state).grid_items[restore_focused_tile as usize].is_null()
     {
+        set_all_tiles_single_presentation(state, ptr::null_mut());
         focus_tile(&mut (*state).tiles[restore_focused_tile as usize]);
     } else {
-        restore_grid_layout(state);
+        set_all_tiles_single_presentation(state, ptr::null_mut());
+        restore_grid_layout_with_primary_slot(state, restore_focused_tile);
     }
 
     update_tile_focus_buttons(state);
@@ -1735,16 +2195,26 @@ unsafe fn restore_video_fullscreen_layout(state: *mut GridAppState, tile: *mut S
 
 unsafe fn request_tile_fullscreen_toggle(tile: *mut StreamTile) {
     let state = (*tile).app;
+
+    if (*state).single_template_active != 0 && (*state).single_template_tile == (*tile).index {
+        if let Some(callback) = (*state).fullscreen_callback {
+            callback((*state).fullscreen_user_data);
+        }
+        show_tile_overlay(tile);
+        return;
+    }
+
     let video_fullscreen_active = (*state).video_fullscreen_active;
 
-    if grid_player_fullscreen_should_restore(
+    if player_surface_fullscreen_should_restore(
         video_fullscreen_active,
         (*state).fullscreen,
         (*state).tile_focused,
         (*state).focused_tile,
         (*tile).index,
     ) {
-        let exit_app_fullscreen = grid_player_fullscreen_should_exit_app(
+        // Second double-click restores the previous template/focus state.
+        let exit_app_fullscreen = player_surface_fullscreen_should_exit_app(
             (*state).fullscreen,
             video_fullscreen_active,
             (*state).video_fullscreen_restore_app_fullscreen,
@@ -1809,7 +2279,7 @@ unsafe fn get_toplevel_event_data_from_event(
 }
 
 unsafe fn begin_window_move_from_event(
-    state: *mut GridAppState,
+    state: *mut PlayerSurface,
     event: *mut GdkEvent,
     button: c_uint,
 ) {
@@ -2100,10 +2570,11 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
     let box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_add_css_class(box_, cstr!("player-footer"));
     gtk_widget_add_css_class(box_, cstr!("tile-footer"));
+    gtk_widget_add_css_class(box_, cstr!("video-footer"));
 
     let channel_selector = gtk_overlay_new();
     gtk_widget_add_css_class(channel_selector, cstr!("channel-selector"));
-    gtk_widget_set_size_request(channel_selector, GRID_CHANNEL_DROPDOWN_WIDTH, -1);
+    gtk_widget_set_size_request(channel_selector, STREAM_DROPDOWN_WIDTH, -1);
     gtk_widget_set_hexpand(channel_selector, FALSE);
 
     (*tile).channel_combo = gtk_button_new();
@@ -2182,7 +2653,7 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
         player_session_get_volume((*tile).session),
     );
     gtk_scale_set_draw_value((*tile).volume_scale as *mut GtkScale, FALSE);
-    gtk_widget_set_size_request((*tile).volume_scale, GRID_VOLUME_SCALE_WIDTH, -1);
+    gtk_widget_set_size_request((*tile).volume_scale, PLAYER_VOLUME_SCALE_WIDTH, -1);
     g_signal_connect_data(
         (*tile).volume_scale as *mut c_void,
         cstr!("value-changed"),
@@ -2210,6 +2681,20 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
         (*tile).focus_button as *mut c_void,
         cstr!("clicked"),
         on_tile_focus_clicked as *const c_void,
+        tile as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
+
+    (*tile).chat_toggle_button = player_overlay_button_new(
+        player_chat_icon_new(PLAYER_CHAT_ICON_OPEN),
+        cstr!("Open chat"),
+    );
+    gtk_widget_add_css_class((*tile).chat_toggle_button, cstr!("chat-toggle"));
+    g_signal_connect_data(
+        (*tile).chat_toggle_button as *mut c_void,
+        cstr!("clicked"),
+        on_tile_chat_clicked as *const c_void,
         tile as *mut c_void,
         ptr::null_mut(),
         0,
@@ -2251,7 +2736,7 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
     );
     gtk_box_append(box_ as *mut GtkBox, (*tile).mute_button);
     gtk_box_append(box_ as *mut GtkBox, (*tile).volume_scale);
-    gtk_box_append(box_ as *mut GtkBox, (*tile).focus_button);
+    gtk_box_append(box_ as *mut GtkBox, (*tile).chat_toggle_button);
     gtk_box_append(box_ as *mut GtkBox, (*tile).stream_info_button);
     update_tile_empty_state(tile);
 
@@ -2259,7 +2744,7 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
 }
 
 unsafe fn create_stream_tile(
-    state: *mut GridAppState,
+    state: *mut PlayerSurface,
     index: c_uint,
     target: *const c_char,
 ) -> *mut GtkWidget {
@@ -2281,7 +2766,8 @@ unsafe fn create_stream_tile(
         (!(*tile).session.is_null() && (*tile).session != (*state).primary_session) as c_int;
     sync_tile_from_session(tile);
 
-    (*tile).container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    // A tile is its own video/chat panel: start child is video, end child is optional chat.
+    (*tile).container = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     add_weak_pointer((*tile).container, &mut (*tile).container);
     gtk_widget_add_css_class((*tile).container, cstr!("tile-container"));
     if index % 2 == 0 {
@@ -2292,12 +2778,34 @@ unsafe fn create_stream_tile(
     }
     gtk_widget_set_hexpand((*tile).container, TRUE);
     gtk_widget_set_vexpand((*tile).container, TRUE);
+    gtk_paned_set_wide_handle((*tile).container as *mut GtkPaned, FALSE);
+    gtk_paned_set_resize_start_child((*tile).container as *mut GtkPaned, TRUE);
+    gtk_paned_set_shrink_start_child((*tile).container as *mut GtkPaned, FALSE);
+    gtk_paned_set_resize_end_child((*tile).container as *mut GtkPaned, FALSE);
+    gtk_paned_set_shrink_end_child((*tile).container as *mut GtkPaned, TRUE);
+    g_signal_connect_data(
+        (*tile).container as *mut c_void,
+        cstr!("notify::position"),
+        on_chat_paned_layout_changed as *const c_void,
+        tile as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
+    g_signal_connect_data(
+        (*tile).container as *mut c_void,
+        cstr!("notify::max-position"),
+        on_chat_paned_layout_changed as *const c_void,
+        tile as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
 
     (*tile).overlay = gtk_overlay_new();
     add_weak_pointer((*tile).overlay, &mut (*tile).overlay);
     gtk_widget_set_hexpand((*tile).overlay, TRUE);
     gtk_widget_set_vexpand((*tile).overlay, TRUE);
-    gtk_box_append((*tile).container as *mut GtkBox, (*tile).overlay);
+    gtk_paned_set_start_child((*tile).container as *mut GtkPaned, (*tile).overlay);
+    (*tile).chat_width = get_default_chat_width();
 
     (*tile).gl_area = gtk_gl_area_new();
     add_weak_pointer((*tile).gl_area, &mut (*tile).gl_area);
@@ -2340,6 +2848,7 @@ unsafe fn create_stream_tile(
         (*state).settings_callback,
         (*state).settings_user_data,
     );
+    (*tile).chat_panel = chat_panel_new(DEFAULT_CHAT_WIDTH);
 
     let video_click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(video_click as *mut GtkGestureSingle, GDK_BUTTON_PRIMARY);
@@ -2447,11 +2956,11 @@ unsafe fn install_css() {
     player_style_install_footer_css();
 }
 
-unsafe fn get_target_count(state: *mut GridAppState) -> c_uint {
+unsafe fn get_target_count(state: *mut PlayerSurface) -> c_uint {
     (*state).target_count.min(MAX_TILES as c_uint)
 }
 
-unsafe fn get_target_at(state: *mut GridAppState, index: c_uint) -> *const c_char {
+unsafe fn get_target_at(state: *mut PlayerSurface, index: c_uint) -> *const c_char {
     if index < (*state).target_count {
         (*state).targets[index as usize]
     } else {
@@ -2459,7 +2968,7 @@ unsafe fn get_target_at(state: *mut GridAppState, index: c_uint) -> *const c_cha
     }
 }
 
-pub unsafe fn grid_player_free(player: *mut GridAppState) {
+pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
     let state = player;
 
     if state.is_null() {
@@ -2474,6 +2983,11 @@ pub unsafe fn grid_player_free(player: *mut GridAppState) {
     for i in 0..MAX_TILES {
         let tile = &mut (*state).tiles[i] as *mut StreamTile;
 
+        remove_source_if_active(&mut (*tile).chat_position_source);
+        if !(*tile).container.is_null() {
+            capture_chat_width_from_paned(tile);
+            gtk_paned_set_end_child((*tile).container as *mut GtkPaned, ptr::null_mut());
+        }
         clear_tile_render_context(tile);
         reset_tile_stream_title(tile);
         clear_tile_stream_qualities(tile);
@@ -2498,6 +3012,7 @@ pub unsafe fn grid_player_free(player: *mut GridAppState) {
         }
         (*tile).close_button = ptr::null_mut();
         (*tile).empty_label = ptr::null_mut();
+        (*tile).chat_toggle_button = ptr::null_mut();
         (*tile).stream_info_button = ptr::null_mut();
         (*tile).mute_button = ptr::null_mut();
         (*tile).volume_scale = ptr::null_mut();
@@ -2509,6 +3024,8 @@ pub unsafe fn grid_player_free(player: *mut GridAppState) {
         (*tile).quality_status_label = ptr::null_mut();
         channel_switcher_overlay_free((*tile).channel_switcher);
         (*tile).channel_switcher = ptr::null_mut();
+        chat_panel_free((*tile).chat_panel);
+        (*tile).chat_panel = ptr::null_mut();
     }
 
     for i in 0..MAX_TILES {
@@ -2522,21 +3039,21 @@ pub unsafe fn grid_player_free(player: *mut GridAppState) {
     /* mpv may already have queued idle callbacks that still carry tile pointers. */
 }
 
-pub unsafe fn grid_player_new<W>(
+pub unsafe fn player_surface_new<W>(
     window: *mut W,
     settings: *mut AppSettings,
     primary_session: *mut PlayerSession,
     targets: *const *const c_char,
     target_count: c_uint,
-    fullscreen_callback: GridPlayerFullscreenCallback,
+    fullscreen_callback: PlayerSurfaceFullscreenCallback,
     fullscreen_user_data: *mut c_void,
-    settings_callback: GridPlayerSettingsCallback,
+    settings_callback: PlayerSurfaceSettingsCallback,
     settings_user_data: *mut c_void,
-) -> *mut GridAppState {
+) -> *mut PlayerSurface {
     let window = window as *mut GtkWindow;
     install_css();
 
-    let state = g_malloc0(mem::size_of::<GridAppState>()) as *mut GridAppState;
+    let state = g_malloc0(mem::size_of::<PlayerSurface>()) as *mut PlayerSurface;
     (*state).window = window as *mut GtkWidget;
     (*state).primary_session = primary_session;
     (*state).target_count = if !targets.is_null() {
@@ -2594,14 +3111,14 @@ pub unsafe fn grid_player_new<W>(
     schedule_footer_hide(state);
     (*state).title_refresh_source = g_timeout_add_seconds(
         STREAM_TITLE_REFRESH_SECONDS,
-        Some(refresh_grid_stream_titles),
+        Some(refresh_surface_stream_titles),
         state as *mut c_void,
     );
 
     state
 }
 
-pub unsafe fn grid_player_get_widget<W>(player: *mut GridAppState) -> *mut W {
+pub unsafe fn player_surface_get_widget<W>(player: *mut PlayerSurface) -> *mut W {
     if !player.is_null() {
         (*player).root_overlay as *mut W
     } else {
@@ -2609,49 +3126,7 @@ pub unsafe fn grid_player_get_widget<W>(player: *mut GridAppState) -> *mut W {
     }
 }
 
-pub unsafe fn grid_player_dup_first_target(player: *mut GridAppState) -> *mut c_char {
-    if player.is_null() {
-        return ptr::null_mut();
-    }
-
-    for i in 0..MAX_TILES {
-        let channel = (*player).tiles[i].channel;
-        if is_nonempty(channel) {
-            return g_strdup(channel);
-        }
-    }
-
-    ptr::null_mut()
-}
-
-pub unsafe fn grid_player_take_first_session(player: *mut GridAppState) -> *mut PlayerSession {
-    if player.is_null() {
-        return ptr::null_mut();
-    }
-
-    let primary_session = (*player).primary_session;
-    for i in 0..MAX_TILES {
-        let tile = &mut (*player).tiles[i] as *mut StreamTile;
-        if player_session_is_playing((*tile).session) == 0 {
-            continue;
-        }
-
-        let session = detach_tile_session(tile);
-        if session != primary_session {
-            for primary_tile_index in 0..MAX_TILES {
-                let primary_tile = &mut (*player).tiles[primary_tile_index] as *mut StreamTile;
-                if (*primary_tile).session == primary_session {
-                    detach_tile_session(primary_tile);
-                }
-            }
-        }
-        return session;
-    }
-
-    ptr::null_mut()
-}
-
-pub unsafe fn grid_player_start(player: *mut GridAppState) {
+pub unsafe fn player_surface_start(player: *mut PlayerSurface) {
     if player.is_null() || (*player).started != 0 {
         return;
     }
@@ -2676,9 +3151,20 @@ pub unsafe fn grid_player_start(player: *mut GridAppState) {
     }
 }
 
-pub unsafe fn grid_player_set_fullscreen(player: *mut GridAppState, fullscreen: c_int) {
+pub unsafe fn player_surface_set_fullscreen(player: *mut PlayerSurface, fullscreen: c_int) {
     if !player.is_null() {
+        // Capture before GTK changes allocation; reapply after so chats do not grow with fullscreen.
+        for i in 0..MAX_TILES {
+            let tile = &mut (*player).tiles[i] as *mut StreamTile;
+            capture_chat_width_from_paned(tile);
+        }
         (*player).fullscreen = fullscreen;
+        for i in 0..MAX_TILES {
+            let tile = &mut (*player).tiles[i] as *mut StreamTile;
+            if (*tile).chat_visible != 0 {
+                queue_chat_position_update(tile);
+            }
+        }
         if fullscreen == 0 {
             if (*player).video_fullscreen_active != 0 {
                 restore_video_fullscreen_layout(player, ptr::null_mut());
@@ -2687,7 +3173,68 @@ pub unsafe fn grid_player_set_fullscreen(player: *mut GridAppState, fullscreen: 
     }
 }
 
-pub unsafe fn grid_player_set_settings(player: *mut GridAppState, settings: *mut AppSettings) {
+pub unsafe fn player_surface_apply_single_template(player: *mut PlayerSurface) {
+    if player.is_null() {
+        return;
+    }
+
+    let tile = preferred_single_tile(player);
+    enter_single_template(player, tile);
+}
+
+pub unsafe fn player_surface_apply_2x2_template(player: *mut PlayerSurface) {
+    if player.is_null() {
+        return;
+    }
+
+    if (*player).video_fullscreen_active != 0 {
+        restore_video_fullscreen_layout(player, ptr::null_mut());
+    }
+    leave_single_template(player);
+    show_tile_overlay(preferred_single_tile(player));
+}
+
+pub unsafe fn player_surface_show_overlay(player: *mut PlayerSurface) {
+    if player.is_null() {
+        return;
+    }
+
+    let tile = if (*player).tile_focused != 0 && (*player).focused_tile < MAX_TILES as c_uint {
+        &mut (*player).tiles[(*player).focused_tile as usize] as *mut StreamTile
+    } else {
+        preferred_single_tile(player)
+    };
+    show_tile_overlay(tile);
+}
+
+pub unsafe fn player_surface_is_single_template(player: *mut PlayerSurface) -> c_int {
+    (!player.is_null() && (*player).single_template_active != 0) as c_int
+}
+
+pub unsafe fn player_surface_handle_key(
+    player: *mut PlayerSurface,
+    keyval: c_uint,
+    modifiers: c_uint,
+) -> c_int {
+    if player.is_null() || (modifiers & GDK_CONTROL_MASK) != 0 {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    if keyval != GDK_KEY_M_LOWER && keyval != GDK_KEY_M_UPPER {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    let tile = preferred_single_tile(player);
+    if tile.is_null() || (*tile).mute_button.is_null() {
+        return GDK_EVENT_PROPAGATE;
+    }
+
+    player_volume_toggle_muted((*tile).session, (*tile).mute_button);
+    show_tile_overlay(tile);
+    GDK_EVENT_STOP
+}
+
+pub unsafe fn player_surface_set_settings(player: *mut PlayerSurface, settings: *mut AppSettings) {
     if player.is_null() {
         return;
     }

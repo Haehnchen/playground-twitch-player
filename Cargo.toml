@@ -38,13 +38,8 @@ path = "tests/test_chat_panel.rs"
 harness = false
 
 [[test]]
-name = "grid-player"
-path = "tests/test_grid_player.rs"
-harness = false
-
-[[test]]
-name = "single-player"
-path = "tests/test_single_player.rs"
+name = "player-surface"
+path = "tests/test_player_surface.rs"
 harness = false
 
 [profile.release]

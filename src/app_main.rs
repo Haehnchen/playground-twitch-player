@@ -5,32 +5,25 @@ use std::ffi::{c_char, c_double, c_int, c_uint, c_void, CStr, CString};
 use std::os::unix::ffi::OsStringExt;
 use std::ptr;
 
-use crate::grid_player::{
-    grid_player_dup_first_target, grid_player_free, grid_player_get_widget, grid_player_new,
-    grid_player_set_fullscreen, grid_player_set_settings, grid_player_start,
-    grid_player_take_first_session, GridAppState as GridPlayer,
-};
 use crate::player_icons::{
     player_layout_icon_new, player_settings_icon_new, player_window_icon_new,
 };
 use crate::player_motion::{player_motion_tracker_ignore_stationary, PlayerMotionTracker};
 use crate::player_overlay_controls::player_overlay_button_new;
 use crate::player_session::{
-    player_session_free, player_session_get_channel, player_session_is_playing, player_session_new,
-    player_session_set_hwdec_enabled, PlayerSession,
+    player_session_free, player_session_new, player_session_set_hwdec_enabled, PlayerSession,
 };
 use crate::player_style::{player_style_install_footer_css, player_style_install_overlay_css};
+use crate::player_surface::{
+    player_surface_apply_2x2_template, player_surface_apply_single_template, player_surface_free,
+    player_surface_get_widget, player_surface_handle_key, player_surface_is_single_template,
+    player_surface_new, player_surface_set_fullscreen, player_surface_set_settings,
+    player_surface_show_overlay, player_surface_start, PlayerSurface,
+};
 use crate::settings::{
     app_settings_free, app_settings_get_hwdec_enabled, app_settings_load, AppSettings, GError,
 };
 use crate::settings_window::settings_window_show;
-use crate::single_player::{
-    single_player_dup_current_target, single_player_free, single_player_get_chat_width,
-    single_player_get_widget, single_player_handle_key, single_player_new,
-    single_player_set_fullscreen, single_player_set_settings, single_player_show_overlay,
-    SinglePlayer,
-};
-
 macro_rules! cstr {
     ($value:literal) => {
         concat!($value, "\0").as_ptr() as *const c_char
@@ -41,7 +34,7 @@ const OVERLAY_HIDE_DELAY_MS: c_uint = 1800;
 const MAXIMIZE_RESTORE_ATTEMPTS: c_uint = 12;
 const DEFAULT_WINDOW_WIDTH: c_int = 1100;
 const DEFAULT_WINDOW_HEIGHT: c_int = (DEFAULT_WINDOW_WIDTH * 9 + 8) / 16;
-const GRID_PLAYER_MAX_TILES: usize = 4;
+const PLAYER_SURFACE_MAX_TILES: usize = 4;
 
 const FALSE: c_int = 0;
 const TRUE: c_int = 1;
@@ -72,15 +65,15 @@ const GDK_SURFACE_EDGE_SOUTH_WEST: c_int = 5;
 const GDK_SURFACE_EDGE_SOUTH: c_int = 6;
 const GDK_SURFACE_EDGE_SOUTH_EAST: c_int = 7;
 
-const CONTENT_MODE_SINGLE: c_int = 0;
-const CONTENT_MODE_GRID: c_int = 1;
+const CONTENT_TEMPLATE_SINGLE: c_int = 0;
+const CONTENT_TEMPLATE_2X2: c_int = 1;
 const SETTINGS_WINDOW_PAGE_GENERAL: c_int = 0;
 const SETTINGS_WINDOW_PAGE_CHANNELS: c_int = 1;
 const PLAYER_WINDOW_ICON_MINIMIZE: c_int = 0;
 const PLAYER_WINDOW_ICON_FULLSCREEN: c_int = 1;
 const PLAYER_WINDOW_ICON_CLOSE: c_int = 2;
 const PLAYER_LAYOUT_ICON_SINGLE: c_int = 0;
-const PLAYER_LAYOUT_ICON_GRID: c_int = 1;
+const PLAYER_LAYOUT_ICON_2X2: c_int = 1;
 
 struct AppState {
     window: *mut GtkWidget,
@@ -91,14 +84,10 @@ struct AppState {
     layout_button: *mut GtkWidget,
     settings: *mut AppSettings,
     primary_session: *mut PlayerSession,
-    single_player: *mut SinglePlayer,
-    grid_player: *mut GridPlayer,
+    player_surface: *mut PlayerSurface,
     startup_target: *const c_char,
-    grid_targets: *const *const c_char,
-    grid_target_count: c_uint,
-    single_target: *mut c_char,
-    has_single_target_handoff: c_int,
-    single_chat_width: c_int,
+    initial_targets: *const *const c_char,
+    initial_target_count: c_uint,
     content_mode: c_int,
     overlay_hide_source: c_uint,
     maximize_restore_source: c_uint,
@@ -115,9 +104,9 @@ struct AppState {
 
 struct StartupConfig {
     startup_target: *const c_char,
-    grid_targets: *const *const c_char,
-    grid_target_count: c_uint,
-    start_in_grid: c_int,
+    initial_targets: *const *const c_char,
+    initial_target_count: c_uint,
+    start_in_2x2: c_int,
 }
 
 #[repr(C)]
@@ -471,8 +460,15 @@ unsafe fn show_window_overlay(state: *mut AppState) {
 
     gtk_widget_set_visible((*state).top_left_controls, TRUE);
     gtk_widget_set_visible((*state).top_controls, TRUE);
-    if !(*state).single_player.is_null() {
-        single_player_show_overlay((*state).single_player);
+    if !(*state).player_surface.is_null() {
+        player_surface_show_overlay((*state).player_surface);
+        let mode = if player_surface_is_single_template((*state).player_surface) != 0 {
+            CONTENT_TEMPLATE_SINGLE
+        } else {
+            CONTENT_TEMPLATE_2X2
+        };
+        (*state).content_mode = mode;
+        set_layout_button_for_mode(state, mode);
     }
     schedule_window_overlay_hide(state);
 }
@@ -777,11 +773,8 @@ unsafe fn set_fullscreen(state: *mut AppState, fullscreen: c_int) {
         (*state).was_maximized_before_fullscreen = FALSE;
     }
 
-    if !(*state).single_player.is_null() {
-        single_player_set_fullscreen((*state).single_player, fullscreen);
-    }
-    if !(*state).grid_player.is_null() {
-        grid_player_set_fullscreen((*state).grid_player, fullscreen);
+    if !(*state).player_surface.is_null() {
+        player_surface_set_fullscreen((*state).player_surface, fullscreen);
     }
 
     show_window_overlay(state);
@@ -825,13 +818,9 @@ unsafe extern "C" fn on_content_settings_requested(user_data: *mut c_void) {
 }
 
 unsafe fn destroy_active_content(state: *mut AppState) {
-    if !(*state).single_player.is_null() {
-        single_player_free((*state).single_player);
-        (*state).single_player = ptr::null_mut();
-    }
-    if !(*state).grid_player.is_null() {
-        grid_player_free((*state).grid_player);
-        (*state).grid_player = ptr::null_mut();
+    if !(*state).player_surface.is_null() {
+        player_surface_free((*state).player_surface);
+        (*state).player_surface = ptr::null_mut();
     }
 
     if is_instance((*state).root_overlay, gtk_overlay_get_type()) {
@@ -839,103 +828,57 @@ unsafe fn destroy_active_content(state: *mut AppState) {
     }
 }
 
-unsafe fn clear_single_target(state: *mut AppState) {
-    g_free((*state).single_target as *mut c_void);
-    (*state).single_target = ptr::null_mut();
-}
-
-unsafe fn capture_single_handoff(state: *mut AppState) {
-    if (*state).single_player.is_null() {
+unsafe fn set_layout_button_for_mode(state: *mut AppState, mode: c_int) {
+    if (*state).layout_button.is_null() {
         return;
     }
 
-    clear_single_target(state);
-    (*state).single_target = single_player_dup_current_target((*state).single_player);
-    (*state).has_single_target_handoff = TRUE;
-    (*state).single_chat_width = single_player_get_chat_width((*state).single_player);
-}
-
-unsafe fn capture_grid_handoff(state: *mut AppState) {
-    if (*state).grid_player.is_null() {
-        return;
-    }
-
-    let handoff_session = grid_player_take_first_session((*state).grid_player);
-    if !handoff_session.is_null() && handoff_session != (*state).primary_session {
-        player_session_free((*state).primary_session);
-        (*state).primary_session = handoff_session;
-    }
-
-    clear_single_target(state);
-    if player_session_is_playing((*state).primary_session) != 0 {
-        let channel = player_session_get_channel((*state).primary_session);
-        (*state).single_target = if is_nonempty(channel) {
-            g_strdup(channel)
+    gtk_widget_set_tooltip_text(
+        (*state).layout_button,
+        if mode == CONTENT_TEMPLATE_2X2 {
+            cstr!("Switch to single template")
         } else {
-            ptr::null_mut()
-        };
-    } else {
-        (*state).single_target = grid_player_dup_first_target((*state).grid_player);
-    }
-    (*state).has_single_target_handoff = TRUE;
-}
-
-unsafe fn create_single_content(state: *mut AppState) {
-    let target = if (*state).has_single_target_handoff != 0 {
-        (*state).single_target as *const c_char
-    } else {
-        (*state).startup_target
-    };
-
-    (*state).single_player = single_player_new(
-        (*state).window as *mut GtkWindow,
-        (*state).settings,
-        (*state).primary_session,
-        target,
-        is_nonempty(target) as c_int,
-        (*state).single_chat_width,
-        Some(on_content_fullscreen_requested),
-        state as *mut c_void,
-        Some(on_content_settings_requested),
-        state as *mut c_void,
+            cstr!("Switch to 2x2 template")
+        },
     );
-    single_player_set_fullscreen((*state).single_player, (*state).fullscreen);
-    gtk_overlay_set_child(
-        (*state).root_overlay as *mut GtkOverlay,
-        single_player_get_widget((*state).single_player),
-    );
-    (*state).content_mode = CONTENT_MODE_SINGLE;
-    gtk_widget_set_tooltip_text((*state).layout_button, cstr!("Switch to grid player"));
     gtk_button_set_child(
         (*state).layout_button as *mut GtkButton,
-        player_layout_icon_new(PLAYER_LAYOUT_ICON_GRID),
+        player_layout_icon_new(if mode == CONTENT_TEMPLATE_2X2 {
+            PLAYER_LAYOUT_ICON_SINGLE
+        } else {
+            PLAYER_LAYOUT_ICON_2X2
+        }),
     );
 }
 
-unsafe fn create_grid_content(state: *mut AppState) {
-    let mut targets: [*const c_char; GRID_PLAYER_MAX_TILES] = [ptr::null(); GRID_PLAYER_MAX_TILES];
-    let mut target_storage: [*mut c_char; GRID_PLAYER_MAX_TILES] =
-        [ptr::null_mut(); GRID_PLAYER_MAX_TILES];
+unsafe fn create_player_surface(state: *mut AppState) {
+    let mut targets: [*const c_char; PLAYER_SURFACE_MAX_TILES] =
+        [ptr::null(); PLAYER_SURFACE_MAX_TILES];
+    let mut target_storage: [*mut c_char; PLAYER_SURFACE_MAX_TILES] =
+        [ptr::null_mut(); PLAYER_SURFACE_MAX_TILES];
     let mut target_count: usize = 0;
 
-    if is_nonempty((*state).single_target) {
-        target_storage[target_count] = dup_twitch_channel_name((*state).single_target);
+    // Keep the startup channel in slot 0 so the primary mpv session remains the stable player.
+    let first_target = (*state).startup_target;
+
+    if is_nonempty(first_target) {
+        target_storage[target_count] = dup_twitch_channel_name(first_target);
         if !target_storage[target_count].is_null() {
             targets[target_count] = target_storage[target_count];
             target_count += 1;
         }
     }
 
-    let grid_count = (*state).grid_target_count as usize;
-    for i in 0..grid_count {
-        if target_count >= GRID_PLAYER_MAX_TILES {
+    let initial_count = (*state).initial_target_count as usize;
+    for i in 0..initial_count {
+        if target_count >= PLAYER_SURFACE_MAX_TILES {
             break;
         }
-        let target = *(*state).grid_targets.add(i);
+        let target = *(*state).initial_targets.add(i);
         if !is_nonempty(target) {
             continue;
         }
-        if !(*state).single_target.is_null() && g_strcmp0(target, (*state).single_target) == 0 {
+        if !first_target.is_null() && g_strcmp0(target, first_target) == 0 {
             continue;
         }
 
@@ -944,6 +887,7 @@ unsafe fn create_grid_content(state: *mut AppState) {
             continue;
         }
 
+        // The surface may receive the same channel from startup and the 2x2 seed list.
         let mut duplicate = false;
         for existing in targets.iter().take(target_count) {
             if g_ascii_strcasecmp(channel, *existing) == 0 {
@@ -961,7 +905,7 @@ unsafe fn create_grid_content(state: *mut AppState) {
         target_count += 1;
     }
 
-    (*state).grid_player = grid_player_new(
+    (*state).player_surface = player_surface_new(
         (*state).window as *mut GtkWindow,
         (*state).settings,
         (*state).primary_session,
@@ -972,31 +916,37 @@ unsafe fn create_grid_content(state: *mut AppState) {
         Some(on_content_settings_requested),
         state as *mut c_void,
     );
-    grid_player_set_fullscreen((*state).grid_player, (*state).fullscreen);
+    player_surface_set_fullscreen((*state).player_surface, (*state).fullscreen);
     gtk_overlay_set_child(
         (*state).root_overlay as *mut GtkOverlay,
-        grid_player_get_widget((*state).grid_player),
+        player_surface_get_widget((*state).player_surface),
     );
-    grid_player_start((*state).grid_player);
-    (*state).content_mode = CONTENT_MODE_GRID;
-    gtk_widget_set_tooltip_text((*state).layout_button, cstr!("Switch to single player"));
-    gtk_button_set_child(
-        (*state).layout_button as *mut GtkButton,
-        player_layout_icon_new(PLAYER_LAYOUT_ICON_SINGLE),
-    );
+    player_surface_start((*state).player_surface);
+    (*state).content_mode = CONTENT_TEMPLATE_2X2;
+    set_layout_button_for_mode(state, CONTENT_TEMPLATE_2X2);
 
     for target in target_storage {
         g_free(target as *mut c_void);
     }
 }
 
+unsafe fn apply_layout_template(state: *mut AppState, mode: c_int) {
+    if (*state).player_surface.is_null() {
+        create_player_surface(state);
+    }
+
+    if mode == CONTENT_TEMPLATE_2X2 {
+        player_surface_apply_2x2_template((*state).player_surface);
+    } else {
+        player_surface_apply_single_template((*state).player_surface);
+    }
+    (*state).content_mode = mode;
+    set_layout_button_for_mode(state, mode);
+}
+
 unsafe fn set_layout_mode(state: *mut AppState, mode: c_int) {
-    if (*state).single_player.is_null() && (*state).grid_player.is_null() {
-        if mode == CONTENT_MODE_GRID {
-            create_grid_content(state);
-        } else {
-            create_single_content(state);
-        }
+    if (*state).player_surface.is_null() {
+        apply_layout_template(state, mode);
         show_window_overlay(state);
         return;
     }
@@ -1006,27 +956,18 @@ unsafe fn set_layout_mode(state: *mut AppState, mode: c_int) {
         return;
     }
 
-    if mode == CONTENT_MODE_GRID {
-        capture_single_handoff(state);
-    } else {
-        capture_grid_handoff(state);
-    }
-
-    destroy_active_content(state);
-    if mode == CONTENT_MODE_GRID {
-        create_grid_content(state);
-    } else {
-        create_single_content(state);
-    }
+    apply_layout_template(state, mode);
     show_window_overlay(state);
 }
 
 unsafe extern "C" fn on_layout_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let state = user_data as *mut AppState;
-    let next_mode = if (*state).content_mode == CONTENT_MODE_SINGLE {
-        CONTENT_MODE_GRID
+    let in_single_template = !(*state).player_surface.is_null()
+        && player_surface_is_single_template((*state).player_surface) != 0;
+    let next_mode = if (*state).content_mode == CONTENT_TEMPLATE_SINGLE || in_single_template {
+        CONTENT_TEMPLATE_2X2
     } else {
-        CONTENT_MODE_SINGLE
+        CONTENT_TEMPLATE_SINGLE
     };
     set_layout_mode(state, next_mode);
 }
@@ -1034,11 +975,8 @@ unsafe extern "C" fn on_layout_clicked(_button: *mut GtkButton, user_data: *mut 
 unsafe extern "C" fn on_settings_saved(_settings: *mut AppSettings, user_data: *mut c_void) {
     let state = user_data as *mut AppState;
 
-    if !(*state).single_player.is_null() {
-        single_player_set_settings((*state).single_player, (*state).settings);
-    }
-    if !(*state).grid_player.is_null() {
-        grid_player_set_settings((*state).grid_player, (*state).settings);
+    if !(*state).player_surface.is_null() {
+        player_surface_set_settings((*state).player_surface, (*state).settings);
     }
 
     show_window_overlay(state);
@@ -1103,8 +1041,8 @@ unsafe extern "C" fn on_key_pressed(
 ) -> c_int {
     let state = user_data as *mut AppState;
 
-    if !(*state).single_player.is_null() {
-        return single_player_handle_key((*state).single_player, keyval, modifiers);
+    if !(*state).player_surface.is_null() {
+        return player_surface_handle_key((*state).player_surface, keyval, modifiers);
     }
 
     GDK_EVENT_PROPAGATE
@@ -1584,7 +1522,6 @@ unsafe extern "C" fn destroy_state(user_data: *mut c_void) {
     remove_source_if_active(&mut (*state).maximize_restore_source);
 
     destroy_active_content(state);
-    clear_single_target(state);
     if !(*state).primary_session.is_null() {
         player_session_free((*state).primary_session);
         (*state).primary_session = ptr::null_mut();
@@ -1612,27 +1549,23 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         layout_button: ptr::null_mut(),
         settings: app_settings_load(),
         primary_session: player_session_new(),
-        single_player: ptr::null_mut(),
-        grid_player: ptr::null_mut(),
+        player_surface: ptr::null_mut(),
         startup_target: if config.is_null() {
             ptr::null()
         } else {
             (*config).startup_target
         },
-        grid_targets: if config.is_null() {
+        initial_targets: if config.is_null() {
             ptr::null()
         } else {
-            (*config).grid_targets
+            (*config).initial_targets
         },
-        grid_target_count: if config.is_null() {
+        initial_target_count: if config.is_null() {
             0
         } else {
-            (*config).grid_target_count
+            (*config).initial_target_count
         },
-        single_target: ptr::null_mut(),
-        has_single_target_handoff: FALSE,
-        single_chat_width: 0,
-        content_mode: CONTENT_MODE_SINGLE,
+        content_mode: CONTENT_TEMPLATE_SINGLE,
         overlay_hide_source: 0,
         maximize_restore_source: 0,
         maximize_restore_attempts: 0,
@@ -1708,8 +1641,8 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
     );
 
     (*state).layout_button = player_overlay_button_new(
-        player_layout_icon_new(PLAYER_LAYOUT_ICON_GRID),
-        cstr!("Switch to grid player"),
+        player_layout_icon_new(PLAYER_LAYOUT_ICON_2X2),
+        cstr!("Switch to 2x2 template"),
     );
     gtk_widget_add_css_class((*state).layout_button, cstr!("settings-overlay-button"));
     gtk_box_append(
@@ -1809,13 +1742,13 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         Some(destroy_state),
     );
 
-    let start_grid = !config.is_null() && (*config).start_in_grid != 0;
+    let start_2x2 = !config.is_null() && (*config).start_in_2x2 != 0;
     set_layout_mode(
         state,
-        if start_grid {
-            CONTENT_MODE_GRID
+        if start_2x2 {
+            CONTENT_TEMPLATE_2X2
         } else {
-            CONTENT_MODE_SINGLE
+            CONTENT_TEMPLATE_SINGLE
         },
     );
     gtk_window_present((*state).window as *mut GtkWindow);
@@ -1836,10 +1769,10 @@ pub fn run_from_env() -> i32 {
 }
 
 unsafe fn run_with_args(args: &[CString]) -> c_int {
-    let mut grid_targets: [*const c_char; GRID_PLAYER_MAX_TILES] =
-        [ptr::null(); GRID_PLAYER_MAX_TILES];
-    let mut grid_target_count: c_uint = 0;
-    let mut start_in_grid = FALSE;
+    let mut initial_targets: [*const c_char; PLAYER_SURFACE_MAX_TILES] =
+        [ptr::null(); PLAYER_SURFACE_MAX_TILES];
+    let mut initial_target_count: c_uint = 0;
+    let mut start_in_2x2 = FALSE;
     let mut startup_target: *const c_char = ptr::null();
     let mut argv: Vec<*mut c_char> = args.iter().map(|arg| arg.as_ptr() as *mut c_char).collect();
     argv.push(ptr::null_mut());
@@ -1847,24 +1780,24 @@ unsafe fn run_with_args(args: &[CString]) -> c_int {
     for arg in args.iter().skip(1) {
         let arg = arg.as_ptr();
         if CStr::from_ptr(arg).to_bytes() == b"--grid" {
-            start_in_grid = TRUE;
+            start_in_2x2 = TRUE;
             continue;
         }
 
         if startup_target.is_null() {
             startup_target = arg;
         }
-        if (grid_target_count as usize) < GRID_PLAYER_MAX_TILES {
-            grid_targets[grid_target_count as usize] = arg;
-            grid_target_count += 1;
+        if (initial_target_count as usize) < PLAYER_SURFACE_MAX_TILES {
+            initial_targets[initial_target_count as usize] = arg;
+            initial_target_count += 1;
         }
     }
 
     let mut config = StartupConfig {
         startup_target,
-        grid_targets: grid_targets.as_ptr(),
-        grid_target_count,
-        start_in_grid,
+        initial_targets: initial_targets.as_ptr(),
+        initial_target_count,
+        start_in_2x2,
     };
 
     configure_rendering_defaults();
