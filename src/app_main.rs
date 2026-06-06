@@ -461,14 +461,17 @@ unsafe fn show_window_overlay(state: *mut AppState) {
     gtk_widget_set_visible((*state).top_left_controls, TRUE);
     gtk_widget_set_visible((*state).top_controls, TRUE);
     if !(*state).player_surface.is_null() {
-        player_surface_show_overlay((*state).player_surface);
-        let mode = if player_surface_is_single_template((*state).player_surface) != 0 {
+        let single_template = player_surface_is_single_template((*state).player_surface) != 0;
+        let mode = if single_template {
             CONTENT_TEMPLATE_SINGLE
         } else {
             CONTENT_TEMPLATE_2X2
         };
         (*state).content_mode = mode;
         set_layout_button_for_mode(state, mode);
+        if single_template {
+            player_surface_show_overlay((*state).player_surface);
+        }
     }
     schedule_window_overlay_hide(state);
 }
