@@ -28,8 +28,9 @@ use crate::player_session::{
     player_session_get_label, player_session_get_mpv, player_session_get_muted,
     player_session_get_volume, player_session_is_playing, player_session_is_ready,
     player_session_load_stream, player_session_new, player_session_reenable_video,
-    player_session_set_hwdec_enabled, player_session_set_wakeup_callback, player_session_stop,
-    player_session_toggle_stream_info, MpvHandle, PlayerSession,
+    player_session_set_hwdec_enabled, player_session_set_wakeup_callback,
+    player_session_set_ytdl_raw_options, player_session_stop, player_session_toggle_stream_info,
+    MpvHandle, PlayerSession,
 };
 use crate::player_stream_quality::{
     player_stream_quality_state_begin_fetch, player_stream_quality_state_cache_is_valid,
@@ -540,7 +541,6 @@ struct StreamTitleCallbackData {
 struct StreamQualityCallbackData {
     tile: *mut StreamTile,
     generation: c_uint,
-    load_stream: c_int,
 }
 
 #[repr(C)]
@@ -1249,7 +1249,7 @@ unsafe extern "C" fn on_tile_twitch_playback_clicked(
         gtk_popover_popdown((*tile).stream_settings_popover as *mut GtkPopover);
     }
     gtk_widget_set_visible((*tile).twitch_playback_panel, TRUE);
-    request_tile_qualities_update(tile, TRUE, FALSE);
+    request_tile_qualities_update(tile, TRUE);
     show_tile_overlay(tile);
 }
 
@@ -1306,27 +1306,6 @@ unsafe fn reload_tile_stream_with_quality(
 unsafe fn reload_tile_stream_auto(tile: *mut StreamTile) {
     player_stream_quality_state_select_auto(&mut (*tile).stream_quality);
     load_tile_stream(tile);
-}
-
-unsafe fn load_tile_best_stream_quality(tile: *mut StreamTile) -> c_int {
-    let qualities = (*tile).stream_quality.qualities as *mut GPtrArray;
-    if qualities.is_null() || (*qualities).len == 0 {
-        return FALSE;
-    }
-
-    let quality =
-        *(*qualities).pdata.add(((*qualities).len - 1) as usize) as *const TwitchStreamQuality;
-    if quality.is_null() || !is_nonempty((*quality).url) {
-        return FALSE;
-    }
-
-    player_session_load_stream(
-        (*tile).session,
-        (*quality).url,
-        (*tile).label,
-        (*tile).channel,
-    );
-    TRUE
 }
 
 unsafe extern "C" fn on_tile_title_fetched(
@@ -1672,7 +1651,17 @@ unsafe extern "C" fn on_tile_chat_clicked(_button: *mut GtkButton, user_data: *m
     show_tile_overlay(tile);
 }
 
-unsafe fn load_tile_stream_anonymous(tile: *mut StreamTile) {
+unsafe fn load_tile_stream_url(tile: *mut StreamTile) {
+    let playback_token = app_settings_get_twitch_playback_auth_token((*(*tile).app).settings);
+    if is_nonempty(playback_token) {
+        let mut raw_options = b"add-headers=Authorization:OAuth ".to_vec();
+        raw_options.extend_from_slice(CStr::from_ptr(playback_token).to_bytes());
+        raw_options.push(0);
+        player_session_set_ytdl_raw_options((*tile).session, raw_options.as_ptr() as *const c_char);
+    } else {
+        player_session_set_ytdl_raw_options((*tile).session, ptr::null());
+    }
+
     let url = g_strdup_printf(cstr!("https://www.twitch.tv/%s"), (*tile).channel);
     player_session_load_stream((*tile).session, url, (*tile).label, (*tile).channel);
     g_free(url as *mut c_void);
@@ -1685,17 +1674,20 @@ unsafe fn load_tile_stream(tile: *mut StreamTile) {
 
     reset_tile_quality_selection(tile);
     set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
-    if is_nonempty(app_settings_get_twitch_playback_auth_token(
+    let token_configured = is_nonempty(app_settings_get_twitch_playback_auth_token(
         (*(*tile).app).settings,
-    )) {
+    ));
+    if token_configured {
         set_tile_twitch_playback_loading(tile);
-        request_tile_qualities_update(tile, TRUE, TRUE);
     } else {
         set_tile_twitch_playback_text(
             tile,
             cstr!("Connection: Anonymous\nUser ID: -\nSubscription claim: -\nTurbo: -\nShow ads: -\nHide ads: -\nServer-side ads: -\nAd-free playback: Not checked"),
         );
-        load_tile_stream_anonymous(tile);
+    }
+    load_tile_stream_url(tile);
+    if token_configured {
+        request_tile_qualities_update(tile, TRUE);
     }
     update_tile_empty_state(tile);
     sync_chat_for_tile(tile);
@@ -1913,9 +1905,6 @@ unsafe extern "C" fn on_tile_stream_qualities_fetched(
                 cstr!("surface stream quality fetch failed: %s"),
                 (*error).message,
             );
-            if (*data).load_stream != 0 {
-                load_tile_stream_anonymous(tile);
-            }
             set_tile_twitch_playback_unavailable(tile);
         }
         g_clear_error(&mut error);
@@ -1926,13 +1915,10 @@ unsafe extern "C" fn on_tile_stream_qualities_fetched(
     player_stream_quality_state_mark_fetched(&mut (*tile).stream_quality);
     set_tile_twitch_playback_info(tile, &playback_info);
     populate_tile_quality_buttons(tile);
-    if (*data).load_stream != 0 && load_tile_best_stream_quality(tile) == 0 {
-        load_tile_stream_anonymous(tile);
-    }
     drop(Box::from_raw(data));
 }
 
-unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int, load_stream: c_int) {
+unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int) {
     if (*(*tile).app).closing != 0 || !is_nonempty((*tile).channel) {
         return;
     }
@@ -1957,7 +1943,6 @@ unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int, loa
     let data = Box::into_raw(Box::new(StreamQualityCallbackData {
         tile,
         generation: player_stream_quality_state_begin_fetch(&mut (*tile).stream_quality),
-        load_stream,
     }));
 
     twitch_stream_info_fetch_stream_qualities_async(
@@ -1998,7 +1983,7 @@ unsafe extern "C" fn on_tile_stream_settings_clicked(
         return;
     }
 
-    request_tile_qualities_update(tile, FALSE, FALSE);
+    request_tile_qualities_update(tile, FALSE);
     gtk_popover_popup((*tile).stream_settings_popover as *mut GtkPopover);
     show_tile_overlay(tile);
 }

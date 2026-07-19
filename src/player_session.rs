@@ -384,6 +384,28 @@ pub unsafe fn player_session_set_hwdec_enabled(session: *mut PlayerSession, enab
     );
 }
 
+pub unsafe fn player_session_set_ytdl_raw_options(
+    session: *mut PlayerSession,
+    options: *const c_char,
+) {
+    if player_session_is_ready(session) == 0 {
+        return;
+    }
+
+    check_mpv(
+        mpv_set_property_string(
+            (*session).mpv,
+            b"ytdl-raw-options\0".as_ptr() as *const c_char,
+            if options.is_null() {
+                b"\0".as_ptr() as *const c_char
+            } else {
+                options
+            },
+        ),
+        b"set yt-dlp options\0".as_ptr() as *const c_char,
+    );
+}
+
 pub unsafe fn player_session_set_wakeup_callback(
     session: *mut PlayerSession,
     callback: Option<unsafe extern "C" fn(*mut c_void)>,
