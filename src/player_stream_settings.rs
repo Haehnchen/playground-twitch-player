@@ -1,7 +1,7 @@
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::ptr;
 
-use crate::player_icons::player_info_icon_new;
+use crate::player_icons::{player_account_icon_new, player_info_icon_new};
 
 const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
 const GTK_ORIENTATION_VERTICAL: c_int = 1;
@@ -133,10 +133,13 @@ unsafe fn player_stream_settings_item_button_new(
     button
 }
 
-unsafe fn player_stream_settings_info_button_new() -> *mut GtkWidget {
+unsafe fn player_stream_settings_action_button_new(
+    label_text: *const c_char,
+    icon: *mut GtkWidget,
+) -> *mut GtkWidget {
     let button = gtk_button_new();
     let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    let label = gtk_label_new(b"Stream Info\0".as_ptr() as *const c_char);
+    let label = gtk_label_new(label_text);
 
     gtk_widget_add_css_class(button, b"stream-settings-item\0".as_ptr() as *const c_char);
     gtk_widget_set_halign(button, GTK_ALIGN_FILL);
@@ -146,7 +149,7 @@ unsafe fn player_stream_settings_info_button_new() -> *mut GtkWidget {
     gtk_label_set_xalign(label as *mut GtkLabel, 0.0);
     gtk_widget_set_hexpand(label, 1);
 
-    gtk_box_append(content as *mut GtkBox, player_info_icon_new());
+    gtk_box_append(content as *mut GtkBox, icon);
     gtk_box_append(content as *mut GtkBox, label);
     gtk_button_set_child(button as *mut GtkButton, content);
 
@@ -157,6 +160,7 @@ pub unsafe fn player_stream_settings_popover_new<W>(
     relative_to: *mut W,
     quality_list_box_out: *mut *mut W,
     quality_status_label_out: *mut *mut W,
+    twitch_playback_button_out: *mut *mut W,
     info_button_out: *mut *mut W,
 ) -> *mut W {
     let popover = gtk_popover_new();
@@ -206,14 +210,31 @@ pub unsafe fn player_stream_settings_popover_new<W>(
     );
     gtk_box_append(settings_box as *mut GtkBox, divider);
 
-    let info_button = player_stream_settings_info_button_new();
-    gtk_box_append(settings_box as *mut GtkBox, info_button);
+    let actions_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_halign(actions_box, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand(actions_box, 1);
+    gtk_box_append(settings_box as *mut GtkBox, actions_box);
+
+    let twitch_playback_button = player_stream_settings_action_button_new(
+        b"Twitch Playback\0".as_ptr() as *const c_char,
+        player_account_icon_new(),
+    );
+    gtk_box_append(actions_box as *mut GtkBox, twitch_playback_button);
+
+    let info_button = player_stream_settings_action_button_new(
+        b"Stream Info\0".as_ptr() as *const c_char,
+        player_info_icon_new(),
+    );
+    gtk_box_append(actions_box as *mut GtkBox, info_button);
 
     if !quality_list_box_out.is_null() {
         *quality_list_box_out = quality_list_box as *mut W;
     }
     if !quality_status_label_out.is_null() {
         *quality_status_label_out = quality_status_label as *mut W;
+    }
+    if !twitch_playback_button_out.is_null() {
+        *twitch_playback_button_out = twitch_playback_button as *mut W;
     }
     if !info_button_out.is_null() {
         *info_button_out = info_button as *mut W;

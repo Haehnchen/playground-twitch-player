@@ -19,6 +19,7 @@ use crate::player_footer::{
 use crate::player_icons::{
     player_chat_icon_new, player_plus_icon_new, player_refresh_icon_new,
     player_stream_settings_icon_new, player_tile_focus_icon_new, player_trash_icon_new,
+    player_window_icon_new,
 };
 use crate::player_motion::{player_motion_tracker_ignore_stationary, PlayerMotionTracker};
 use crate::player_overlay_controls::player_overlay_button_new;
@@ -46,15 +47,18 @@ use crate::player_volume::{
     player_volume_sync_session_from_range, player_volume_toggle_muted,
     player_volume_update_mute_button,
 };
-use crate::settings::{app_settings_get_hwdec_enabled, AppSettings, AppSettingsChannel};
+use crate::settings::{
+    app_settings_get_hwdec_enabled, app_settings_get_twitch_playback_auth_token, AppSettings,
+    AppSettingsChannel,
+};
 use crate::twitch_stream_info::{
-    twitch_current_stream_free, twitch_stream_info_fetch_current_stream_async,
-    twitch_stream_info_fetch_current_stream_finish,
+    twitch_current_stream_free, twitch_playback_info_empty,
+    twitch_stream_info_fetch_current_stream_async, twitch_stream_info_fetch_current_stream_finish,
     twitch_stream_info_fetch_stream_qualities_async,
     twitch_stream_info_fetch_stream_qualities_finish,
     twitch_stream_info_format_current_stream_metadata,
     twitch_stream_info_format_current_stream_title, GAsyncResult, GCancellable, GError, GPtrArray,
-    TwitchStreamQuality,
+    TwitchPlaybackInfo, TwitchStreamQuality,
 };
 
 macro_rules! cstr {
@@ -74,6 +78,7 @@ const MIN_CHAT_WIDTH: c_int = 120;
 const MAX_CHAT_WIDTH: c_int = 280;
 const MIN_VIDEO_WIDTH: c_int = 180;
 const MAX_CHAT_WIDTH_PERCENT: c_int = 45;
+const PLAYER_WINDOW_ICON_CLOSE: c_int = 2;
 
 const FALSE: c_int = 0;
 const TRUE: c_int = 1;
@@ -468,6 +473,8 @@ struct StreamTile {
     stream_settings_popover: *mut GtkWidget,
     quality_list_box: *mut GtkWidget,
     quality_status_label: *mut GtkWidget,
+    twitch_playback_panel: *mut GtkWidget,
+    twitch_playback_status_label: *mut GtkWidget,
     channel_switcher: *mut ChannelSwitcherOverlay,
     chat_panel: *mut ChatPanel,
     session: *mut PlayerSession,
@@ -533,6 +540,7 @@ struct StreamTitleCallbackData {
 struct StreamQualityCallbackData {
     tile: *mut StreamTile,
     generation: c_uint,
+    load_stream: c_int,
 }
 
 #[repr(C)]
@@ -690,6 +698,7 @@ unsafe extern "C" {
     fn gtk_label_new(str: *const c_char) -> *mut GtkWidget;
     fn gtk_label_set_ellipsize(label: *mut GtkLabel, mode: c_int);
     fn gtk_label_set_text(label: *mut GtkLabel, str: *const c_char);
+    fn gtk_label_set_wrap(label: *mut GtkLabel, wrap: c_int);
     fn gtk_label_set_xalign(label: *mut GtkLabel, xalign: f32);
     fn gtk_layout_manager_get_layout_child(
         manager: *mut GtkLayoutManager,
@@ -1107,6 +1116,159 @@ unsafe fn reset_tile_quality_selection(tile: *mut StreamTile) {
     player_stream_quality_state_reset_selection(&mut (*tile).stream_quality);
 }
 
+unsafe fn set_tile_twitch_playback_text(tile: *mut StreamTile, text: *const c_char) {
+    if !(*tile).twitch_playback_status_label.is_null() {
+        gtk_label_set_text((*tile).twitch_playback_status_label as *mut GtkLabel, text);
+    }
+}
+
+unsafe fn set_tile_twitch_playback_not_checked(tile: *mut StreamTile) {
+    set_tile_twitch_playback_text(
+        tile,
+        cstr!("Connection: Not checked\nUser ID: -\nSubscription claim: -\nTurbo: -\nShow ads: -\nHide ads: -\nServer-side ads: -\nAd-free playback: -"),
+    );
+}
+
+unsafe fn set_tile_twitch_playback_loading(tile: *mut StreamTile) {
+    if is_nonempty(app_settings_get_twitch_playback_auth_token(
+        (*(*tile).app).settings,
+    )) {
+        set_tile_twitch_playback_text(
+            tile,
+            cstr!("Connection: Checking token...\nUser ID: -\nSubscription claim: -\nTurbo: -\nShow ads: -\nHide ads: -\nServer-side ads: -\nAd-free playback: Checking..."),
+        );
+    } else {
+        set_tile_twitch_playback_text(
+            tile,
+            cstr!("Connection: Anonymous\nUser ID: -\nSubscription claim: -\nTurbo: -\nShow ads: -\nHide ads: -\nServer-side ads: -\nAd-free playback: Checking..."),
+        );
+    }
+}
+
+unsafe fn set_tile_twitch_playback_unavailable(tile: *mut StreamTile) {
+    set_tile_twitch_playback_text(
+        tile,
+        cstr!("Connection: Unavailable\nUser ID: -\nSubscription claim: -\nTurbo: -\nShow ads: -\nHide ads: -\nServer-side ads: -\nAd-free playback: Anonymous fallback"),
+    );
+}
+
+unsafe fn set_tile_twitch_playback_info(tile: *mut StreamTile, info: &TwitchPlaybackInfo) {
+    if info.available == 0 {
+        set_tile_twitch_playback_unavailable(tile);
+        return;
+    }
+
+    let token_configured = is_nonempty(app_settings_get_twitch_playback_auth_token(
+        (*(*tile).app).settings,
+    ));
+    let connection = if info.authenticated != 0 {
+        "Authenticated"
+    } else if token_configured {
+        "Token not recognized"
+    } else {
+        "Anonymous"
+    };
+    if info.authenticated != 0 {
+        set_tile_twitch_playback_authenticated_info(tile, info, connection);
+        return;
+    }
+    let mut text = format!(
+        "Connection: {connection}\nUser ID: -\nSubscription claim: -\nTurbo: -\nShow ads: {}\nHide ads: {}\nServer-side ads: {}\nAd-free playback: {}",
+        yes_no(info.show_ads),
+        yes_no(info.hide_ads),
+        yes_no(info.server_ads),
+        ad_free_playback_status(info),
+    )
+    .into_bytes();
+    text.push(0);
+    set_tile_twitch_playback_text(tile, text.as_ptr() as *const c_char);
+}
+
+fn yes_no(value: c_int) -> &'static str {
+    if value != 0 {
+        "Yes"
+    } else {
+        "No"
+    }
+}
+
+fn ad_free_playback_status(info: &TwitchPlaybackInfo) -> &'static str {
+    if info.hide_ads != 0 || info.show_ads == 0 {
+        "Granted"
+    } else {
+        "Not granted"
+    }
+}
+
+unsafe fn set_tile_twitch_playback_authenticated_info(
+    tile: *mut StreamTile,
+    info: &TwitchPlaybackInfo,
+    connection: &str,
+) {
+    let subscription = if info.subscriber != 0 { "Yes" } else { "No" };
+    let turbo = if info.turbo != 0 {
+        "Active"
+    } else {
+        "Not active"
+    };
+    let mut text = format!(
+        "Connection: {connection}\nUser ID: {}\nSubscription claim: {subscription}\nTurbo: {turbo}\nShow ads: {}\nHide ads: {}\nServer-side ads: {}\nAd-free playback: {}",
+        info.user_id,
+        yes_no(info.show_ads),
+        yes_no(info.hide_ads),
+        yes_no(info.server_ads),
+        ad_free_playback_status(info),
+    )
+    .into_bytes();
+    text.push(0);
+    set_tile_twitch_playback_text(tile, text.as_ptr() as *const c_char);
+}
+
+unsafe fn hide_tile_twitch_playback_panel(tile: *mut StreamTile) {
+    if !(*tile).twitch_playback_panel.is_null() {
+        gtk_widget_set_visible((*tile).twitch_playback_panel, FALSE);
+    }
+}
+
+unsafe extern "C" fn on_tile_twitch_playback_close_clicked(
+    _button: *mut GtkButton,
+    user_data: *mut c_void,
+) {
+    hide_tile_twitch_playback_panel(user_data as *mut StreamTile);
+}
+
+unsafe extern "C" fn on_tile_twitch_playback_clicked(
+    _button: *mut GtkButton,
+    user_data: *mut c_void,
+) {
+    let tile = user_data as *mut StreamTile;
+    if (*tile).twitch_playback_panel.is_null() {
+        return;
+    }
+    if !(*tile).stream_settings_popover.is_null() {
+        gtk_popover_popdown((*tile).stream_settings_popover as *mut GtkPopover);
+    }
+    gtk_widget_set_visible((*tile).twitch_playback_panel, TRUE);
+    request_tile_qualities_update(tile, TRUE, FALSE);
+    show_tile_overlay(tile);
+}
+
+unsafe extern "C" fn on_tile_twitch_playback_settings_clicked(
+    _button: *mut GtkButton,
+    user_data: *mut c_void,
+) {
+    let tile = user_data as *mut StreamTile;
+    let state = (*tile).app;
+
+    hide_tile_twitch_playback_panel(tile);
+    if !(*tile).stream_settings_popover.is_null() {
+        gtk_popover_popdown((*tile).stream_settings_popover as *mut GtkPopover);
+    }
+    if let Some(callback) = (*state).settings_callback {
+        callback((*state).settings_user_data);
+    }
+}
+
 unsafe fn tile_settings_popover_is_visible(tile: *mut StreamTile) -> bool {
     !(*tile).stream_settings_popover.is_null()
         && gtk_widget_get_visible((*tile).stream_settings_popover) != 0
@@ -1144,6 +1306,27 @@ unsafe fn reload_tile_stream_with_quality(
 unsafe fn reload_tile_stream_auto(tile: *mut StreamTile) {
     player_stream_quality_state_select_auto(&mut (*tile).stream_quality);
     load_tile_stream(tile);
+}
+
+unsafe fn load_tile_best_stream_quality(tile: *mut StreamTile) -> c_int {
+    let qualities = (*tile).stream_quality.qualities as *mut GPtrArray;
+    if qualities.is_null() || (*qualities).len == 0 {
+        return FALSE;
+    }
+
+    let quality =
+        *(*qualities).pdata.add(((*qualities).len - 1) as usize) as *const TwitchStreamQuality;
+    if quality.is_null() || !is_nonempty((*quality).url) {
+        return FALSE;
+    }
+
+    player_session_load_stream(
+        (*tile).session,
+        (*quality).url,
+        (*tile).label,
+        (*tile).channel,
+    );
+    TRUE
 }
 
 unsafe extern "C" fn on_tile_title_fetched(
@@ -1489,17 +1672,31 @@ unsafe extern "C" fn on_tile_chat_clicked(_button: *mut GtkButton, user_data: *m
     show_tile_overlay(tile);
 }
 
+unsafe fn load_tile_stream_anonymous(tile: *mut StreamTile) {
+    let url = g_strdup_printf(cstr!("https://www.twitch.tv/%s"), (*tile).channel);
+    player_session_load_stream((*tile).session, url, (*tile).label, (*tile).channel);
+    g_free(url as *mut c_void);
+}
+
 unsafe fn load_tile_stream(tile: *mut StreamTile) {
     if player_session_is_ready((*tile).session) == 0 || !is_nonempty((*tile).channel) {
         return;
     }
 
     reset_tile_quality_selection(tile);
-    let url = g_strdup_printf(cstr!("https://www.twitch.tv/%s"), (*tile).channel);
-
     set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
-    player_session_load_stream((*tile).session, url, (*tile).label, (*tile).channel);
-    g_free(url as *mut c_void);
+    if is_nonempty(app_settings_get_twitch_playback_auth_token(
+        (*(*tile).app).settings,
+    )) {
+        set_tile_twitch_playback_loading(tile);
+        request_tile_qualities_update(tile, TRUE, TRUE);
+    } else {
+        set_tile_twitch_playback_text(
+            tile,
+            cstr!("Connection: Anonymous\nUser ID: -\nSubscription claim: -\nTurbo: -\nShow ads: -\nHide ads: -\nServer-side ads: -\nAd-free playback: Not checked"),
+        );
+        load_tile_stream_anonymous(tile);
+    }
     update_tile_empty_state(tile);
     sync_chat_for_tile(tile);
     request_tile_title_update(tile, TRUE);
@@ -1545,6 +1742,8 @@ unsafe fn stop_tile_stream(tile: *mut StreamTile) {
     clear_pointer(&mut (*tile).label);
     clear_pointer(&mut (*tile).channel);
     reset_tile_quality_selection(tile);
+    hide_tile_twitch_playback_panel(tile);
+    set_tile_twitch_playback_not_checked(tile);
     reset_tile_stream_title(tile);
     update_tile_empty_state(tile);
     queue_tile_render(tile);
@@ -1687,7 +1886,9 @@ unsafe extern "C" fn on_tile_stream_qualities_fetched(
     let data = user_data as *mut StreamQualityCallbackData;
     let tile = (*data).tile;
     let mut error: *mut GError = ptr::null_mut();
-    let qualities = twitch_stream_info_fetch_stream_qualities_finish(result, &mut error);
+    let mut playback_info = twitch_playback_info_empty();
+    let qualities =
+        twitch_stream_info_fetch_stream_qualities_finish(result, &mut playback_info, &mut error);
 
     if (*data).generation != (*tile).stream_quality.generation {
         if !qualities.is_null() {
@@ -1712,6 +1913,10 @@ unsafe extern "C" fn on_tile_stream_qualities_fetched(
                 cstr!("surface stream quality fetch failed: %s"),
                 (*error).message,
             );
+            if (*data).load_stream != 0 {
+                load_tile_stream_anonymous(tile);
+            }
+            set_tile_twitch_playback_unavailable(tile);
         }
         g_clear_error(&mut error);
         drop(Box::from_raw(data));
@@ -1719,11 +1924,15 @@ unsafe extern "C" fn on_tile_stream_qualities_fetched(
     }
 
     player_stream_quality_state_mark_fetched(&mut (*tile).stream_quality);
+    set_tile_twitch_playback_info(tile, &playback_info);
     populate_tile_quality_buttons(tile);
+    if (*data).load_stream != 0 && load_tile_best_stream_quality(tile) == 0 {
+        load_tile_stream_anonymous(tile);
+    }
     drop(Box::from_raw(data));
 }
 
-unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int) {
+unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int, load_stream: c_int) {
     if (*(*tile).app).closing != 0 || !is_nonempty((*tile).channel) {
         return;
     }
@@ -1739,6 +1948,7 @@ unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int) {
         player_stream_quality_state_cancel_fetch(&mut (*tile).stream_quality);
     }
 
+    set_tile_twitch_playback_loading(tile);
     gtk_label_set_text(
         (*tile).quality_status_label as *mut GtkLabel,
         cstr!("Loading..."),
@@ -1747,10 +1957,12 @@ unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int) {
     let data = Box::into_raw(Box::new(StreamQualityCallbackData {
         tile,
         generation: player_stream_quality_state_begin_fetch(&mut (*tile).stream_quality),
+        load_stream,
     }));
 
     twitch_stream_info_fetch_stream_qualities_async(
         (*tile).channel,
+        app_settings_get_twitch_playback_auth_token((*(*tile).app).settings),
         (*tile).stream_quality.cancel as *mut GCancellable,
         Some(on_tile_stream_qualities_fetched),
         data as *mut c_void,
@@ -1780,12 +1992,13 @@ unsafe extern "C" fn on_tile_stream_settings_clicked(
     if (*tile).stream_settings_popover.is_null() {
         return;
     }
+    hide_tile_twitch_playback_panel(tile);
     if player_session_is_playing((*tile).session) == 0 || !is_nonempty((*tile).channel) {
         show_tile_overlay(tile);
         return;
     }
 
-    request_tile_qualities_update(tile, FALSE);
+    request_tile_qualities_update(tile, FALSE, FALSE);
     gtk_popover_popup((*tile).stream_settings_popover as *mut GtkPopover);
     show_tile_overlay(tile);
 }
@@ -2053,6 +2266,8 @@ unsafe fn reset_tile_for_template_switch(tile: *mut StreamTile) {
     (*tile).title_fetch_in_progress = FALSE;
     clear_tile_render_context(tile);
     clear_tile_stream_qualities(tile);
+    hide_tile_twitch_playback_panel(tile);
+    set_tile_twitch_playback_not_checked(tile);
     set_tile_stream_title(tile, cstr!(""), cstr!(""));
     clear_pointer(&mut (*tile).label);
     clear_pointer(&mut (*tile).channel);
@@ -2566,6 +2781,79 @@ unsafe extern "C" fn on_gl_unrealize(area: *mut GtkGLArea, user_data: *mut c_voi
     clear_tile_render_context(tile);
 }
 
+unsafe fn create_tile_twitch_playback_panel(tile: *mut StreamTile) -> *mut GtkWidget {
+    let panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(panel, cstr!("twitch-playback-panel"));
+    gtk_widget_set_halign(panel, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(panel, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(panel, FALSE);
+    gtk_widget_set_vexpand(panel, FALSE);
+    gtk_widget_set_visible(panel, FALSE);
+
+    let header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(header, cstr!("twitch-playback-header"));
+    gtk_widget_set_halign(header, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand(header, TRUE);
+
+    let title = gtk_label_new(cstr!("Twitch Playback"));
+    gtk_widget_add_css_class(title, cstr!("twitch-playback-title"));
+    gtk_label_set_xalign(title as *mut GtkLabel, 0.0);
+    gtk_widget_set_halign(title, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand(title, TRUE);
+
+    let settings_button = gtk_button_new();
+    gtk_button_set_child(
+        settings_button as *mut GtkButton,
+        player_stream_settings_icon_new(),
+    );
+    gtk_widget_add_css_class(settings_button, cstr!("twitch-playback-settings"));
+    gtk_widget_set_tooltip_text(settings_button, cstr!("Playback authentication settings"));
+    g_signal_connect_data(
+        settings_button as *mut c_void,
+        cstr!("clicked"),
+        on_tile_twitch_playback_settings_clicked as *const c_void,
+        tile as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
+
+    let close_button = gtk_button_new();
+    gtk_button_set_child(
+        close_button as *mut GtkButton,
+        player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE),
+    );
+    gtk_widget_add_css_class(close_button, cstr!("twitch-playback-close"));
+    gtk_widget_set_tooltip_text(close_button, cstr!("Close"));
+    g_signal_connect_data(
+        close_button as *mut c_void,
+        cstr!("clicked"),
+        on_tile_twitch_playback_close_clicked as *const c_void,
+        tile as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
+
+    gtk_box_append(header as *mut GtkBox, title);
+    gtk_box_append(header as *mut GtkBox, settings_button);
+    gtk_box_append(header as *mut GtkBox, close_button);
+    gtk_box_append(panel as *mut GtkBox, header);
+
+    (*tile).twitch_playback_status_label = gtk_label_new(cstr!(
+        "Connection: Not checked\nSubscription: -\nTurbo: -\nAds: -"
+    ));
+    gtk_widget_add_css_class(
+        (*tile).twitch_playback_status_label,
+        cstr!("twitch-playback-status"),
+    );
+    gtk_label_set_xalign((*tile).twitch_playback_status_label as *mut GtkLabel, 0.0);
+    gtk_label_set_wrap((*tile).twitch_playback_status_label as *mut GtkLabel, TRUE);
+    gtk_widget_set_halign((*tile).twitch_playback_status_label, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand((*tile).twitch_playback_status_label, TRUE);
+    gtk_box_append(panel as *mut GtkBox, (*tile).twitch_playback_status_label);
+
+    panel
+}
+
 unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
     let box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_add_css_class(box_, cstr!("player-footer"));
@@ -2712,12 +3000,22 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
         0,
     );
 
+    let mut twitch_playback_button: *mut GtkWidget = ptr::null_mut();
     let mut info_button: *mut GtkWidget = ptr::null_mut();
     (*tile).stream_settings_popover = player_stream_settings_popover_new(
         (*tile).stream_info_button,
         &mut (*tile).quality_list_box,
         &mut (*tile).quality_status_label,
+        &mut twitch_playback_button,
         &mut info_button,
+    );
+    g_signal_connect_data(
+        twitch_playback_button as *mut c_void,
+        cstr!("clicked"),
+        on_tile_twitch_playback_clicked as *const c_void,
+        tile as *mut c_void,
+        ptr::null_mut(),
+        0,
     );
     g_signal_connect_data(
         info_button as *mut c_void,
@@ -2840,6 +3138,11 @@ unsafe fn create_stream_tile(
     gtk_widget_set_valign((*tile).footer, GTK_ALIGN_END);
     gtk_widget_set_visible((*tile).footer, FALSE);
     gtk_overlay_add_overlay((*tile).overlay as *mut GtkOverlay, (*tile).footer);
+    (*tile).twitch_playback_panel = create_tile_twitch_playback_panel(tile);
+    gtk_overlay_add_overlay(
+        (*tile).overlay as *mut GtkOverlay,
+        (*tile).twitch_playback_panel,
+    );
     (*tile).channel_switcher = channel_switcher_overlay_new(
         (*state).root_overlay as *mut GtkOverlay,
         (*state).settings,
@@ -3022,6 +3325,8 @@ pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
         (*tile).stream_settings_popover = ptr::null_mut();
         (*tile).quality_list_box = ptr::null_mut();
         (*tile).quality_status_label = ptr::null_mut();
+        (*tile).twitch_playback_panel = ptr::null_mut();
+        (*tile).twitch_playback_status_label = ptr::null_mut();
         channel_switcher_overlay_free((*tile).channel_switcher);
         (*tile).channel_switcher = ptr::null_mut();
         chat_panel_free((*tile).chat_panel);

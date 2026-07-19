@@ -25,6 +25,9 @@ Open Settings > Channels and use "Connect Twitch" to authorize the app. The app
 uses Twitch's device-code flow and stores the resulting user token in the
 settings file.
 
+Optional playback authentication supports channel subscription and Twitch Turbo
+benefits during stream playback.
+
 ## Dependencies
 
 On Ubuntu/Debian:

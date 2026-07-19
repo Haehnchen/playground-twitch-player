@@ -190,6 +190,40 @@ unsafe fn test_parse_stream_qualities_playlist_returns_sorted_variants() {
     g_ptr_array_unref(qualities);
 }
 
+unsafe fn test_parse_playback_info_returns_authentication_and_ad_claims() {
+    let value = cstring(
+        r#"{"user_id":123456789,"subscriber":true,"turbo":false,"show_ads":false,"hide_ads":true,"server_ads":false}"#,
+    );
+    let info = twitch_stream_info::twitch_stream_info_test_parse_playback_info(value.as_ptr());
+
+    assert_eq!(info.available, 1);
+    assert_eq!(info.authenticated, 1);
+    assert_eq!(info.user_id, 123456789);
+    assert_eq!(info.subscriber, 1);
+    assert_eq!(info.turbo, 0);
+    assert_eq!(info.show_ads, 0);
+    assert_eq!(info.hide_ads, 1);
+    assert_eq!(info.server_ads, 0);
+}
+
+unsafe fn test_parse_playback_info_handles_anonymous_and_invalid_values() {
+    let anonymous = cstring(
+        r#"{"user_id":null,"subscriber":false,"turbo":false,"show_ads":true,"hide_ads":false,"server_ads":true}"#,
+    );
+    let anonymous_info =
+        twitch_stream_info::twitch_stream_info_test_parse_playback_info(anonymous.as_ptr());
+    let invalid = cstring("{");
+    let invalid_info =
+        twitch_stream_info::twitch_stream_info_test_parse_playback_info(invalid.as_ptr());
+
+    assert_eq!(anonymous_info.available, 1);
+    assert_eq!(anonymous_info.authenticated, 0);
+    assert_eq!(anonymous_info.user_id, 0);
+    assert_eq!(anonymous_info.show_ads, 1);
+    assert_eq!(anonymous_info.server_ads, 1);
+    assert_eq!(invalid_info.available, 0);
+}
+
 unsafe fn test_format_viewer_count_compacts_large_counts() {
     let small = twitch_stream_info::twitch_stream_info_format_viewer_count(999);
     let thousands = twitch_stream_info::twitch_stream_info_format_viewer_count(1234);
@@ -423,6 +457,8 @@ fn main() {
         test_parse_current_stream_response_returns_title_viewers_and_category();
         test_parse_current_stream_response_handles_missing_optional_fields();
         test_parse_stream_qualities_playlist_returns_sorted_variants();
+        test_parse_playback_info_returns_authentication_and_ad_claims();
+        test_parse_playback_info_handles_anonymous_and_invalid_values();
         test_format_viewer_count_compacts_large_counts();
         test_format_live_duration_uses_hours_and_minutes();
         test_format_current_stream_title_and_metadata_separately();

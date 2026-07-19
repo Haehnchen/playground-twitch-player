@@ -17,6 +17,7 @@ pub struct AppSettings {
     twitch_oauth_token: *mut c_char,
     twitch_refresh_token: *mut c_char,
     twitch_oauth_expires_at: i64,
+    twitch_playback_auth_token: *mut c_char,
     hwdec_enabled: c_int,
 }
 
@@ -67,6 +68,7 @@ type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
 
 unsafe extern "C" {
     fn g_build_filenamev(args: *mut *mut c_char) -> *mut c_char;
+    fn g_chmod(filename: *const c_char, mode: c_int) -> c_int;
     fn g_clear_error(error: *mut *mut GError);
     fn g_file_test(filename: *const c_char, test: c_int) -> c_int;
     fn g_file_error_from_errno(err_no: c_int) -> c_int;
@@ -232,6 +234,7 @@ pub unsafe fn app_settings_new() -> *mut AppSettings {
         twitch_oauth_token: ptr::null_mut(),
         twitch_refresh_token: ptr::null_mut(),
         twitch_oauth_expires_at: 0,
+        twitch_playback_auth_token: ptr::null_mut(),
         hwdec_enabled: 1,
     }))
 }
@@ -253,6 +256,7 @@ pub unsafe fn app_settings_free(settings: *mut AppSettings) {
     g_ptr_array_unref(settings.channels);
     g_free(settings.twitch_oauth_token as *mut c_void);
     g_free(settings.twitch_refresh_token as *mut c_void);
+    g_free(settings.twitch_playback_auth_token as *mut c_void);
 }
 
 pub unsafe fn app_settings_get_channel_count(settings: *const AppSettings) -> c_uint {
@@ -310,6 +314,34 @@ pub unsafe fn app_settings_get_twitch_oauth_expires_at(settings: *const AppSetti
     }
 
     (*settings).twitch_oauth_expires_at
+}
+
+pub unsafe fn app_settings_get_twitch_playback_auth_token(
+    settings: *const AppSettings,
+) -> *const c_char {
+    if settings.is_null() {
+        return ptr::null();
+    }
+
+    (*settings).twitch_playback_auth_token
+}
+
+pub unsafe fn app_settings_set_twitch_playback_auth_token(
+    settings: *mut AppSettings,
+    token: *const c_char,
+) {
+    if settings.is_null() {
+        return;
+    }
+
+    let token = trimmed_bytes(token);
+    let new_token = if token.is_empty() {
+        ptr::null_mut()
+    } else {
+        dup_bytes(&token)
+    };
+    g_free((*settings).twitch_playback_auth_token as *mut c_void);
+    (*settings).twitch_playback_auth_token = new_token;
 }
 
 pub unsafe fn app_settings_set_twitch_oauth_token(
@@ -501,6 +533,14 @@ pub unsafe fn app_settings_load() -> *mut AppSettings {
             0,
         ),
     );
+    app_settings_set_twitch_playback_auth_token(
+        settings,
+        json_object_get_string_member_with_default(
+            root,
+            b"twitch_playback_auth_token\0".as_ptr() as *const c_char,
+            ptr::null(),
+        ),
+    );
     load_channels(settings, root);
 
     g_object_unref(parser as *mut c_void);
@@ -515,6 +555,7 @@ pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut 
         b"twitch-player\0".as_ptr() as *const c_char,
     ]);
     let path = app_settings_get_path();
+    let settings_file_is_new = g_file_test(path, G_FILE_TEST_EXISTS) == 0;
 
     if g_mkdir_with_parents(config_dir, 0o700) < 0 {
         let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -554,6 +595,14 @@ pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut 
         );
         json_builder_add_int_value(builder, oauth_expires_at);
     }
+    let playback_auth_token = app_settings_get_twitch_playback_auth_token(settings);
+    if is_nonempty(playback_auth_token) {
+        json_builder_set_member_name(
+            builder,
+            b"twitch_playback_auth_token\0".as_ptr() as *const c_char,
+        );
+        json_builder_add_string_value(builder, playback_auth_token);
+    }
 
     json_builder_set_member_name(builder, b"channels\0".as_ptr() as *const c_char);
     json_builder_begin_array(builder);
@@ -575,7 +624,19 @@ pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut 
     let generator = json_generator_new();
     json_generator_set_root(generator, root);
     json_generator_set_pretty(generator, 1);
-    let result = json_generator_to_file(generator, path, error);
+    let mut result = json_generator_to_file(generator, path, error);
+    if result != 0 && settings_file_is_new && g_chmod(path, 0o600) < 0 {
+        let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        g_set_error(
+            error,
+            g_file_error_quark(),
+            g_file_error_from_errno(errno),
+            b"Could not protect %s: %s\0".as_ptr() as *const c_char,
+            path,
+            g_strerror(errno),
+        );
+        result = 0;
+    }
 
     g_object_unref(generator as *mut c_void);
     json_node_unref(root);

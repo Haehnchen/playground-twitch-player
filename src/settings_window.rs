@@ -5,9 +5,10 @@ use crate::player_icons::player_trash_icon_new;
 use crate::settings::{
     app_settings_add_channel, app_settings_clear_channels, app_settings_get_channel,
     app_settings_get_channel_count, app_settings_get_hwdec_enabled,
-    app_settings_get_twitch_oauth_token, app_settings_get_twitch_refresh_token, app_settings_save,
-    app_settings_set_hwdec_enabled, app_settings_set_twitch_auth_tokens,
-    app_settings_set_twitch_oauth_token, AppSettings,
+    app_settings_get_twitch_oauth_token, app_settings_get_twitch_playback_auth_token,
+    app_settings_get_twitch_refresh_token, app_settings_save, app_settings_set_hwdec_enabled,
+    app_settings_set_twitch_auth_tokens, app_settings_set_twitch_oauth_token,
+    app_settings_set_twitch_playback_auth_token, AppSettings,
 };
 use crate::twitch_auth::{
     twitch_auth_device_code_free, twitch_auth_poll_device_token_async,
@@ -38,6 +39,7 @@ pub struct SettingsWindow {
     hwdec_check: *mut GtkWidget,
     twitch_auth_button: *mut GtkWidget,
     twitch_auth_status: *mut GtkWidget,
+    twitch_playback_auth_entry: *mut GtkWidget,
     channels_box: *mut GtkWidget,
     empty_label: *mut GtkWidget,
     status_label: *mut GtkWidget,
@@ -179,6 +181,7 @@ unsafe extern "C" {
     fn gtk_editable_set_text(editable: *mut GtkEditable, text: *const c_char);
     fn gtk_entry_new() -> *mut GtkWidget;
     fn gtk_entry_set_placeholder_text(entry: *mut GtkEntry, text: *const c_char);
+    fn gtk_entry_set_visibility(entry: *mut GtkEntry, visible: c_int);
     fn gtk_label_new(str: *const c_char) -> *mut GtkWidget;
     fn gtk_label_set_markup(label: *mut GtkLabel, str: *const c_char);
     fn gtk_label_set_text(label: *mut GtkLabel, str: *const c_char);
@@ -778,6 +781,12 @@ unsafe extern "C" fn on_save_clicked(_button: *mut GtkButton, user_data: *mut c_
             0
         },
     );
+    if !(*view).twitch_playback_auth_entry.is_null() {
+        app_settings_set_twitch_playback_auth_token(
+            (*view).settings,
+            gtk_editable_get_text((*view).twitch_playback_auth_entry as *mut GtkEditable),
+        );
+    }
     app_settings_clear_channels((*view).settings);
     for channel in channels {
         let channel = dup_bytes(&channel);
@@ -991,6 +1000,56 @@ unsafe fn create_channels_page(view: *mut SettingsWindow) -> *mut GtkWidget {
     }
     update_twitch_auth_controls(view);
 
+    let playback_auth_title = gtk_label_new(b"Playback authentication\0".as_ptr() as *const c_char);
+    gtk_widget_add_css_class(
+        playback_auth_title,
+        b"settings-section-title\0".as_ptr() as *const c_char,
+    );
+    gtk_label_set_xalign(playback_auth_title as *mut GtkLabel, 0.0);
+    gtk_box_append(page as *mut GtkBox, playback_auth_title);
+
+    (*view).twitch_playback_auth_entry = gtk_entry_new();
+    gtk_widget_add_css_class(
+        (*view).twitch_playback_auth_entry,
+        b"settings-token-entry\0".as_ptr() as *const c_char,
+    );
+    gtk_entry_set_placeholder_text(
+        (*view).twitch_playback_auth_entry as *mut GtkEntry,
+        b"Twitch auth-token\0".as_ptr() as *const c_char,
+    );
+    gtk_entry_set_visibility((*view).twitch_playback_auth_entry as *mut GtkEntry, 0);
+    gtk_editable_set_text(
+        (*view).twitch_playback_auth_entry as *mut GtkEditable,
+        label_text_or_empty(app_settings_get_twitch_playback_auth_token(
+            (*view).settings,
+        )),
+    );
+    gtk_widget_set_hexpand((*view).twitch_playback_auth_entry, 1);
+    gtk_box_append(page as *mut GtkBox, (*view).twitch_playback_auth_entry);
+
+    let playback_auth_hint = gtk_label_new(ptr::null());
+    gtk_widget_add_css_class(
+        playback_auth_hint,
+        b"settings-hint-label\0".as_ptr() as *const c_char,
+    );
+    gtk_label_set_markup(
+        playback_auth_hint as *mut GtkLabel,
+        b"Paste Twitch's website auth-token to use subscription or Turbo benefits during playback. <a href=\"https://streamlink.github.io/cli/plugins/twitch.html#authentication\">How to find the token</a>.\0"
+            .as_ptr() as *const c_char,
+    );
+    gtk_label_set_xalign(playback_auth_hint as *mut GtkLabel, 0.0);
+    gtk_label_set_wrap(playback_auth_hint as *mut GtkLabel, 1);
+    gtk_widget_set_halign(playback_auth_hint, GTK_ALIGN_FILL);
+    g_signal_connect_data(
+        playback_auth_hint as *mut c_void,
+        b"activate-link\0".as_ptr() as *const c_char,
+        on_twitch_auth_status_link_activated as *const c_void,
+        view as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
+    gtk_box_append(page as *mut GtkBox, playback_auth_hint);
+
     let custom_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_add_css_class(
         custom_header,
@@ -1167,6 +1226,7 @@ pub unsafe fn settings_window_show<W>(
         hwdec_check: ptr::null_mut(),
         twitch_auth_button: ptr::null_mut(),
         twitch_auth_status: ptr::null_mut(),
+        twitch_playback_auth_entry: ptr::null_mut(),
         channels_box: ptr::null_mut(),
         empty_label: ptr::null_mut(),
         status_label: ptr::null_mut(),

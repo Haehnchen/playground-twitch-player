@@ -543,6 +543,13 @@ pub unsafe fn player_info_icon_new<W>() -> *mut W {
     icon as *mut W
 }
 
+pub unsafe fn player_account_icon_new<W>() -> *mut W {
+    let icon = gtk_image_new_from_icon_name(b"avatar-default-symbolic\0".as_ptr() as *const c_char);
+    gtk_widget_set_halign(icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
+    icon as *mut W
+}
+
 pub unsafe fn player_refresh_icon_new<W>() -> *mut W {
     let icon = gtk_image_new_from_icon_name(b"view-refresh-symbolic\0".as_ptr() as *const c_char);
     gtk_widget_set_halign(icon, GTK_ALIGN_CENTER);

@@ -123,6 +123,47 @@ const FOOTER_CSS: &str = r#"
 .stream-settings-item-selected {
   background: rgba(255, 255, 255, 0.16);
 }
+.twitch-playback-panel {
+  background: rgba(20, 20, 22, 0.96);
+  color: white;
+  padding: 12px;
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  min-width: 260px;
+}
+.twitch-playback-header {
+  margin-bottom: 8px;
+}
+.twitch-playback-title {
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+}
+.twitch-playback-status {
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+}
+.twitch-playback-settings,
+.twitch-playback-close {
+  background: transparent;
+  background-image: none;
+  color: white;
+  border-color: transparent;
+  outline-color: transparent;
+  box-shadow: none;
+  min-width: 24px;
+  min-height: 22px;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.twitch-playback-settings:hover {
+  background: rgba(255, 255, 255, 0.14);
+  background-image: none;
+}
+.twitch-playback-close:hover {
+  background: rgba(170, 36, 36, 0.90);
+  background-image: none;
+}
 .player-footer scale.volume-scale,
 .player-footer .volume-scale {
   margin-left: 0;

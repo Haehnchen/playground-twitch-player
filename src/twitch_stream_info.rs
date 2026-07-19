@@ -45,6 +45,24 @@ pub struct TwitchStreamQuality {
     pub frame_rate: c_double,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TwitchPlaybackInfo {
+    pub available: c_int,
+    pub authenticated: c_int,
+    pub user_id: u64,
+    pub subscriber: c_int,
+    pub turbo: c_int,
+    pub show_ads: c_int,
+    pub hide_ads: c_int,
+    pub server_ads: c_int,
+}
+
+struct TwitchStreamQualitiesResult {
+    qualities: *mut GPtrArray,
+    playback_info: TwitchPlaybackInfo,
+}
+
 pub struct TwitchFollowedChannel {
     pub channel: *mut c_char,
     pub display_name: *mut c_char,
@@ -56,6 +74,7 @@ pub struct FetchCurrentStreamData {
 
 pub struct FetchStreamQualitiesData {
     channel: *mut c_char,
+    oauth_token: *mut c_char,
 }
 
 pub struct FetchLiveChannelsData {
@@ -211,6 +230,11 @@ unsafe extern "C" {
     fn json_node_get_string(node: *mut JsonNode) -> *const c_char;
     fn json_object_get_member(object: *mut JsonObject, member_name: *const c_char)
         -> *mut JsonNode;
+    fn json_object_get_boolean_member_with_default(
+        object: *mut JsonObject,
+        member_name: *const c_char,
+        default_value: c_int,
+    ) -> c_int;
     fn json_object_get_string_member_with_default(
         object: *mut JsonObject,
         member_name: *const c_char,
@@ -388,6 +412,77 @@ unsafe fn parser_new_loaded(
     parser
 }
 
+pub fn twitch_playback_info_empty() -> TwitchPlaybackInfo {
+    TwitchPlaybackInfo {
+        available: 0,
+        authenticated: 0,
+        user_id: 0,
+        subscriber: 0,
+        turbo: 0,
+        show_ads: 0,
+        hide_ads: 0,
+        server_ads: 0,
+    }
+}
+
+unsafe fn parse_playback_info(value: *const c_char) -> TwitchPlaybackInfo {
+    let mut info = twitch_playback_info_empty();
+    if !is_nonempty(value) {
+        return info;
+    }
+
+    let parser = parser_new_loaded(
+        value,
+        CStr::from_ptr(value).to_bytes().len(),
+        ptr::null_mut(),
+    );
+    if parser.is_null() {
+        return info;
+    }
+
+    let root = json_parser_get_root(parser);
+    if node_is(root, JSON_NODE_OBJECT) {
+        let object = json_node_get_object(root);
+        let user_id = json_object_get_member(object, b"user_id\0".as_ptr() as *const c_char);
+        let user_id = if node_is(user_id, JSON_NODE_VALUE) {
+            json_node_get_int(user_id).max(0) as u64
+        } else {
+            0
+        };
+        info.available = 1;
+        info.authenticated = (user_id > 0) as c_int;
+        info.user_id = user_id;
+        info.subscriber = json_object_get_boolean_member_with_default(
+            object,
+            b"subscriber\0".as_ptr() as *const c_char,
+            0,
+        );
+        info.turbo = json_object_get_boolean_member_with_default(
+            object,
+            b"turbo\0".as_ptr() as *const c_char,
+            0,
+        );
+        info.show_ads = json_object_get_boolean_member_with_default(
+            object,
+            b"show_ads\0".as_ptr() as *const c_char,
+            0,
+        );
+        info.hide_ads = json_object_get_boolean_member_with_default(
+            object,
+            b"hide_ads\0".as_ptr() as *const c_char,
+            0,
+        );
+        info.server_ads = json_object_get_boolean_member_with_default(
+            object,
+            b"server_ads\0".as_ptr() as *const c_char,
+            0,
+        );
+    }
+
+    g_object_unref(parser as *mut c_void);
+    info
+}
+
 unsafe fn parse_current_stream_response(
     json: *const c_char,
     length: usize,
@@ -474,6 +569,7 @@ unsafe fn parse_playback_access_token_response(
     length: usize,
     token_out: *mut *mut c_char,
     signature_out: *mut *mut c_char,
+    playback_info_out: *mut TwitchPlaybackInfo,
     error: *mut *mut GError,
 ) -> c_int {
     let parser = parser_new_loaded(json, length, error);
@@ -481,7 +577,8 @@ unsafe fn parse_playback_access_token_response(
         return 0;
     }
 
-    let ok = parse_playback_access_token_loaded(parser, token_out, signature_out);
+    let ok =
+        parse_playback_access_token_loaded(parser, token_out, signature_out, playback_info_out);
     g_object_unref(parser as *mut c_void);
     ok
 }
@@ -490,6 +587,7 @@ unsafe fn parse_playback_access_token_loaded(
     parser: *mut JsonParser,
     token_out: *mut *mut c_char,
     signature_out: *mut *mut c_char,
+    playback_info_out: *mut TwitchPlaybackInfo,
 ) -> c_int {
     let root = json_parser_get_root(parser);
     if !node_is(root, JSON_NODE_OBJECT) {
@@ -522,6 +620,9 @@ unsafe fn parse_playback_access_token_loaded(
 
     *token_out = g_strdup(value);
     *signature_out = g_strdup(signature);
+    if !playback_info_out.is_null() {
+        *playback_info_out = parse_playback_info(value);
+    }
     1
 }
 
@@ -768,6 +869,7 @@ unsafe fn set_twitch_http_error(error: *mut *mut GError, status: c_uint) {
 
 unsafe fn post_twitch_gql_request(
     body: *const c_char,
+    oauth_token: *const c_char,
     cancel: *mut GCancellable,
     error: *mut *mut GError,
 ) -> *mut c_char {
@@ -796,6 +898,19 @@ unsafe fn post_twitch_gql_request(
         b"Accept\0".as_ptr() as *const c_char,
         b"application/json\0".as_ptr() as *const c_char,
     );
+    if is_nonempty(oauth_token) {
+        let token = sanitize_oauth_token(oauth_token);
+        let mut auth = Vec::new();
+        auth.extend_from_slice(b"OAuth ");
+        auth.extend_from_slice(CStr::from_ptr(token).to_bytes());
+        auth.push(0);
+        soup_message_headers_append(
+            request_headers,
+            b"Authorization\0".as_ptr() as *const c_char,
+            auth.as_ptr() as *const c_char,
+        );
+        g_free(token as *mut c_void);
+    }
     soup_message_set_request_body_from_bytes(
         message,
         b"application/json\0".as_ptr() as *const c_char,
@@ -837,6 +952,9 @@ unsafe fn sanitize_oauth_token(oauth_token: *const c_char) -> *mut c_char {
     }
     if bytes.starts_with(b"Bearer ") {
         return dup_bytes(&bytes[7..]);
+    }
+    if bytes.starts_with(b"OAuth ") {
+        return dup_bytes(&bytes[6..]);
     }
 
     g_strdup(oauth_token)
@@ -1078,7 +1196,7 @@ unsafe fn fetch_current_stream(
     error: *mut *mut GError,
 ) -> *mut TwitchCurrentStream {
     let body = build_stream_title_request_body(channel);
-    let response = post_twitch_gql_request(body, cancel, error);
+    let response = post_twitch_gql_request(body, ptr::null(), cancel, error);
     g_free(body as *mut c_void);
     if response.is_null() {
         return ptr::null_mut();
@@ -1092,11 +1210,12 @@ unsafe fn fetch_current_stream(
 
 unsafe fn fetch_stream_qualities(
     channel: *const c_char,
+    oauth_token: *const c_char,
     cancel: *mut GCancellable,
     error: *mut *mut GError,
-) -> *mut GPtrArray {
+) -> *mut TwitchStreamQualitiesResult {
     let body = build_playback_access_token_request_body(channel);
-    let response = post_twitch_gql_request(body, cancel, error);
+    let response = post_twitch_gql_request(body, oauth_token, cancel, error);
     g_free(body as *mut c_void);
     if response.is_null() {
         return ptr::null_mut();
@@ -1104,11 +1223,13 @@ unsafe fn fetch_stream_qualities(
 
     let mut token: *mut c_char = ptr::null_mut();
     let mut signature: *mut c_char = ptr::null_mut();
+    let mut playback_info = twitch_playback_info_empty();
     if parse_playback_access_token_response(
         response,
         CStr::from_ptr(response).to_bytes().len(),
         &mut token,
         &mut signature,
+        &mut playback_info,
         error,
     ) == 0
     {
@@ -1149,9 +1270,16 @@ unsafe fn fetch_stream_qualities(
     if playlist.is_null() {
         return ptr::null_mut();
     }
-    let result = parse_stream_qualities_playlist(playlist, error);
+    let qualities = parse_stream_qualities_playlist(playlist, error);
     g_free(playlist as *mut c_void);
-    result
+    if qualities.is_null() {
+        return ptr::null_mut();
+    }
+
+    Box::into_raw(Box::new(TwitchStreamQualitiesResult {
+        qualities,
+        playback_info,
+    }))
 }
 
 unsafe extern "C" fn compare_stream_previews_by_viewers(
@@ -1304,7 +1432,7 @@ unsafe fn fetch_live_channels(
             (*data).channels.add(offset as usize) as *const *const c_char,
             chunk_count,
         );
-        let response = post_twitch_gql_request(body, cancel, error);
+        let response = post_twitch_gql_request(body, ptr::null(), cancel, error);
         g_free(body as *mut c_void);
         if response.is_null() {
             g_ptr_array_unref(all_previews);
@@ -1349,6 +1477,7 @@ unsafe extern "C" fn fetch_stream_qualities_data_free(data: *mut c_void) {
         return;
     }
     g_free((*data).channel as *mut c_void);
+    g_free((*data).oauth_token as *mut c_void);
     drop(Box::from_raw(data));
 }
 
@@ -1404,18 +1533,18 @@ unsafe extern "C" fn fetch_stream_qualities_worker(
 ) {
     let data = task_data as *mut FetchStreamQualitiesData;
     let mut error: *mut GError = ptr::null_mut();
-    let qualities = fetch_stream_qualities((*data).channel, cancel, &mut error);
+    let result = fetch_stream_qualities((*data).channel, (*data).oauth_token, cancel, &mut error);
     if !error.is_null() {
-        if !qualities.is_null() {
-            g_ptr_array_unref(qualities);
+        if !result.is_null() {
+            twitch_stream_qualities_result_free(result as *mut c_void);
         }
         g_task_return_error(task, error);
         return;
     }
     g_task_return_pointer(
         task,
-        qualities as *mut c_void,
-        Some(g_ptr_array_unref_destroy),
+        result as *mut c_void,
+        Some(twitch_stream_qualities_result_free),
     );
 }
 
@@ -1466,6 +1595,17 @@ unsafe extern "C" fn fetch_followed_channels_worker(
 
 unsafe extern "C" fn g_ptr_array_unref_destroy(data: *mut c_void) {
     g_ptr_array_unref(data as *mut GPtrArray);
+}
+
+unsafe extern "C" fn twitch_stream_qualities_result_free(data: *mut c_void) {
+    let result = data as *mut TwitchStreamQualitiesResult;
+    if result.is_null() {
+        return;
+    }
+    if !(*result).qualities.is_null() {
+        g_ptr_array_unref((*result).qualities);
+    }
+    drop(Box::from_raw(result));
 }
 
 pub unsafe fn twitch_stream_info_error_quark() -> c_uint {
@@ -1637,6 +1777,7 @@ pub unsafe fn twitch_stream_info_fetch_current_stream_finish(
 
 pub unsafe fn twitch_stream_info_fetch_stream_qualities_async(
     channel: *const c_char,
+    oauth_token: *const c_char,
     cancel: *mut GCancellable,
     callback: Option<GAsyncReadyCallback>,
     user_data: *mut c_void,
@@ -1646,6 +1787,11 @@ pub unsafe fn twitch_stream_info_fetch_stream_qualities_async(
     }
     let data = Box::into_raw(Box::new(FetchStreamQualitiesData {
         channel: g_ascii_strdown(channel, -1),
+        oauth_token: if is_nonempty(oauth_token) {
+            g_strdup(oauth_token)
+        } else {
+            ptr::null_mut()
+        },
     }));
     let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
     g_task_set_task_data(
@@ -1659,12 +1805,28 @@ pub unsafe fn twitch_stream_info_fetch_stream_qualities_async(
 
 pub unsafe fn twitch_stream_info_fetch_stream_qualities_finish(
     result: *mut GAsyncResult,
+    playback_info_out: *mut TwitchPlaybackInfo,
     error: *mut *mut GError,
 ) -> *mut GPtrArray {
+    if !playback_info_out.is_null() {
+        *playback_info_out = twitch_playback_info_empty();
+    }
     if g_task_is_valid(result as *mut c_void, ptr::null_mut()) == 0 {
         return ptr::null_mut();
     }
-    g_task_propagate_pointer(result as *mut GTask, error) as *mut GPtrArray
+    let fetched =
+        g_task_propagate_pointer(result as *mut GTask, error) as *mut TwitchStreamQualitiesResult;
+    if fetched.is_null() {
+        return ptr::null_mut();
+    }
+
+    if !playback_info_out.is_null() {
+        *playback_info_out = (*fetched).playback_info;
+    }
+    let qualities = (*fetched).qualities;
+    (*fetched).qualities = ptr::null_mut();
+    twitch_stream_qualities_result_free(fetched as *mut c_void);
+    qualities
 }
 
 pub unsafe fn twitch_stream_info_fetch_live_channels_async(
@@ -1877,6 +2039,12 @@ pub unsafe fn twitch_stream_info_test_parse_stream_qualities_playlist(
     error: *mut *mut GError,
 ) -> *mut GPtrArray {
     parse_stream_qualities_playlist(playlist, error)
+}
+
+pub unsafe fn twitch_stream_info_test_parse_playback_info(
+    value: *const c_char,
+) -> TwitchPlaybackInfo {
+    parse_playback_info(value)
 }
 
 pub unsafe fn twitch_stream_info_test_format_live_duration_from_span(span: i64) -> *mut c_char {
