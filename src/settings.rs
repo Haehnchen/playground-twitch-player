@@ -68,7 +68,6 @@ type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
 
 unsafe extern "C" {
     fn g_build_filenamev(args: *mut *mut c_char) -> *mut c_char;
-    fn g_chmod(filename: *const c_char, mode: c_int) -> c_int;
     fn g_clear_error(error: *mut *mut GError);
     fn g_file_test(filename: *const c_char, test: c_int) -> c_int;
     fn g_file_error_from_errno(err_no: c_int) -> c_int;
@@ -555,8 +554,6 @@ pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut 
         b"twitch-player\0".as_ptr() as *const c_char,
     ]);
     let path = app_settings_get_path();
-    let settings_file_is_new = g_file_test(path, G_FILE_TEST_EXISTS) == 0;
-
     if g_mkdir_with_parents(config_dir, 0o700) < 0 {
         let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
         g_set_error(
@@ -624,19 +621,7 @@ pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut 
     let generator = json_generator_new();
     json_generator_set_root(generator, root);
     json_generator_set_pretty(generator, 1);
-    let mut result = json_generator_to_file(generator, path, error);
-    if result != 0 && settings_file_is_new && g_chmod(path, 0o600) < 0 {
-        let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        g_set_error(
-            error,
-            g_file_error_quark(),
-            g_file_error_from_errno(errno),
-            b"Could not protect %s: %s\0".as_ptr() as *const c_char,
-            path,
-            g_strerror(errno),
-        );
-        result = 0;
-    }
+    let result = json_generator_to_file(generator, path, error);
 
     g_object_unref(generator as *mut c_void);
     json_node_unref(root);

@@ -1,7 +1,6 @@
 use std::env;
 use std::ffi::{c_char, CStr, CString};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -59,29 +58,6 @@ unsafe fn test_settings_round_trip_channels() {
 
     assert_ne!(settings::app_settings_save(settings, &mut error), 0);
     assert!(error.is_null());
-    assert_eq!(
-        fs::metadata(config_dir.join("twitch-player/settings.json"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600,
-    );
-    fs::set_permissions(
-        config_dir.join("twitch-player/settings.json"),
-        fs::Permissions::from_mode(0o640),
-    )
-    .unwrap();
-    assert_ne!(settings::app_settings_save(settings, &mut error), 0);
-    assert!(error.is_null());
-    assert_eq!(
-        fs::metadata(config_dir.join("twitch-player/settings.json"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o640,
-    );
     settings::app_settings_free(settings);
 
     settings = settings::app_settings_load();
