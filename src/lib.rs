@@ -6,6 +6,7 @@ pub mod chat_assets;
 pub mod chat_panel;
 pub mod player_footer;
 pub mod player_icons;
+pub mod player_layout;
 pub mod player_motion;
 pub mod player_overlay_controls;
 pub mod player_session;

@@ -6,7 +6,11 @@ use std::os::unix::ffi::OsStringExt;
 use std::ptr;
 
 use crate::player_icons::{
-    player_layout_icon_new, player_settings_icon_new, player_window_icon_new,
+    player_layout_icon_new, player_layout_menu_icon_new, player_settings_icon_new,
+    player_window_icon_new,
+};
+use crate::player_layout::{
+    PLAYER_LAYOUTS, PLAYER_LAYOUT_2X2_INDEX, PLAYER_LAYOUT_MAX_TILES, PLAYER_LAYOUT_SINGLE_INDEX,
 };
 use crate::player_motion::{player_motion_tracker_ignore_stationary, PlayerMotionTracker};
 use crate::player_overlay_controls::player_overlay_button_new;
@@ -15,7 +19,7 @@ use crate::player_session::{
 };
 use crate::player_style::{player_style_install_footer_css, player_style_install_overlay_css};
 use crate::player_surface::{
-    player_surface_apply_2x2_template, player_surface_apply_single_template, player_surface_free,
+    player_surface_apply_layout, player_surface_free, player_surface_get_layout_index,
     player_surface_get_widget, player_surface_handle_key, player_surface_is_single_template,
     player_surface_new, player_surface_set_fullscreen, player_surface_set_settings,
     player_surface_show_overlay, player_surface_start, PlayerSurface,
@@ -34,7 +38,7 @@ const OVERLAY_HIDE_DELAY_MS: c_uint = 1800;
 const MAXIMIZE_RESTORE_ATTEMPTS: c_uint = 12;
 const DEFAULT_WINDOW_WIDTH: c_int = 1100;
 const DEFAULT_WINDOW_HEIGHT: c_int = (DEFAULT_WINDOW_WIDTH * 9 + 8) / 16;
-const PLAYER_SURFACE_MAX_TILES: usize = 4;
+const PLAYER_SURFACE_MAX_TILES: usize = PLAYER_LAYOUT_MAX_TILES;
 
 const FALSE: c_int = 0;
 const TRUE: c_int = 1;
@@ -52,6 +56,7 @@ const GTK_ALIGN_END: c_int = 2;
 const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
 const GTK_ORIENTATION_VERTICAL: c_int = 1;
 const GTK_PHASE_CAPTURE: c_int = 1;
+const GTK_POS_BOTTOM: c_int = 3;
 const GTK_STYLE_PROVIDER_PRIORITY_APPLICATION: c_uint = 600;
 
 const GDK_BUTTON_PRIMARY: c_int = 1;
@@ -65,15 +70,11 @@ const GDK_SURFACE_EDGE_SOUTH_WEST: c_int = 5;
 const GDK_SURFACE_EDGE_SOUTH: c_int = 6;
 const GDK_SURFACE_EDGE_SOUTH_EAST: c_int = 7;
 
-const CONTENT_TEMPLATE_SINGLE: c_int = 0;
-const CONTENT_TEMPLATE_2X2: c_int = 1;
 const SETTINGS_WINDOW_PAGE_GENERAL: c_int = 0;
 const SETTINGS_WINDOW_PAGE_CHANNELS: c_int = 1;
 const PLAYER_WINDOW_ICON_MINIMIZE: c_int = 0;
 const PLAYER_WINDOW_ICON_FULLSCREEN: c_int = 1;
 const PLAYER_WINDOW_ICON_CLOSE: c_int = 2;
-const PLAYER_LAYOUT_ICON_SINGLE: c_int = 0;
-const PLAYER_LAYOUT_ICON_2X2: c_int = 1;
 
 struct AppState {
     window: *mut GtkWidget,
@@ -81,14 +82,13 @@ struct AppState {
     top_left_controls: *mut GtkWidget,
     top_controls: *mut GtkWidget,
     settings_button: *mut GtkWidget,
-    layout_button: *mut GtkWidget,
+    layout_popover: *mut GtkWidget,
     settings: *mut AppSettings,
     primary_session: *mut PlayerSession,
     player_surface: *mut PlayerSurface,
     startup_target: *const c_char,
     initial_targets: *const *const c_char,
     initial_target_count: c_uint,
-    content_mode: c_int,
     overlay_hide_source: c_uint,
     maximize_restore_source: c_uint,
     maximize_restore_attempts: c_uint,
@@ -171,6 +171,16 @@ struct GtkBox {
 
 #[repr(C)]
 struct GtkButton {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct GtkLabel {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct GtkPopover {
     _private: [u8; 0],
 }
 
@@ -311,6 +321,7 @@ unsafe extern "C" {
     fn gtk_application_window_new(application: *mut GtkApplication) -> *mut GtkWidget;
     fn gtk_box_append(box_: *mut GtkBox, child: *mut GtkWidget);
     fn gtk_box_new(orientation: c_int, spacing: c_int) -> *mut GtkWidget;
+    fn gtk_button_new() -> *mut GtkWidget;
     fn gtk_button_set_child(button: *mut GtkButton, child: *mut GtkWidget);
     fn gtk_css_provider_load_from_string(css_provider: *mut GtkCssProvider, string: *const c_char);
     fn gtk_css_provider_new() -> *mut GtkCssProvider;
@@ -329,11 +340,19 @@ unsafe extern "C" {
     fn gtk_gesture_single_set_button(gesture: *mut GtkGestureSingle, button: c_uint);
     fn gtk_icon_theme_add_search_path(icon_theme: *mut GtkIconTheme, path: *const c_char);
     fn gtk_icon_theme_get_for_display(display: *mut GdkDisplay) -> *mut GtkIconTheme;
+    fn gtk_label_new(str: *const c_char) -> *mut GtkWidget;
+    fn gtk_label_set_xalign(label: *mut GtkLabel, xalign: f32);
     fn gtk_native_get_surface(self_: *mut GtkNative) -> *mut GdkSurface;
     fn gtk_overlay_add_overlay(overlay: *mut GtkOverlay, widget: *mut GtkWidget);
     fn gtk_overlay_get_type() -> GType;
     fn gtk_overlay_new() -> *mut GtkWidget;
     fn gtk_overlay_set_child(overlay: *mut GtkOverlay, child: *mut GtkWidget);
+    fn gtk_popover_new() -> *mut GtkWidget;
+    fn gtk_popover_popdown(popover: *mut GtkPopover);
+    fn gtk_popover_popup(popover: *mut GtkPopover);
+    fn gtk_popover_set_child(popover: *mut GtkPopover, child: *mut GtkWidget);
+    fn gtk_popover_set_has_arrow(popover: *mut GtkPopover, has_arrow: c_int);
+    fn gtk_popover_set_position(popover: *mut GtkPopover, position: c_int);
     fn gtk_style_context_add_provider_for_display(
         display: *mut GdkDisplay,
         provider: *mut GtkStyleProvider,
@@ -344,11 +363,11 @@ unsafe extern "C" {
     fn gtk_widget_get_height(widget: *mut GtkWidget) -> c_int;
     fn gtk_widget_get_native(widget: *mut GtkWidget) -> *mut GtkNative;
     fn gtk_widget_get_width(widget: *mut GtkWidget) -> c_int;
+    fn gtk_widget_set_parent(widget: *mut GtkWidget, parent: *mut GtkWidget);
     fn gtk_widget_set_cursor_from_name(widget: *mut GtkWidget, name: *const c_char);
     fn gtk_widget_set_halign(widget: *mut GtkWidget, align: c_int);
     fn gtk_widget_set_hexpand(widget: *mut GtkWidget, expand: c_int);
     fn gtk_widget_set_size_request(widget: *mut GtkWidget, width: c_int, height: c_int);
-    fn gtk_widget_set_tooltip_text(widget: *mut GtkWidget, text: *const c_char);
     fn gtk_widget_set_valign(widget: *mut GtkWidget, align: c_int);
     fn gtk_widget_set_vexpand(widget: *mut GtkWidget, expand: c_int);
     fn gtk_widget_set_visible(widget: *mut GtkWidget, visible: c_int);
@@ -461,15 +480,7 @@ unsafe fn show_window_overlay(state: *mut AppState) {
     gtk_widget_set_visible((*state).top_left_controls, TRUE);
     gtk_widget_set_visible((*state).top_controls, TRUE);
     if !(*state).player_surface.is_null() {
-        let single_template = player_surface_is_single_template((*state).player_surface) != 0;
-        let mode = if single_template {
-            CONTENT_TEMPLATE_SINGLE
-        } else {
-            CONTENT_TEMPLATE_2X2
-        };
-        (*state).content_mode = mode;
-        set_layout_button_for_mode(state, mode);
-        if single_template {
+        if player_surface_is_single_template((*state).player_surface) != 0 {
             player_surface_show_overlay((*state).player_surface);
         }
     }
@@ -831,29 +842,6 @@ unsafe fn destroy_active_content(state: *mut AppState) {
     }
 }
 
-unsafe fn set_layout_button_for_mode(state: *mut AppState, mode: c_int) {
-    if (*state).layout_button.is_null() {
-        return;
-    }
-
-    gtk_widget_set_tooltip_text(
-        (*state).layout_button,
-        if mode == CONTENT_TEMPLATE_2X2 {
-            cstr!("Switch to single template")
-        } else {
-            cstr!("Switch to 2x2 template")
-        },
-    );
-    gtk_button_set_child(
-        (*state).layout_button as *mut GtkButton,
-        player_layout_icon_new(if mode == CONTENT_TEMPLATE_2X2 {
-            PLAYER_LAYOUT_ICON_SINGLE
-        } else {
-            PLAYER_LAYOUT_ICON_2X2
-        }),
-    );
-}
-
 unsafe fn create_player_surface(state: *mut AppState) {
     let mut targets: [*const c_char; PLAYER_SURFACE_MAX_TILES] =
         [ptr::null(); PLAYER_SURFACE_MAX_TILES];
@@ -924,55 +912,121 @@ unsafe fn create_player_surface(state: *mut AppState) {
         (*state).root_overlay as *mut GtkOverlay,
         player_surface_get_widget((*state).player_surface),
     );
-    player_surface_start((*state).player_surface);
-    (*state).content_mode = CONTENT_TEMPLATE_2X2;
-    set_layout_button_for_mode(state, CONTENT_TEMPLATE_2X2);
-
     for target in target_storage {
         g_free(target as *mut c_void);
     }
 }
 
-unsafe fn apply_layout_template(state: *mut AppState, mode: c_int) {
+unsafe fn apply_layout_template(state: *mut AppState, layout_index: usize) {
     if (*state).player_surface.is_null() {
         create_player_surface(state);
     }
 
-    if mode == CONTENT_TEMPLATE_2X2 {
-        player_surface_apply_2x2_template((*state).player_surface);
-    } else {
-        player_surface_apply_single_template((*state).player_surface);
-    }
-    (*state).content_mode = mode;
-    set_layout_button_for_mode(state, mode);
+    player_surface_apply_layout((*state).player_surface, layout_index);
+    player_surface_start((*state).player_surface);
 }
 
-unsafe fn set_layout_mode(state: *mut AppState, mode: c_int) {
+unsafe fn set_layout_mode(state: *mut AppState, layout_index: usize) {
+    if layout_index >= PLAYER_LAYOUTS.len() {
+        return;
+    }
+
     if (*state).player_surface.is_null() {
-        apply_layout_template(state, mode);
+        apply_layout_template(state, layout_index);
         show_window_overlay(state);
         return;
     }
 
-    if (*state).content_mode == mode {
+    if player_surface_get_layout_index((*state).player_surface) == layout_index {
         show_window_overlay(state);
         return;
     }
 
-    apply_layout_template(state, mode);
+    apply_layout_template(state, layout_index);
     show_window_overlay(state);
 }
 
-unsafe extern "C" fn on_layout_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
+unsafe extern "C" fn on_layout_choice_clicked(button: *mut GtkButton, user_data: *mut c_void) {
     let state = user_data as *mut AppState;
-    let in_single_template = !(*state).player_surface.is_null()
-        && player_surface_is_single_template((*state).player_surface) != 0;
-    let next_mode = if (*state).content_mode == CONTENT_TEMPLATE_SINGLE || in_single_template {
-        CONTENT_TEMPLATE_2X2
-    } else {
-        CONTENT_TEMPLATE_SINGLE
-    };
-    set_layout_mode(state, next_mode);
+    let stored_index = g_object_get_data(button as *mut GObject, cstr!("layout-index")) as usize;
+    if stored_index == 0 {
+        return;
+    }
+
+    set_layout_mode(state, stored_index - 1);
+    if !(*state).layout_popover.is_null() {
+        gtk_popover_popdown((*state).layout_popover as *mut GtkPopover);
+    }
+}
+
+unsafe extern "C" fn on_layout_menu_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
+    let state = user_data as *mut AppState;
+    if (*state).layout_popover.is_null() {
+        return;
+    }
+
+    remove_source_if_active(&mut (*state).overlay_hide_source);
+    gtk_popover_popup((*state).layout_popover as *mut GtkPopover);
+}
+
+unsafe extern "C" fn on_layout_popover_closed(_popover: *mut GtkPopover, user_data: *mut c_void) {
+    schedule_window_overlay_hide(user_data as *mut AppState);
+}
+
+unsafe fn create_layout_popover(
+    state: *mut AppState,
+    relative_to: *mut GtkWidget,
+) -> *mut GtkWidget {
+    let popover = gtk_popover_new();
+    gtk_widget_add_css_class(popover, cstr!("stream-settings-popover"));
+    gtk_popover_set_position(popover as *mut GtkPopover, GTK_POS_BOTTOM);
+    gtk_popover_set_has_arrow(popover as *mut GtkPopover, FALSE);
+    gtk_widget_set_parent(popover, relative_to);
+
+    let menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_add_css_class(menu, cstr!("stream-settings-menu"));
+    gtk_popover_set_child(popover as *mut GtkPopover, menu);
+
+    for (layout_index, layout) in PLAYER_LAYOUTS.iter().enumerate() {
+        let button = gtk_button_new();
+        let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        let label_text = CString::new(layout.name).expect("layout names cannot contain NUL bytes");
+        let label = gtk_label_new(label_text.as_ptr());
+
+        gtk_widget_add_css_class(button, cstr!("stream-settings-item"));
+        gtk_widget_set_halign(button, GTK_ALIGN_FILL);
+        gtk_widget_set_hexpand(button, TRUE);
+        gtk_label_set_xalign(label as *mut GtkLabel, 0.0);
+        gtk_widget_set_hexpand(label, TRUE);
+        gtk_box_append(content as *mut GtkBox, player_layout_icon_new(layout));
+        gtk_box_append(content as *mut GtkBox, label);
+        gtk_button_set_child(button as *mut GtkButton, content);
+        g_object_set_data(
+            button as *mut GObject,
+            cstr!("layout-index"),
+            (layout_index + 1) as *mut c_void,
+        );
+        g_signal_connect_data(
+            button as *mut c_void,
+            cstr!("clicked"),
+            on_layout_choice_clicked as *const c_void,
+            state as *mut c_void,
+            ptr::null_mut(),
+            0,
+        );
+        gtk_box_append(menu as *mut GtkBox, button);
+    }
+
+    g_signal_connect_data(
+        popover as *mut c_void,
+        cstr!("closed"),
+        on_layout_popover_closed as *const c_void,
+        state as *mut c_void,
+        ptr::null_mut(),
+        0,
+    );
+
+    popover
 }
 
 unsafe extern "C" fn on_settings_saved(_settings: *mut AppSettings, user_data: *mut c_void) {
@@ -1552,7 +1606,7 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         top_left_controls: ptr::null_mut(),
         top_controls: ptr::null_mut(),
         settings_button: ptr::null_mut(),
-        layout_button: ptr::null_mut(),
+        layout_popover: ptr::null_mut(),
         settings: app_settings_load(),
         primary_session: player_session_new(),
         player_surface: ptr::null_mut(),
@@ -1571,7 +1625,6 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         } else {
             (*config).initial_target_count
         },
-        content_mode: CONTENT_TEMPLATE_SINGLE,
         overlay_hide_source: 0,
         maximize_restore_source: 0,
         maximize_restore_attempts: 0,
@@ -1646,23 +1699,24 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         0,
     );
 
-    (*state).layout_button = player_overlay_button_new(
-        player_layout_icon_new(PLAYER_LAYOUT_ICON_2X2),
-        cstr!("Switch to 2x2 template"),
-    );
-    gtk_widget_add_css_class((*state).layout_button, cstr!("settings-overlay-button"));
+    let layout_menu_button =
+        player_overlay_button_new(player_layout_menu_icon_new(), cstr!("Select layout"));
+    gtk_widget_add_css_class(layout_menu_button, cstr!("settings-overlay-button"));
     gtk_box_append(
         (*state).top_left_controls as *mut GtkBox,
-        (*state).layout_button,
+        layout_menu_button,
     );
     g_signal_connect_data(
-        (*state).layout_button as *mut c_void,
+        layout_menu_button as *mut c_void,
         cstr!("clicked"),
-        on_layout_clicked as *const c_void,
+        on_layout_menu_clicked as *const c_void,
         state as *mut c_void,
         ptr::null_mut(),
         0,
     );
+
+    (*state).layout_popover = create_layout_popover(state, layout_menu_button);
+    add_weak_pointer((*state).layout_popover, &mut (*state).layout_popover);
 
     (*state).top_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     add_weak_pointer((*state).top_controls, &mut (*state).top_controls);
@@ -1752,9 +1806,9 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
     set_layout_mode(
         state,
         if start_2x2 {
-            CONTENT_TEMPLATE_2X2
+            PLAYER_LAYOUT_2X2_INDEX
         } else {
-            CONTENT_TEMPLATE_SINGLE
+            PLAYER_LAYOUT_SINGLE_INDEX
         },
     );
     gtk_window_present((*state).window as *mut GtkWindow);

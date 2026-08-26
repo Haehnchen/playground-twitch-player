@@ -2,13 +2,14 @@ use std::f64::consts::PI;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 
+use crate::player_layout::PlayerLayout;
+
 const GTK_ALIGN_CENTER: c_int = 3;
 const CAIRO_LINE_CAP_ROUND: c_int = 1;
 const CAIRO_LINE_JOIN_ROUND: c_int = 1;
 
 const PLAYER_WINDOW_ICON_MINIMIZE: c_int = 0;
 const PLAYER_WINDOW_ICON_FULLSCREEN: c_int = 1;
-const PLAYER_LAYOUT_ICON_SINGLE: c_int = 0;
 const PLAYER_CHAT_ICON_CLOSE: c_int = 1;
 const PLAYER_VOLUME_ICON_MUTED: c_int = 1;
 const PLAYER_TILE_FOCUS_ICON_EXPAND: c_int = 0;
@@ -314,7 +315,7 @@ unsafe extern "C" fn draw_layout_icon(
     height: c_int,
     user_data: *mut c_void,
 ) {
-    let kind = kind_from_pointer(user_data);
+    let layout = &*(user_data as *const PlayerLayout);
     let size = (width.min(height)) as f64 * 0.68;
     let x = (width as f64 - size) / 2.0 + size * 0.17;
     let y = (height as f64 - size) / 2.0 + size * 0.17;
@@ -324,24 +325,20 @@ unsafe extern "C" fn draw_layout_icon(
     cairo_set_line_width(cr, 1.6_f64.max(size * 0.08));
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
 
-    if kind == PLAYER_LAYOUT_ICON_SINGLE {
-        cairo_rectangle(cr, x, y, extent, extent);
-        cairo_stroke(cr);
-        return;
-    }
+    let columns = layout.column_count().max(1) as f64;
+    let rows = layout.row_count().max(1) as f64;
+    let gap = size * 0.055;
+    let cell_width = (extent - gap * (columns - 1.0)) / columns;
+    let cell_height = (extent - gap * (rows - 1.0)) / rows;
 
-    let gap = size * 0.08;
-    let cell = (extent - gap) / 2.0;
-    for row in 0..2 {
-        for col in 0..2 {
-            cairo_rectangle(
-                cr,
-                x + col as f64 * (cell + gap),
-                y + row as f64 * (cell + gap),
-                cell,
-                cell,
-            );
-        }
+    for cell in layout.cells {
+        cairo_rectangle(
+            cr,
+            x + cell.column as f64 * (cell_width + gap),
+            y + cell.row as f64 * (cell_height + gap),
+            cell.column_span as f64 * cell_width + (cell.column_span - 1) as f64 * gap,
+            cell.row_span as f64 * cell_height + (cell.row_span - 1) as f64 * gap,
+        );
     }
     cairo_stroke(cr);
 }
@@ -575,9 +572,22 @@ pub unsafe fn player_window_icon_new<W>(kind: c_int) -> *mut W {
     icon as *mut W
 }
 
-pub unsafe fn player_layout_icon_new<W>(kind: c_int) -> *mut W {
+pub unsafe fn player_layout_icon_new<W>(layout: &'static PlayerLayout) -> *mut W {
     let icon = gtk_drawing_area_new();
-    set_drawing_area(icon, 18, 18, draw_layout_icon, kind_to_pointer(kind));
+    set_drawing_area(
+        icon,
+        18,
+        18,
+        draw_layout_icon,
+        layout as *const PlayerLayout as *mut c_void,
+    );
+    icon as *mut W
+}
+
+pub unsafe fn player_layout_menu_icon_new<W>() -> *mut W {
+    let icon = gtk_image_new_from_icon_name(b"pan-down-symbolic\0".as_ptr() as *const c_char);
+    gtk_widget_set_halign(icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(icon, GTK_ALIGN_CENTER);
     icon as *mut W
 }
 

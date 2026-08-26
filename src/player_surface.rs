@@ -21,6 +21,10 @@ use crate::player_icons::{
     player_stream_settings_icon_new, player_tile_focus_icon_new, player_trash_icon_new,
     player_window_icon_new,
 };
+use crate::player_layout::{
+    PlayerLayoutCell, PLAYER_LAYOUTS, PLAYER_LAYOUT_2X2_INDEX, PLAYER_LAYOUT_MAX_TILES,
+    PLAYER_LAYOUT_SINGLE_INDEX,
+};
 use crate::player_motion::{player_motion_tracker_ignore_stationary, PlayerMotionTracker};
 use crate::player_overlay_controls::player_overlay_button_new;
 use crate::player_session::{
@@ -68,7 +72,7 @@ macro_rules! cstr {
     };
 }
 
-const MAX_TILES: usize = 4;
+const MAX_TILES: usize = PLAYER_LAYOUT_MAX_TILES;
 const MPV_MAINLOOP_PRIORITY: c_int = -100;
 const STREAM_TITLE_REFRESH_SECONDS: c_uint = 3 * 60;
 const STREAM_QUALITY_CACHE_SECONDS: c_uint = 2 * 60;
@@ -152,15 +156,19 @@ const GRID_CSS: &str = concat!(
     "  background: #050505;",
     "  border: none;",
     "}",
-    ".tile-left {",
-    "  border-right: 1px solid rgba(255, 255, 255, 0.12);",
+    ".tile-frame {",
+    "  background: #050505;",
     "}",
-    ".tile-top {",
-    "  border-bottom: 1px solid rgba(255, 255, 255, 0.12);",
+    ".tile-separator {",
+    "  background: rgba(255, 255, 255, 0.16);",
+    "  opacity: 0;",
     "}",
-    ".tile-container.single-template {",
-    "  border-right: none;",
-    "  border-bottom: none;",
+    ".tile-frame.tile-left .tile-separator-right,",
+    ".tile-frame.tile-top .tile-separator-bottom {",
+    "  opacity: 1;",
+    "}",
+    ".tile-frame.single-template .tile-separator {",
+    "  opacity: 0;",
     "}",
     "paned.tile-container > separator,",
     "paned.tile-container > separator.wide,",
@@ -457,6 +465,7 @@ struct StreamTile {
     index: c_uint,
     label: *mut c_char,
     channel: *mut c_char,
+    frame: *mut GtkWidget,
     container: *mut GtkWidget,
     overlay: *mut GtkWidget,
     gl_area: *mut GtkWidget,
@@ -524,6 +533,7 @@ pub struct PlayerSurface {
     closing: c_int,
     fullscreen: c_int,
     tile_focused: c_int,
+    active_layout_index: usize,
     single_template_active: c_int,
     single_template_tile: c_uint,
     video_fullscreen_active: c_int,
@@ -735,6 +745,7 @@ unsafe extern "C" {
     );
     fn gtk_widget_add_controller(widget: *mut GtkWidget, controller: *mut c_void);
     fn gtk_widget_add_css_class(widget: *mut GtkWidget, css_class: *const c_char);
+    fn gtk_widget_set_can_target(widget: *mut GtkWidget, can_target: c_int);
     fn gtk_widget_get_height(widget: *mut GtkWidget) -> c_int;
     fn gtk_widget_get_layout_manager(widget: *mut GtkWidget) -> *mut GtkLayoutManager;
     fn gtk_widget_get_native(widget: *mut GtkWidget) -> *mut GtkNative;
@@ -2103,31 +2114,63 @@ unsafe fn set_grid_item_layout(
     gtk_grid_layout_child_set_row_span(child, row_span);
 }
 
-unsafe fn restore_grid_layout_with_primary_slot(state: *mut PlayerSurface, primary_index: c_uint) {
+fn layout_slot_for_tile(tile_index: usize, primary_index: usize) -> usize {
+    if tile_index == primary_index {
+        0
+    } else if tile_index < primary_index {
+        tile_index + 1
+    } else {
+        tile_index
+    }
+}
+
+unsafe fn update_grid_item_borders(widget: *mut GtkWidget, layout_index: usize, slot: usize) {
+    gtk_widget_remove_css_class(widget, cstr!("tile-left"));
+    gtk_widget_remove_css_class(widget, cstr!("tile-top"));
+
+    let Some(layout) = PLAYER_LAYOUTS.get(layout_index) else {
+        return;
+    };
+    let Some(cell) = layout.cells.get(slot) else {
+        return;
+    };
+
+    if cell.column + cell.column_span < layout.column_count() {
+        gtk_widget_add_css_class(widget, cstr!("tile-left"));
+    }
+    if cell.row + cell.row_span < layout.row_count() {
+        gtk_widget_add_css_class(widget, cstr!("tile-top"));
+    }
+}
+
+unsafe fn restore_active_layout_with_primary_slot(
+    state: *mut PlayerSurface,
+    primary_index: c_uint,
+) {
     let primary_index = primary_index.min((MAX_TILES - 1) as c_uint) as usize;
-    let mut next_slot = 1;
+    let layout_index = (*state).active_layout_index.min(PLAYER_LAYOUTS.len() - 1);
+    let layout = &PLAYER_LAYOUTS[layout_index];
 
     for i in 0..MAX_TILES {
         if (*state).grid_items[i].is_null() {
             continue;
         }
 
-        let slot = if i == primary_index {
-            0
-        } else {
-            let slot = next_slot;
-            next_slot += 1;
-            slot
+        let slot = layout_slot_for_tile(i, primary_index);
+        let Some(cell) = layout.cells.get(slot) else {
+            gtk_widget_set_visible((*state).grid_items[i], FALSE);
+            continue;
         };
 
         set_grid_item_layout(
             state,
             (*state).grid_items[i],
-            (slot % 2) as c_int,
-            (slot / 2) as c_int,
-            1,
-            1,
+            cell.column,
+            cell.row,
+            cell.column_span,
+            cell.row_span,
         );
+        update_grid_item_borders((*state).grid_items[i], layout_index, slot);
         gtk_widget_set_visible((*state).grid_items[i], TRUE);
     }
 
@@ -2193,7 +2236,7 @@ unsafe fn update_tile_focus_buttons(state: *mut PlayerSurface) {
         gtk_widget_set_tooltip_text(
             (*tile).focus_button,
             if focused {
-                cstr!("Restore 2x2")
+                cstr!("Restore layout")
             } else {
                 cstr!("Focus tile")
             },
@@ -2213,20 +2256,28 @@ unsafe fn focus_tile(tile: *mut StreamTile) {
         }
     }
 
-    set_grid_item_layout(state, (*tile).container, 0, 0, 2, 2);
+    let layout = &PLAYER_LAYOUTS[(*state).active_layout_index.min(PLAYER_LAYOUTS.len() - 1)];
+    set_grid_item_layout(
+        state,
+        (*tile).frame,
+        0,
+        0,
+        layout.column_count(),
+        layout.row_count(),
+    );
     (*state).focused_tile = (*tile).index;
     (*state).tile_focused = TRUE;
 }
 
 unsafe fn set_tile_single_presentation(tile: *mut StreamTile, single: c_int) {
-    if (*tile).container.is_null() {
+    if (*tile).frame.is_null() {
         return;
     }
 
     if single != 0 {
-        gtk_widget_add_css_class((*tile).container, cstr!("single-template"));
+        gtk_widget_add_css_class((*tile).frame, cstr!("single-template"));
     } else {
-        gtk_widget_remove_css_class((*tile).container, cstr!("single-template"));
+        gtk_widget_remove_css_class((*tile).frame, cstr!("single-template"));
     }
 }
 
@@ -2278,6 +2329,21 @@ unsafe fn clear_surface_targets(state: *mut PlayerSurface) {
     (*state).target_count = 0;
 }
 
+unsafe fn reset_tiles_outside_layout(
+    state: *mut PlayerSurface,
+    layout_index: usize,
+    primary_index: c_uint,
+) {
+    let layout = &PLAYER_LAYOUTS[layout_index];
+    let primary_index = primary_index.min((MAX_TILES - 1) as c_uint) as usize;
+
+    for i in 0..MAX_TILES {
+        if layout_slot_for_tile(i, primary_index) >= layout.cells.len() {
+            reset_tile_for_template_switch(&mut (*state).tiles[i]);
+        }
+    }
+}
+
 unsafe fn enter_single_template(state: *mut PlayerSurface, tile: *mut StreamTile) {
     if tile.is_null() {
         return;
@@ -2311,7 +2377,7 @@ unsafe fn leave_single_template(state: *mut PlayerSurface) {
 
     (*state).single_template_active = FALSE;
     set_all_tiles_single_presentation(state, ptr::null_mut());
-    restore_grid_layout_with_primary_slot(state, single_tile);
+    restore_active_layout_with_primary_slot(state, single_tile);
     update_tile_focus_buttons(state);
 
     for i in 0..MAX_TILES {
@@ -2384,7 +2450,7 @@ unsafe fn restore_video_fullscreen_layout(state: *mut PlayerSurface, tile: *mut 
         focus_tile(&mut (*state).tiles[restore_focused_tile as usize]);
     } else {
         set_all_tiles_single_presentation(state, ptr::null_mut());
-        restore_grid_layout_with_primary_slot(state, restore_focused_tile);
+        restore_active_layout_with_primary_slot(state, restore_focused_tile);
     }
 
     update_tile_focus_buttons(state);
@@ -3049,16 +3115,17 @@ unsafe fn create_stream_tile(
         (!(*tile).session.is_null() && (*tile).session != (*state).primary_session) as c_int;
     sync_tile_from_session(tile);
 
+    // The outer overlay keeps separators inside the tile without affecting grid allocation.
+    (*tile).frame = gtk_overlay_new();
+    add_weak_pointer((*tile).frame, &mut (*tile).frame);
+    gtk_widget_add_css_class((*tile).frame, cstr!("tile-frame"));
+    gtk_widget_set_hexpand((*tile).frame, TRUE);
+    gtk_widget_set_vexpand((*tile).frame, TRUE);
+
     // A tile is its own video/chat panel: start child is video, end child is optional chat.
     (*tile).container = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     add_weak_pointer((*tile).container, &mut (*tile).container);
     gtk_widget_add_css_class((*tile).container, cstr!("tile-container"));
-    if index % 2 == 0 {
-        gtk_widget_add_css_class((*tile).container, cstr!("tile-left"));
-    }
-    if index / 2 == 0 {
-        gtk_widget_add_css_class((*tile).container, cstr!("tile-top"));
-    }
     gtk_widget_set_hexpand((*tile).container, TRUE);
     gtk_widget_set_vexpand((*tile).container, TRUE);
     gtk_paned_set_wide_handle((*tile).container as *mut GtkPaned, FALSE);
@@ -3066,6 +3133,25 @@ unsafe fn create_stream_tile(
     gtk_paned_set_shrink_start_child((*tile).container as *mut GtkPaned, FALSE);
     gtk_paned_set_resize_end_child((*tile).container as *mut GtkPaned, FALSE);
     gtk_paned_set_shrink_end_child((*tile).container as *mut GtkPaned, TRUE);
+    gtk_overlay_set_child((*tile).frame as *mut GtkOverlay, (*tile).container);
+
+    let right_separator = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(right_separator, cstr!("tile-separator"));
+    gtk_widget_add_css_class(right_separator, cstr!("tile-separator-right"));
+    gtk_widget_set_can_target(right_separator, FALSE);
+    gtk_widget_set_halign(right_separator, GTK_ALIGN_END);
+    gtk_widget_set_valign(right_separator, GTK_ALIGN_FILL);
+    gtk_widget_set_size_request(right_separator, 1, -1);
+    gtk_overlay_add_overlay((*tile).frame as *mut GtkOverlay, right_separator);
+
+    let bottom_separator = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(bottom_separator, cstr!("tile-separator"));
+    gtk_widget_add_css_class(bottom_separator, cstr!("tile-separator-bottom"));
+    gtk_widget_set_can_target(bottom_separator, FALSE);
+    gtk_widget_set_halign(bottom_separator, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(bottom_separator, GTK_ALIGN_END);
+    gtk_widget_set_size_request(bottom_separator, -1, 1);
+    gtk_overlay_add_overlay((*tile).frame as *mut GtkOverlay, bottom_separator);
     g_signal_connect_data(
         (*tile).container as *mut c_void,
         cstr!("notify::position"),
@@ -3224,7 +3310,7 @@ unsafe fn create_stream_tile(
 
     update_tile_empty_state(tile);
 
-    (*tile).container
+    (*tile).frame
 }
 
 unsafe fn install_css() {
@@ -3287,6 +3373,7 @@ pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
 
         clear_pointer(&mut (*tile).label);
         clear_pointer(&mut (*tile).channel);
+        (*tile).frame = ptr::null_mut();
         (*tile).container = ptr::null_mut();
         (*tile).overlay = ptr::null_mut();
         (*tile).gl_area = ptr::null_mut();
@@ -3359,6 +3446,7 @@ pub unsafe fn player_surface_new<W>(
     (*state).fullscreen_user_data = fullscreen_user_data;
     (*state).settings_callback = settings_callback;
     (*state).settings_user_data = settings_user_data;
+    (*state).active_layout_index = PLAYER_LAYOUT_2X2_INDEX;
 
     (*state).root_overlay = gtk_overlay_new();
     add_weak_pointer((*state).root_overlay, &mut (*state).root_overlay);
@@ -3387,16 +3475,22 @@ pub unsafe fn player_surface_new<W>(
             },
         );
 
+        let cell = PLAYER_LAYOUTS[PLAYER_LAYOUT_2X2_INDEX]
+            .cells
+            .get(i as usize)
+            .copied()
+            .unwrap_or(PlayerLayoutCell::new(0, 0, 1, 1));
         gtk_grid_attach(
             (*state).grid as *mut GtkGrid,
             tile_widget,
-            (i % 2) as c_int,
-            (i / 2) as c_int,
-            1,
-            1,
+            cell.column,
+            cell.row,
+            cell.column_span,
+            cell.row_span,
         );
         (*state).grid_items[i as usize] = tile_widget;
     }
+    restore_active_layout_with_primary_slot(state, 0);
 
     schedule_footer_hide(state);
     (*state).title_refresh_source = g_timeout_add_seconds(
@@ -3464,22 +3558,34 @@ pub unsafe fn player_surface_set_fullscreen(player: *mut PlayerSurface, fullscre
 }
 
 pub unsafe fn player_surface_apply_single_template(player: *mut PlayerSurface) {
-    if player.is_null() {
-        return;
-    }
-
-    let tile = preferred_single_tile(player);
-    enter_single_template(player, tile);
+    player_surface_apply_layout(player, PLAYER_LAYOUT_SINGLE_INDEX);
 }
 
 pub unsafe fn player_surface_apply_2x2_template(player: *mut PlayerSurface) {
+    player_surface_apply_layout(player, PLAYER_LAYOUT_2X2_INDEX);
+}
+
+pub unsafe fn player_surface_apply_layout(player: *mut PlayerSurface, layout_index: usize) {
     if player.is_null() {
+        return;
+    }
+    let Some(layout) = PLAYER_LAYOUTS.get(layout_index) else {
+        return;
+    };
+
+    if layout.is_single() {
+        let tile = preferred_single_tile(player);
+        enter_single_template(player, tile);
         return;
     }
 
     if (*player).video_fullscreen_active != 0 {
         restore_video_fullscreen_layout(player, ptr::null_mut());
     }
+
+    let primary_index = (*player).focused_tile.min((MAX_TILES - 1) as c_uint);
+    (*player).active_layout_index = layout_index;
+    reset_tiles_outside_layout(player, layout_index, primary_index);
     leave_single_template(player);
     show_tile_overlay(preferred_single_tile(player));
 }
@@ -3499,6 +3605,18 @@ pub unsafe fn player_surface_show_overlay(player: *mut PlayerSurface) {
 
 pub unsafe fn player_surface_is_single_template(player: *mut PlayerSurface) -> c_int {
     (!player.is_null() && (*player).single_template_active != 0) as c_int
+}
+
+pub unsafe fn player_surface_get_layout_index(player: *mut PlayerSurface) -> usize {
+    if player.is_null() {
+        return PLAYER_LAYOUT_SINGLE_INDEX;
+    }
+
+    if (*player).single_template_active != 0 {
+        PLAYER_LAYOUT_SINGLE_INDEX
+    } else {
+        (*player).active_layout_index
+    }
 }
 
 pub unsafe fn player_surface_handle_key(
