@@ -62,12 +62,13 @@ const GRID_2X2_CELLS: &[PlayerLayoutCell] = &[
 
 // On the measured 3:2 screen, a 16/27-wide half-height tile is exactly 16:9.
 // The first two slots therefore get the wider left column; the less important
-// right pair absorbs the remaining width.
-const GRID_3X2_LEFT_PRIORITY_CELLS: &[PlayerLayoutCell] = &[
-    PlayerLayoutCell::new(0, 0, 16, 1),
-    PlayerLayoutCell::new(0, 1, 16, 1),
-    PlayerLayoutCell::new(16, 0, 11, 1),
-    PlayerLayoutCell::new(16, 1, 11, 1),
+// right column is split into three nearly 16:9 tiles.
+const FIVE_3X2_LEFT_PRIORITY_CELLS: &[PlayerLayoutCell] = &[
+    PlayerLayoutCell::new(0, 0, 16, 3),
+    PlayerLayoutCell::new(0, 3, 16, 3),
+    PlayerLayoutCell::new(16, 0, 11, 2),
+    PlayerLayoutCell::new(16, 2, 11, 2),
+    PlayerLayoutCell::new(16, 4, 11, 2),
 ];
 
 const SIX_MOSAIC_TOP_LEFT_CELLS: &[PlayerLayoutCell] = &[
@@ -145,10 +146,10 @@ pub const PLAYER_LAYOUTS: &[PlayerLayout] = &[
         cells: SIX_TALL_SCREEN_CELLS,
     },
     PlayerLayout {
-        name: "4-tile 3:2, left priority",
+        name: "5-tile 3:2, left priority",
         target_aspect: (3, 2),
-        priority_cell_count: 2,
-        cells: GRID_3X2_LEFT_PRIORITY_CELLS,
+        priority_cell_count: 5,
+        cells: FIVE_3X2_LEFT_PRIORITY_CELLS,
     },
     PlayerLayout {
         name: "5-tile 3:2 mosaic",
