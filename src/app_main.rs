@@ -353,6 +353,7 @@ unsafe extern "C" {
     fn gtk_popover_set_child(popover: *mut GtkPopover, child: *mut GtkWidget);
     fn gtk_popover_set_has_arrow(popover: *mut GtkPopover, has_arrow: c_int);
     fn gtk_popover_set_position(popover: *mut GtkPopover, position: c_int);
+    fn gtk_separator_new(orientation: c_int) -> *mut GtkWidget;
     fn gtk_style_context_add_provider_for_display(
         display: *mut GdkDisplay,
         provider: *mut GtkStyleProvider,
@@ -987,7 +988,16 @@ unsafe fn create_layout_popover(
     gtk_widget_add_css_class(menu, cstr!("stream-settings-menu"));
     gtk_popover_set_child(popover as *mut GtkPopover, menu);
 
+    let mut three_by_two_section_started = false;
+
     for (layout_index, layout) in PLAYER_LAYOUTS.iter().enumerate() {
+        if layout.is_three_by_two() && !three_by_two_section_started {
+            let divider = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+            gtk_widget_add_css_class(divider, cstr!("stream-settings-divider"));
+            gtk_box_append(menu as *mut GtkBox, divider);
+            three_by_two_section_started = true;
+        }
+
         let button = gtk_button_new();
         let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         let label_text = CString::new(layout.name).expect("layout names cannot contain NUL bytes");

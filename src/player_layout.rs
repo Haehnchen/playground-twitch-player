@@ -20,6 +20,8 @@ impl PlayerLayoutCell {
 #[derive(Debug)]
 pub struct PlayerLayout {
     pub name: &'static str,
+    pub target_aspect: (i32, i32),
+    pub priority_cell_count: usize,
     pub cells: &'static [PlayerLayoutCell],
 }
 
@@ -43,6 +45,10 @@ impl PlayerLayout {
     pub fn is_single(&self) -> bool {
         self.cells.len() == 1
     }
+
+    pub fn is_three_by_two(&self) -> bool {
+        self.target_aspect == (3, 2)
+    }
 }
 
 const SINGLE_CELLS: &[PlayerLayoutCell] = &[PlayerLayoutCell::new(0, 0, 1, 1)];
@@ -52,6 +58,16 @@ const GRID_2X2_CELLS: &[PlayerLayoutCell] = &[
     PlayerLayoutCell::new(1, 0, 1, 1),
     PlayerLayoutCell::new(0, 1, 1, 1),
     PlayerLayoutCell::new(1, 1, 1, 1),
+];
+
+// On the measured 3:2 screen, a 16/27-wide half-height tile is exactly 16:9.
+// The first two slots therefore get the wider left column; the less important
+// right pair absorbs the remaining width.
+const GRID_3X2_LEFT_PRIORITY_CELLS: &[PlayerLayoutCell] = &[
+    PlayerLayoutCell::new(0, 0, 16, 1),
+    PlayerLayoutCell::new(0, 1, 16, 1),
+    PlayerLayoutCell::new(16, 0, 11, 1),
+    PlayerLayoutCell::new(16, 1, 11, 1),
 ];
 
 const SIX_MOSAIC_TOP_LEFT_CELLS: &[PlayerLayoutCell] = &[
@@ -73,27 +89,72 @@ const SEVEN_MOSAIC_CELLS: &[PlayerLayoutCell] = &[
     PlayerLayoutCell::new(3, 3, 1, 1),
 ];
 
+// A 9x10 logical canvas maps square cells to exact 16:9 video tiles on a
+// 16:10 display: (16 / 10) * (10 / 9) = 16 / 9.
+const SIX_TALL_SCREEN_CELLS: &[PlayerLayoutCell] = &[
+    PlayerLayoutCell::new(0, 0, 5, 5),
+    PlayerLayoutCell::new(5, 0, 4, 4),
+    PlayerLayoutCell::new(5, 4, 4, 4),
+    PlayerLayoutCell::new(0, 5, 5, 5),
+    PlayerLayoutCell::new(5, 8, 2, 2),
+    PlayerLayoutCell::new(7, 8, 2, 2),
+];
+
+const FIVE_TALL_SCREEN_CELLS: &[PlayerLayoutCell] = &[
+    PlayerLayoutCell::new(0, 0, 12, 12),
+    PlayerLayoutCell::new(12, 0, 6, 6),
+    PlayerLayoutCell::new(12, 6, 6, 6),
+    PlayerLayoutCell::new(0, 12, 9, 8),
+    PlayerLayoutCell::new(9, 12, 9, 8),
+];
+
 pub const PLAYER_LAYOUT_SINGLE_INDEX: usize = 0;
 pub const PLAYER_LAYOUT_2X2_INDEX: usize = 1;
 
-// Adding another layout only requires a name and a cell array here. The icon,
-// button and GTK grid arrangement all consume this same configuration.
+// Adding another layout only requires one entry and a cell array here. The
+// icon, button and GTK grid arrangement all consume this same configuration.
 pub const PLAYER_LAYOUTS: &[PlayerLayout] = &[
     PlayerLayout {
         name: "Single stream",
+        target_aspect: (16, 9),
+        priority_cell_count: 1,
         cells: SINGLE_CELLS,
     },
     PlayerLayout {
         name: "2x2 grid",
+        target_aspect: (16, 9),
+        priority_cell_count: 4,
         cells: GRID_2X2_CELLS,
     },
     PlayerLayout {
         name: "6-tile mosaic, large top left",
+        target_aspect: (16, 9),
+        priority_cell_count: 6,
         cells: SIX_MOSAIC_TOP_LEFT_CELLS,
     },
     PlayerLayout {
         name: "7-tile mosaic",
+        target_aspect: (16, 9),
+        priority_cell_count: 7,
         cells: SEVEN_MOSAIC_CELLS,
+    },
+    PlayerLayout {
+        name: "6-tile tall-screen mosaic",
+        target_aspect: (16, 10),
+        priority_cell_count: 6,
+        cells: SIX_TALL_SCREEN_CELLS,
+    },
+    PlayerLayout {
+        name: "4-tile 3:2, left priority",
+        target_aspect: (3, 2),
+        priority_cell_count: 2,
+        cells: GRID_3X2_LEFT_PRIORITY_CELLS,
+    },
+    PlayerLayout {
+        name: "5-tile 3:2 mosaic",
+        target_aspect: (3, 2),
+        priority_cell_count: 5,
+        cells: FIVE_TALL_SCREEN_CELLS,
     },
 ];
 
@@ -149,17 +210,44 @@ mod tests {
     }
 
     #[test]
-    fn additional_mosaics_preserve_the_window_aspect_ratio() {
-        for layout in &PLAYER_LAYOUTS[2..] {
-            assert_eq!(layout.column_count(), layout.row_count(), "{}", layout.name);
-            assert!(
-                layout
-                    .cells
-                    .iter()
-                    .all(|cell| cell.column_span == cell.row_span),
-                "{}",
-                layout.name
-            );
+    fn three_by_two_layouts_form_the_final_menu_section() {
+        let first_three_by_two = PLAYER_LAYOUTS
+            .iter()
+            .position(PlayerLayout::is_three_by_two)
+            .expect("at least one 3:2 layout");
+
+        assert!(PLAYER_LAYOUTS[..first_three_by_two]
+            .iter()
+            .all(|layout| !layout.is_three_by_two()));
+        assert!(PLAYER_LAYOUTS[first_three_by_two..]
+            .iter()
+            .all(PlayerLayout::is_three_by_two));
+    }
+
+    #[test]
+    fn every_priority_tile_stays_close_to_16_by_9_at_its_layout_target_aspect() {
+        for layout in PLAYER_LAYOUTS {
+            let (viewport_width, viewport_height) = layout.target_aspect;
+            let columns = layout.column_count();
+            let rows = layout.row_count();
+
+            for (cell_index, cell) in layout
+                .cells
+                .iter()
+                .take(layout.priority_cell_count)
+                .enumerate()
+            {
+                let actual = 9 * viewport_width * rows * cell.column_span;
+                let ideal = 16 * viewport_height * columns * cell.row_span;
+                let error = (actual - ideal).abs();
+
+                assert!(
+                    error * 100 <= ideal * 7,
+                    "{} cell {}",
+                    layout.name,
+                    cell_index
+                );
+            }
         }
     }
 }

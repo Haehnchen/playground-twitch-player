@@ -327,17 +327,20 @@ unsafe extern "C" fn draw_layout_icon(
 
     let columns = layout.column_count().max(1) as f64;
     let rows = layout.row_count().max(1) as f64;
-    let gap = size * 0.055;
-    let cell_width = (extent - gap * (columns - 1.0)) / columns;
-    let cell_height = (extent - gap * (rows - 1.0)) / rows;
+    let gap = size * 0.035;
 
     for cell in layout.cells {
+        let left = x + extent * cell.column as f64 / columns;
+        let top = y + extent * cell.row as f64 / rows;
+        let cell_width = extent * cell.column_span as f64 / columns;
+        let cell_height = extent * cell.row_span as f64 / rows;
+
         cairo_rectangle(
             cr,
-            x + cell.column as f64 * (cell_width + gap),
-            y + cell.row as f64 * (cell_height + gap),
-            cell.column_span as f64 * cell_width + (cell.column_span - 1) as f64 * gap,
-            cell.row_span as f64 * cell_height + (cell.row_span - 1) as f64 * gap,
+            left + gap / 2.0,
+            top + gap / 2.0,
+            (cell_width - gap).max(0.5),
+            (cell_height - gap).max(0.5),
         );
     }
     cairo_stroke(cr);
