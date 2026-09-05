@@ -90,8 +90,8 @@ const SEVEN_MOSAIC_CELLS: &[PlayerLayoutCell] = &[
     PlayerLayoutCell::new(3, 3, 1, 1),
 ];
 
-// A 9x10 logical canvas maps square cells to exact 16:9 video tiles on a
-// 16:10 display: (16 / 10) * (10 / 9) = 16 / 9.
+// A 9x10 logical canvas keeps every tile at the same 5:3 aspect ratio on a
+// 3:2 display, close enough to 16:9 to avoid visibly uneven tile sizing.
 const SIX_TALL_SCREEN_CELLS: &[PlayerLayoutCell] = &[
     PlayerLayoutCell::new(0, 0, 5, 5),
     PlayerLayoutCell::new(5, 0, 4, 4),
@@ -140,8 +140,8 @@ pub const PLAYER_LAYOUTS: &[PlayerLayout] = &[
         cells: SEVEN_MOSAIC_CELLS,
     },
     PlayerLayout {
-        name: "6-tile tall-screen mosaic",
-        target_aspect: (16, 10),
+        name: "6-tile 3:2 mosaic",
+        target_aspect: (3, 2),
         priority_cell_count: 6,
         cells: SIX_TALL_SCREEN_CELLS,
     },
