@@ -29,6 +29,7 @@ const PANEL_BOTTOM_MARGIN: c_int = 64;
 const PANEL_EXTRA_VERTICAL_SPACE: c_int = 36;
 const LIVE_CHANNELS_CACHE_SECONDS: i64 = 10;
 const SEARCH_DEBOUNCE_MS: c_uint = 300;
+const PREVIEW_CARD_BUILD_BATCH_SIZE: c_uint = 2;
 const PANEL_MIN_WIDTH: c_int = 430;
 const PANEL_MAX_WIDTH: c_int = 1300;
 const PANEL_MAX_COLUMNS: c_uint = 4;
@@ -45,6 +46,7 @@ const CARD_OUTER_WIDTH: c_int = CARD_WIDTH + CARD_HORIZONTAL_PADDING;
 const FALSE: c_int = 0;
 const TRUE: c_int = 1;
 const G_SOURCE_REMOVE: c_int = 0;
+const G_SOURCE_CONTINUE: c_int = 1;
 const G_USEC_PER_SEC: i64 = 1_000_000;
 const G_IO_ERROR_FAILED: c_int = 0;
 const G_IO_ERROR_INVALID_ARGUMENT: c_int = 13;
@@ -85,6 +87,7 @@ pub struct ChannelSwitcherOverlay {
     preview_card_width: c_int,
     preview_width: c_int,
     preview_height: c_int,
+    preview_card_build_source: c_uint,
     image_cache: *mut GHashTable,
     image_waiters: *mut GHashTable,
     cached_channels_key: *mut c_char,
@@ -100,11 +103,24 @@ pub struct ChannelSwitcherOverlay {
 
 struct RemoteImageData {
     switcher: *mut ChannelSwitcherOverlay,
-    generation: c_uint,
     url: *mut c_char,
     cache_key: *mut c_char,
+    waiters: *mut GPtrArray,
     width: c_int,
     height: c_int,
+}
+
+struct DecodeRemoteImageData {
+    bytes: *mut GBytes,
+    width: c_int,
+    height: c_int,
+}
+
+struct DecodedRemoteImage {
+    bytes: *mut GBytes,
+    width: c_int,
+    height: c_int,
+    stride: usize,
 }
 
 struct LiveFetchCallbackData {
@@ -160,6 +176,11 @@ pub struct GHashTable {
 
 #[repr(C)]
 pub struct GInputStream {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct GTask {
     _private: [u8; 0],
 }
 
@@ -260,6 +281,8 @@ pub struct GtkWidget {
 
 type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
 type GSourceFunc = unsafe extern "C" fn(*mut c_void) -> c_int;
+type GTaskThreadFunc =
+    unsafe extern "C" fn(*mut GTask, *mut c_void, *mut c_void, *mut GCancellable);
 type GType = usize;
 pub type ChannelSwitcherActivateCallback =
     Option<unsafe extern "C" fn(*const AppSettingsChannel, *mut c_void)>;
@@ -308,9 +331,9 @@ unsafe extern "C" {
     ) -> *mut GHashTable;
     fn g_hash_table_remove(hash_table: *mut GHashTable, key: *const c_void) -> c_int;
     fn g_hash_table_remove_all(hash_table: *mut GHashTable);
+    fn g_idle_add(function: Option<GSourceFunc>, data: *mut c_void) -> c_uint;
     fn g_io_error_quark() -> c_uint;
     fn g_log(log_domain: *const c_char, log_level: c_int, format: *const c_char, ...);
-    fn g_malloc0(n_bytes: usize) -> *mut c_void;
     fn g_memory_input_stream_new_from_bytes(bytes: *mut GBytes) -> *mut GInputStream;
     fn g_object_add_weak_pointer(object: *mut GObject, weak_pointer_location: *mut *mut c_void);
     fn g_object_get_data(object: *mut GObject, key: *const c_char) -> *mut c_void;
@@ -352,6 +375,25 @@ unsafe extern "C" {
     fn g_strdup_printf(format: *const c_char, ...) -> *mut c_char;
     fn g_strfreev(str_array: *mut *mut c_char);
     fn g_timeout_add(interval: c_uint, function: Option<GSourceFunc>, data: *mut c_void) -> c_uint;
+    fn g_task_new(
+        source_object: *mut c_void,
+        cancellable: *mut GCancellable,
+        callback: Option<GAsyncReadyCallback>,
+        callback_data: *mut c_void,
+    ) -> *mut GTask;
+    fn g_task_propagate_pointer(task: *mut GTask, error: *mut *mut GError) -> *mut c_void;
+    fn g_task_return_error(task: *mut GTask, error: *mut GError);
+    fn g_task_return_pointer(
+        task: *mut GTask,
+        result: *mut c_void,
+        result_destroy: Option<GDestroyNotify>,
+    );
+    fn g_task_run_in_thread(task: *mut GTask, task_func: Option<GTaskThreadFunc>);
+    fn g_task_set_task_data(
+        task: *mut GTask,
+        task_data: *mut c_void,
+        task_data_destroy: Option<GDestroyNotify>,
+    );
     fn g_type_check_instance_is_a(instance: *mut GTypeInstance, iface_type: GType) -> c_int;
     fn g_utf8_casefold(str: *const c_char, len: isize) -> *mut c_char;
 
@@ -708,6 +750,25 @@ unsafe fn remote_image_data_free(data: *mut RemoteImageData) {
     let data = Box::from_raw(data);
     g_free(data.url as *mut c_void);
     g_free(data.cache_key as *mut c_void);
+    g_ptr_array_unref(data.waiters);
+}
+
+unsafe extern "C" fn decode_remote_image_data_free(data: *mut c_void) {
+    if data.is_null() {
+        return;
+    }
+
+    let data = Box::from_raw(data as *mut DecodeRemoteImageData);
+    g_bytes_unref(data.bytes);
+}
+
+unsafe extern "C" fn decoded_remote_image_free(data: *mut c_void) {
+    if data.is_null() {
+        return;
+    }
+
+    let data = Box::from_raw(data as *mut DecodedRemoteImage);
+    g_bytes_unref(data.bytes);
 }
 
 unsafe fn remove_source_if_active(source_id: *mut c_uint) {
@@ -731,6 +792,7 @@ unsafe fn clear_grid(switcher: *mut ChannelSwitcherOverlay) {
 }
 
 unsafe fn clear_preview_cards(switcher: *mut ChannelSwitcherOverlay) {
+    remove_source_if_active(&mut (*switcher).preview_card_build_source);
     clear_grid(switcher);
     if !(*switcher).preview_cards.is_null() {
         g_ptr_array_set_size((*switcher).preview_cards, 0);
@@ -762,12 +824,12 @@ unsafe fn build_image_cache_key(url: *const c_char, width: c_int, height: c_int)
     g_strdup_printf(cstr!("%s\n%d:%d"), url, width, height)
 }
 
-unsafe fn create_cover_texture_from_bytes(
+unsafe fn decode_cover_image_from_bytes(
     bytes: *mut GBytes,
     width: c_int,
     height: c_int,
     error: *mut *mut GError,
-) -> *mut GdkTexture {
+) -> *mut DecodedRemoteImage {
     if width <= 0 || height <= 0 {
         g_set_error(
             error,
@@ -836,24 +898,14 @@ unsafe fn create_cover_texture_from_bytes(
     let stride = gdk_pixbuf_get_rowstride(target) as usize;
     let length = stride * height as usize;
     let texture_bytes = g_bytes_new(gdk_pixbuf_get_pixels(target) as *const c_void, length);
-    let texture = gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, texture_bytes, stride);
-    g_bytes_unref(texture_bytes);
     g_object_unref(target as *mut c_void);
     g_object_unref(source as *mut c_void);
-    texture
-}
-
-unsafe fn create_placeholder_texture(width: c_int, height: c_int) -> *mut GdkTexture {
-    if width <= 0 || height <= 0 {
-        return ptr::null_mut();
-    }
-
-    let stride = width as usize * 4;
-    let length = stride * height as usize;
-    let bytes = g_bytes_new_take(g_malloc0(length), length);
-    let texture = gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, bytes, stride);
-    g_bytes_unref(bytes);
-    texture
+    Box::into_raw(Box::new(DecodedRemoteImage {
+        bytes: texture_bytes,
+        width,
+        height,
+        stride,
+    }))
 }
 
 unsafe fn live_fetch_callback_data_free(data: *mut LiveFetchCallbackData) {
@@ -862,33 +914,99 @@ unsafe fn live_fetch_callback_data_free(data: *mut LiveFetchCallbackData) {
     }
 }
 
-unsafe extern "C" fn on_remote_image_loaded(
-    source: *mut c_void,
+unsafe fn remove_image_waiters_if_current(data: *mut RemoteImageData) {
+    let switcher = (*data).switcher;
+    if (*switcher).image_waiters.is_null() {
+        return;
+    }
+
+    let current = g_hash_table_lookup(
+        (*switcher).image_waiters,
+        (*data).cache_key as *const c_void,
+    ) as *mut GPtrArray;
+    if current == (*data).waiters {
+        g_hash_table_remove(
+            (*switcher).image_waiters,
+            (*data).cache_key as *const c_void,
+        );
+    }
+}
+
+unsafe extern "C" fn decode_remote_image_worker(
+    task: *mut GTask,
+    _source_object: *mut c_void,
+    task_data: *mut c_void,
+    _cancel: *mut GCancellable,
+) {
+    let data = task_data as *mut DecodeRemoteImageData;
+    let mut error: *mut GError = ptr::null_mut();
+    let image =
+        decode_cover_image_from_bytes((*data).bytes, (*data).width, (*data).height, &mut error);
+
+    if !error.is_null() {
+        g_task_return_error(task, error);
+        return;
+    }
+
+    g_task_return_pointer(task, image as *mut c_void, Some(decoded_remote_image_free));
+}
+
+unsafe extern "C" fn on_remote_image_decoded(
+    _source: *mut c_void,
     result: *mut GAsyncResult,
     user_data: *mut c_void,
 ) {
     let data = user_data as *mut RemoteImageData;
     let switcher = (*data).switcher;
     let mut error: *mut GError = ptr::null_mut();
-    let mut contents: *mut c_char = ptr::null_mut();
-    let mut length: usize = 0;
+    let image =
+        g_task_propagate_pointer(result as *mut GTask, &mut error) as *mut DecodedRemoteImage;
 
-    if (*switcher).image_waiters.is_null() {
-        remote_image_data_free(data);
-        return;
-    }
+    remove_image_waiters_if_current(data);
 
-    let waiters = g_hash_table_lookup(
-        (*switcher).image_waiters,
-        (*data).cache_key as *const c_void,
-    ) as *mut GPtrArray;
-    if !waiters.is_null() {
-        g_ptr_array_ref(waiters);
-        g_hash_table_remove(
-            (*switcher).image_waiters,
-            (*data).cache_key as *const c_void,
+    if !image.is_null() {
+        let texture = gdk_memory_texture_new(
+            (*image).width,
+            (*image).height,
+            GDK_MEMORY_R8G8B8A8,
+            (*image).bytes,
+            (*image).stride,
+        );
+        if !texture.is_null() {
+            if !(*switcher).image_cache.is_null() {
+                g_hash_table_insert(
+                    (*switcher).image_cache,
+                    g_strdup((*data).cache_key) as *mut c_void,
+                    g_object_ref(texture as *mut c_void),
+                );
+            }
+            for i in 0..(*(*data).waiters).len {
+                set_remote_image_texture(ptr_array_index((*data).waiters, i), texture);
+            }
+            g_object_unref(texture as *mut c_void);
+        }
+        decoded_remote_image_free(image as *mut c_void);
+    } else if !error.is_null() {
+        log_debug(
+            cstr!("image decode failed for %s: %s"),
+            (*data).url,
+            (*error).message,
         );
     }
+
+    g_clear_error(&mut error);
+    remote_image_data_free(data);
+}
+
+unsafe extern "C" fn on_remote_image_loaded(
+    source: *mut c_void,
+    result: *mut GAsyncResult,
+    user_data: *mut c_void,
+) {
+    let data = user_data as *mut RemoteImageData;
+    let mut error: *mut GError = ptr::null_mut();
+    let mut contents: *mut c_char = ptr::null_mut();
+    let mut length: usize = 0;
 
     if g_file_load_contents_finish(
         source as *mut GFile,
@@ -904,54 +1022,31 @@ unsafe extern "C" fn on_remote_image_loaded(
             (*data).url,
             error_message(error),
         );
-        if !waiters.is_null() {
-            g_ptr_array_unref(waiters);
-        }
+        remove_image_waiters_if_current(data);
         g_clear_error(&mut error);
         remote_image_data_free(data);
         return;
     }
 
     let bytes = g_bytes_new_take(contents as *mut c_void, length);
-    if (*data).generation != (*switcher).generation || (*switcher).panel.is_null() {
-        if !waiters.is_null() {
-            g_ptr_array_unref(waiters);
-        }
-        g_bytes_unref(bytes);
-        remote_image_data_free(data);
-        return;
-    }
-
-    let texture = create_cover_texture_from_bytes(bytes, (*data).width, (*data).height, &mut error);
-    g_bytes_unref(bytes);
-    if !texture.is_null() {
-        if !(*switcher).image_cache.is_null() {
-            g_hash_table_insert(
-                (*switcher).image_cache,
-                g_strdup((*data).cache_key) as *mut c_void,
-                g_object_ref(texture as *mut c_void),
-            );
-        }
-        if !waiters.is_null() {
-            for i in 0..(*waiters).len {
-                set_remote_image_texture(ptr_array_index(waiters, i), texture);
-            }
-        }
-        g_object_unref(texture as *mut c_void);
-    } else if !error.is_null() {
-        log_debug(
-            cstr!("image decode failed for %s: %s"),
-            (*data).url,
-            (*error).message,
-        );
-        g_clear_error(&mut error);
-    }
-
-    if !waiters.is_null() {
-        g_ptr_array_unref(waiters);
-    }
-
-    remote_image_data_free(data);
+    let decode_data = Box::into_raw(Box::new(DecodeRemoteImageData {
+        bytes,
+        width: (*data).width,
+        height: (*data).height,
+    }));
+    let task = g_task_new(
+        ptr::null_mut(),
+        ptr::null_mut(),
+        Some(on_remote_image_decoded),
+        data as *mut c_void,
+    );
+    g_task_set_task_data(
+        task,
+        decode_data as *mut c_void,
+        Some(decode_remote_image_data_free),
+    );
+    g_task_run_in_thread(task, Some(decode_remote_image_worker));
+    g_object_unref(task as *mut c_void);
 }
 
 unsafe fn load_remote_image(
@@ -993,9 +1088,9 @@ unsafe fn load_remote_image(
 
     let data = Box::into_raw(Box::new(RemoteImageData {
         switcher,
-        generation: (*switcher).generation,
         url: g_strdup(url),
         cache_key: g_strdup(cache_key),
+        waiters: g_ptr_array_ref(waiters),
         width,
         height,
     }));
@@ -1323,7 +1418,6 @@ unsafe fn create_image_picture(
     css_class: *const c_char,
 ) -> *mut GtkWidget {
     let image = gtk_picture_new();
-    let placeholder = create_placeholder_texture(width, height);
 
     gtk_widget_add_css_class(image, css_class);
     gtk_widget_set_focusable(image, FALSE);
@@ -1335,10 +1429,6 @@ unsafe fn create_image_picture(
     gtk_widget_set_overflow(image, GTK_OVERFLOW_HIDDEN);
     gtk_picture_set_content_fit(image as *mut GtkPicture, GTK_CONTENT_FIT_COVER);
     gtk_picture_set_can_shrink(image as *mut GtkPicture, TRUE);
-    if !placeholder.is_null() {
-        gtk_picture_set_paintable(image as *mut GtkPicture, placeholder as *mut GdkPaintable);
-        g_object_unref(placeholder as *mut c_void);
-    }
     load_remote_image(switcher, image, url, width, height);
     image
 }
@@ -1542,7 +1632,45 @@ unsafe fn preview_matches_filter(preview: *mut TwitchStreamPreview, filter: *con
         || string_contains_casefold((*preview).category_name, filter)
 }
 
-unsafe fn ensure_preview_cards(switcher: *mut ChannelSwitcherOverlay) {
+unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
+    let switcher = user_data as *mut ChannelSwitcherOverlay;
+    if (*switcher).panel.is_null()
+        || (*switcher).previews.is_null()
+        || (*switcher).preview_cards.is_null()
+    {
+        (*switcher).preview_card_build_source = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    let start = (*(*switcher).preview_cards).len;
+    let end = (*(*switcher).previews)
+        .len
+        .min(start.saturating_add(PREVIEW_CARD_BUILD_BATCH_SIZE));
+    for i in start..end {
+        let preview = ptr_array_index((*switcher).previews, i);
+        let card = create_channel_card(
+            switcher,
+            preview,
+            (*switcher).preview_card_width,
+            (*switcher).preview_width,
+            (*switcher).preview_height,
+        );
+        g_ptr_array_add(
+            (*switcher).preview_cards,
+            g_object_ref_sink(card as *mut c_void),
+        );
+    }
+
+    if (*(*switcher).preview_cards).len < (*(*switcher).previews).len {
+        return G_SOURCE_CONTINUE;
+    }
+
+    (*switcher).preview_card_build_source = 0;
+    render_live_channels(switcher);
+    G_SOURCE_REMOVE
+}
+
+unsafe fn ensure_preview_cards(switcher: *mut ChannelSwitcherOverlay) -> bool {
     let mut columns = 1;
     let mut card_width = CARD_WIDTH;
     let mut preview_width = PREVIEW_WIDTH;
@@ -1561,16 +1689,24 @@ unsafe fn ensure_preview_cards(switcher: *mut ChannelSwitcherOverlay) {
     }
 
     if (*switcher).previews.is_null() {
-        return;
+        return true;
     }
 
-    if (*(*switcher).preview_cards).len == (*(*switcher).previews).len
-        && (*switcher).preview_card_columns == columns
+    let layout_matches = (*switcher).preview_card_columns == columns
         && (*switcher).preview_card_width == card_width
         && (*switcher).preview_width == preview_width
-        && (*switcher).preview_height == preview_height
-    {
-        return;
+        && (*switcher).preview_height == preview_height;
+    let card_count = (*(*switcher).preview_cards).len;
+    let preview_count = (*(*switcher).previews).len;
+    if layout_matches && card_count <= preview_count {
+        if card_count == preview_count {
+            return true;
+        }
+        if (*switcher).preview_card_build_source == 0 {
+            (*switcher).preview_card_build_source =
+                g_idle_add(Some(build_preview_card_batch), switcher as *mut c_void);
+        }
+        return false;
     }
 
     clear_preview_cards(switcher);
@@ -1578,15 +1714,13 @@ unsafe fn ensure_preview_cards(switcher: *mut ChannelSwitcherOverlay) {
     (*switcher).preview_card_width = card_width;
     (*switcher).preview_width = preview_width;
     (*switcher).preview_height = preview_height;
-    for i in 0..(*(*switcher).previews).len {
-        let preview = ptr_array_index((*switcher).previews, i);
-        let card =
-            create_channel_card(switcher, preview, card_width, preview_width, preview_height);
-        g_ptr_array_add(
-            (*switcher).preview_cards,
-            g_object_ref_sink(card as *mut c_void),
-        );
+    if preview_count == 0 {
+        return true;
     }
+
+    (*switcher).preview_card_build_source =
+        g_idle_add(Some(build_preview_card_batch), switcher as *mut c_void);
+    false
 }
 
 unsafe fn render_live_channels(switcher: *mut ChannelSwitcherOverlay) {
@@ -1595,7 +1729,10 @@ unsafe fn render_live_channels(switcher: *mut ChannelSwitcherOverlay) {
         return;
     }
 
-    ensure_preview_cards(switcher);
+    if !ensure_preview_cards(switcher) {
+        show_status(switcher, cstr!("Preparing live channels"));
+        return;
+    }
 
     let filter = if !(*switcher).search_entry.is_null() {
         gtk_editable_get_text((*switcher).search_entry as *mut GtkEditable)
@@ -1927,6 +2064,7 @@ pub unsafe fn channel_switcher_overlay_new<O>(
         preview_card_width: 0,
         preview_width: 0,
         preview_height: 0,
+        preview_card_build_source: 0,
         image_cache: g_hash_table_new_full(
             Some(g_str_hash),
             Some(g_str_equal),
