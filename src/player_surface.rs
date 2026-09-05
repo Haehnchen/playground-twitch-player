@@ -2363,14 +2363,44 @@ unsafe fn set_grid_item_layout(
     gtk_grid_layout_child_set_row_span(child, row_span);
 }
 
-fn layout_slot_for_tile(tile_index: usize, primary_index: usize) -> usize {
-    if tile_index == primary_index {
-        0
-    } else if tile_index < primary_index {
-        tile_index + 1
-    } else {
-        tile_index
+fn compact_tile_order(
+    primary_index: usize,
+    tiles_with_streams: &[bool; MAX_TILES],
+) -> [usize; MAX_TILES] {
+    let primary_index = primary_index.min(MAX_TILES - 1);
+    let mut order = [0; MAX_TILES];
+    let mut next_slot = 0;
+
+    // Keep the focused tile first within its group, then preserve tile order.
+    // Running this once for streams and once for empty tiles removes gaps without
+    // moving the StreamTile structs, whose addresses are used by GTK callbacks.
+    for want_stream in [true, false] {
+        if tiles_with_streams[primary_index] == want_stream {
+            order[next_slot] = primary_index;
+            next_slot += 1;
+        }
+
+        for (tile_index, has_stream) in tiles_with_streams.iter().copied().enumerate() {
+            if tile_index != primary_index && has_stream == want_stream {
+                order[next_slot] = tile_index;
+                next_slot += 1;
+            }
+        }
     }
+
+    order
+}
+
+unsafe fn current_compact_tile_order(
+    state: *mut PlayerSurface,
+    primary_index: usize,
+) -> [usize; MAX_TILES] {
+    let mut tiles_with_streams = [false; MAX_TILES];
+    for (tile_index, has_stream) in tiles_with_streams.iter_mut().enumerate() {
+        *has_stream = tile_has_visible_stream(&mut (*state).tiles[tile_index]);
+    }
+
+    compact_tile_order(primary_index, &tiles_with_streams)
 }
 
 unsafe fn update_grid_item_borders(widget: *mut GtkWidget, layout_index: usize, slot: usize) {
@@ -2399,32 +2429,33 @@ unsafe fn restore_active_layout_with_primary_slot(
     let primary_index = primary_index.min((MAX_TILES - 1) as c_uint) as usize;
     let layout_index = (*state).active_layout_index.min(PLAYER_LAYOUTS.len() - 1);
     let layout = &PLAYER_LAYOUTS[layout_index];
+    let tile_order = current_compact_tile_order(state, primary_index);
+    let first_tile_index = tile_order[0];
 
-    for i in 0..MAX_TILES {
-        if (*state).grid_items[i].is_null() {
+    for (slot, tile_index) in tile_order.into_iter().enumerate() {
+        if (*state).grid_items[tile_index].is_null() {
             continue;
         }
 
-        let slot = layout_slot_for_tile(i, primary_index);
         let Some(cell) = layout.cells.get(slot) else {
-            gtk_widget_set_visible((*state).grid_items[i], FALSE);
+            gtk_widget_set_visible((*state).grid_items[tile_index], FALSE);
             continue;
         };
 
         set_grid_item_layout(
             state,
-            (*state).grid_items[i],
+            (*state).grid_items[tile_index],
             cell.column,
             cell.row,
             cell.column_span,
             cell.row_span,
         );
-        update_grid_item_borders((*state).grid_items[i], layout_index, slot);
-        gtk_widget_set_visible((*state).grid_items[i], TRUE);
+        update_grid_item_borders((*state).grid_items[tile_index], layout_index, slot);
+        gtk_widget_set_visible((*state).grid_items[tile_index], TRUE);
     }
 
     (*state).tile_focused = FALSE;
-    (*state).focused_tile = primary_index as c_uint;
+    (*state).focused_tile = first_tile_index as c_uint;
 }
 
 unsafe fn tile_has_stream(tile: *mut StreamTile) -> bool {
@@ -2585,11 +2616,10 @@ unsafe fn reset_tiles_outside_layout(
 ) {
     let layout = &PLAYER_LAYOUTS[layout_index];
     let primary_index = primary_index.min((MAX_TILES - 1) as c_uint) as usize;
+    let tile_order = current_compact_tile_order(state, primary_index);
 
-    for i in 0..MAX_TILES {
-        if layout_slot_for_tile(i, primary_index) >= layout.cells.len() {
-            reset_tile_for_template_switch(&mut (*state).tiles[i]);
-        }
+    for tile_index in tile_order.into_iter().skip(layout.cells.len()) {
+        reset_tile_for_template_switch(&mut (*state).tiles[tile_index]);
     }
 }
 
@@ -3895,6 +3925,42 @@ pub unsafe fn player_surface_set_settings(player: *mut PlayerSurface, settings: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_tile_order_moves_streams_ahead_of_grid_gaps() {
+        let mut tiles_with_streams = [false; MAX_TILES];
+        tiles_with_streams[0] = true;
+        tiles_with_streams[5] = true;
+
+        let order = compact_tile_order(0, &tiles_with_streams);
+
+        assert_eq!(order, [0, 5, 1, 2, 3, 4, 6]);
+        assert!(order[..4].contains(&5));
+    }
+
+    #[test]
+    fn compact_tile_order_keeps_a_focused_stream_first() {
+        let mut tiles_with_streams = [false; MAX_TILES];
+        tiles_with_streams[0] = true;
+        tiles_with_streams[5] = true;
+
+        assert_eq!(
+            compact_tile_order(5, &tiles_with_streams),
+            [5, 0, 1, 2, 3, 4, 6]
+        );
+    }
+
+    #[test]
+    fn compact_tile_order_does_not_prioritize_an_empty_focused_tile() {
+        let mut tiles_with_streams = [false; MAX_TILES];
+        tiles_with_streams[0] = true;
+        tiles_with_streams[5] = true;
+
+        assert_eq!(
+            compact_tile_order(4, &tiles_with_streams),
+            [0, 5, 4, 1, 2, 3, 6]
+        );
+    }
 
     #[test]
     fn owner_release_waits_for_pending_callback_reference() {
