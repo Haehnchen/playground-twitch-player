@@ -1,12 +1,15 @@
 use std::ffi::{c_char, c_int, c_uint, c_ulonglong, c_void, CStr};
 use std::mem;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const CHAT_EMOTE_SIZE: c_int = 14;
 const GTK_CONTENT_FIT_CONTAIN: c_int = 1;
 
 pub struct ChatAssets {
     image_cache: *mut GHashTable,
+    ref_count: AtomicUsize,
+    closing: AtomicBool,
 }
 
 pub struct ImageLoadData {
@@ -188,16 +191,36 @@ unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
     g_strdup(value.as_ptr() as *const c_char)
 }
 
+unsafe fn chat_assets_ref(assets: *mut ChatAssets) -> *mut ChatAssets {
+    if !assets.is_null() {
+        (*assets).ref_count.fetch_add(1, Ordering::Relaxed);
+    }
+    assets
+}
+
+unsafe fn chat_assets_unref(assets: *mut ChatAssets) {
+    if assets.is_null() || (*assets).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+
+    if !(*assets).image_cache.is_null() {
+        g_hash_table_destroy((*assets).image_cache);
+        (*assets).image_cache = ptr::null_mut();
+    }
+    drop(Box::from_raw(assets));
+}
+
 unsafe fn image_load_data_free(data: *mut ImageLoadData) {
     if data.is_null() {
         return;
     }
 
-    if !(*data).picture.is_null() {
-        g_object_unref((*data).picture as *mut c_void);
+    let data = Box::from_raw(data);
+    if !data.picture.is_null() {
+        g_object_unref(data.picture as *mut c_void);
     }
-    g_free((*data).url as *mut c_void);
-    drop(Box::from_raw(data));
+    g_free(data.url as *mut c_void);
+    chat_assets_unref(data.assets);
 }
 
 unsafe extern "C" fn on_image_loaded(
@@ -233,12 +256,17 @@ unsafe extern "C" fn on_image_loaded(
         return;
     }
 
-    g_hash_table_insert(
-        (*(*data).assets).image_cache,
-        g_strdup((*data).url) as *mut c_void,
-        g_object_ref(texture as *mut c_void),
-    );
-    gtk_picture_set_paintable((*data).picture, texture as *mut GdkPaintable);
+    if !(*data).assets.is_null()
+        && !(*(*data).assets).closing.load(Ordering::Acquire)
+        && !(*(*data).assets).image_cache.is_null()
+    {
+        g_hash_table_insert(
+            (*(*data).assets).image_cache,
+            g_strdup((*data).url) as *mut c_void,
+            g_object_ref(texture as *mut c_void),
+        );
+        gtk_picture_set_paintable((*data).picture, texture as *mut GdkPaintable);
+    }
     g_object_unref(texture as *mut c_void);
     image_load_data_free(data);
 }
@@ -260,7 +288,7 @@ unsafe fn create_inline_image(assets: *mut ChatAssets, url: *const c_char) -> *m
 
     let data = Box::new(ImageLoadData {
         picture: g_object_ref(picture as *mut c_void) as *mut GtkPicture,
-        assets,
+        assets: chat_assets_ref(assets),
         url: g_strdup(url),
     });
     let data = Box::into_raw(data);
@@ -403,6 +431,8 @@ pub unsafe fn chat_assets_new() -> *mut ChatAssets {
             Some(g_free),
             Some(g_object_unref),
         ),
+        ref_count: AtomicUsize::new(1),
+        closing: AtomicBool::new(false),
     }))
 }
 
@@ -411,10 +441,8 @@ pub unsafe fn chat_assets_free(assets: *mut ChatAssets) {
         return;
     }
 
-    if !(*assets).image_cache.is_null() {
-        g_hash_table_destroy((*assets).image_cache);
-    }
-    drop(Box::from_raw(assets));
+    (*assets).closing.store(true, Ordering::Release);
+    chat_assets_unref(assets);
 }
 
 pub unsafe fn chat_assets_insert_message_text<B, V, I>(
@@ -485,4 +513,25 @@ pub unsafe fn chat_assets_test_utf8_offset_to_pointer_safe(
     offset: c_uint,
 ) -> *const c_char {
     utf8_offset_to_pointer_safe(text, offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_release_waits_for_pending_image_reference() {
+        unsafe {
+            let assets = chat_assets_new();
+            let pending = chat_assets_ref(assets);
+
+            chat_assets_free(assets);
+
+            assert!((*pending).closing.load(Ordering::Acquire));
+            assert_eq!((*pending).ref_count.load(Ordering::Acquire), 1);
+            assert!(!(*pending).image_cache.is_null());
+
+            chat_assets_unref(pending);
+        }
+    }
 }

@@ -5,10 +5,10 @@ use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
 use crate::settings::{
-    app_settings_get_channel, app_settings_get_channel_count,
+    app_settings_free, app_settings_get_channel, app_settings_get_channel_count,
     app_settings_get_twitch_oauth_expires_at, app_settings_get_twitch_oauth_token,
-    app_settings_get_twitch_refresh_token, app_settings_save, app_settings_set_twitch_auth_tokens,
-    AppSettings,
+    app_settings_get_twitch_refresh_token, app_settings_ref, app_settings_save,
+    app_settings_set_twitch_auth_tokens, AppSettings,
 };
 use crate::twitch_auth::{twitch_auth_refresh_token, twitch_auth_token_free, TwitchAuthToken};
 use crate::twitch_stream_info::{
@@ -124,6 +124,7 @@ unsafe extern "C" fn fetch_channel_list_data_free(data: *mut c_void) {
     g_strfreev(data.manual_channels);
     g_free(data.oauth_token as *mut c_void);
     g_free(data.refresh_token as *mut c_void);
+    app_settings_free(data.settings);
 }
 
 unsafe extern "C" fn channel_list_result_free(data: *mut c_void) {
@@ -516,8 +517,9 @@ pub unsafe fn twitch_channel_list_fetch_async(
     user_data: *mut c_void,
 ) {
     let mut manual_channel_count = 0;
+    let settings_ref = app_settings_ref(settings);
     let data = Box::new(FetchChannelListData {
-        settings,
+        settings: settings_ref,
         manual_channels: collect_settings_channels(settings, &mut manual_channel_count),
         manual_channel_count,
         oauth_token: g_strdup(app_settings_get_twitch_oauth_token(settings)),

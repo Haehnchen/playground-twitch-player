@@ -2,12 +2,13 @@
 
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::player_icons::{player_settings_icon_new, player_window_icon_new};
 use crate::settings::{
     app_settings_get_channel, app_settings_get_channel_count, AppSettings, AppSettingsChannel,
 };
+use crate::twitch_channel::normalize_twitch_channel;
 use crate::twitch_channel_list::{
     twitch_channel_list_fetch_async, twitch_channel_list_fetch_finish,
 };
@@ -69,6 +70,8 @@ const GDK_BUTTON_PRIMARY: c_uint = 1;
 const GDK_COLORSPACE_RGB: c_int = 0;
 const GDK_INTERP_BILINEAR: c_int = 2;
 const GDK_MEMORY_R8G8B8A8: c_int = 5;
+const G_PRIORITY_DEFAULT: c_int = 0;
+const G_PRIORITY_DEFAULT_IDLE: c_int = 200;
 const PANGO_ELLIPSIZE_END: c_int = 3;
 const PLAYER_WINDOW_ICON_CLOSE: c_int = 2;
 
@@ -99,6 +102,8 @@ pub struct ChannelSwitcherOverlay {
     user_data: *mut c_void,
     settings_callback: ChannelSwitcherSettingsCallback,
     settings_user_data: *mut c_void,
+    ref_count: AtomicUsize,
+    closing: AtomicBool,
 }
 
 struct RemoteImageData {
@@ -280,6 +285,7 @@ pub struct GtkWidget {
 }
 
 type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
+type GClosureNotify = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type GSourceFunc = unsafe extern "C" fn(*mut c_void) -> c_int;
 type GTaskThreadFunc =
     unsafe extern "C" fn(*mut GTask, *mut c_void, *mut c_void, *mut GCancellable);
@@ -292,7 +298,6 @@ static CSS_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
     fn g_ascii_strcasecmp(str1: *const c_char, str2: *const c_char) -> c_int;
-    fn g_ascii_strdown(str: *const c_char, len: isize) -> *mut c_char;
     fn g_bytes_new(data: *const c_void, size: usize) -> *mut GBytes;
     fn g_bytes_new_take(data: *mut c_void, size: usize) -> *mut GBytes;
     fn g_bytes_unref(bytes: *mut GBytes);
@@ -329,9 +334,15 @@ unsafe extern "C" {
         key_destroy_func: Option<GDestroyNotify>,
         value_destroy_func: Option<GDestroyNotify>,
     ) -> *mut GHashTable;
+    fn g_hash_table_destroy(hash_table: *mut GHashTable);
     fn g_hash_table_remove(hash_table: *mut GHashTable, key: *const c_void) -> c_int;
     fn g_hash_table_remove_all(hash_table: *mut GHashTable);
-    fn g_idle_add(function: Option<GSourceFunc>, data: *mut c_void) -> c_uint;
+    fn g_idle_add_full(
+        priority: c_int,
+        function: Option<GSourceFunc>,
+        data: *mut c_void,
+        notify: Option<GDestroyNotify>,
+    ) -> c_uint;
     fn g_io_error_quark() -> c_uint;
     fn g_log(log_domain: *const c_char, log_level: c_int, format: *const c_char, ...);
     fn g_memory_input_stream_new_from_bytes(bytes: *mut GBytes) -> *mut GInputStream;
@@ -339,6 +350,7 @@ unsafe extern "C" {
     fn g_object_get_data(object: *mut GObject, key: *const c_char) -> *mut c_void;
     fn g_object_ref(object: *mut c_void) -> *mut c_void;
     fn g_object_ref_sink(object: *mut c_void) -> *mut c_void;
+    fn g_object_remove_weak_pointer(object: *mut GObject, weak_pointer_location: *mut *mut c_void);
     fn g_object_set_data_full(
         object: *mut GObject,
         key: *const c_char,
@@ -363,7 +375,7 @@ unsafe extern "C" {
         detailed_signal: *const c_char,
         c_handler: *const c_void,
         data: *mut c_void,
-        destroy_data: *mut c_void,
+        destroy_data: Option<GClosureNotify>,
         connect_flags: c_int,
     ) -> usize;
     fn g_signal_emit_by_name(instance: *mut c_void, detailed_signal: *const c_char, ...);
@@ -374,7 +386,13 @@ unsafe extern "C" {
     fn g_strdup(str: *const c_char) -> *mut c_char;
     fn g_strdup_printf(format: *const c_char, ...) -> *mut c_char;
     fn g_strfreev(str_array: *mut *mut c_char);
-    fn g_timeout_add(interval: c_uint, function: Option<GSourceFunc>, data: *mut c_void) -> c_uint;
+    fn g_timeout_add_full(
+        priority: c_int,
+        interval: c_uint,
+        function: Option<GSourceFunc>,
+        data: *mut c_void,
+        notify: Option<GDestroyNotify>,
+    ) -> c_uint;
     fn g_task_new(
         source_object: *mut c_void,
         cancellable: *mut GCancellable,
@@ -585,8 +603,114 @@ unsafe fn clear_object<T>(slot: *mut *mut T) {
     }
 }
 
+unsafe fn remove_weak_pointer<T>(slot: *mut *mut T) {
+    if (*slot).is_null() {
+        return;
+    }
+
+    g_object_remove_weak_pointer((*slot) as *mut GObject, slot as *mut *mut c_void);
+    *slot = ptr::null_mut();
+}
+
+unsafe fn channel_switcher_overlay_ref(
+    switcher: *mut ChannelSwitcherOverlay,
+) -> *mut ChannelSwitcherOverlay {
+    if !switcher.is_null() {
+        (*switcher).ref_count.fetch_add(1, Ordering::Relaxed);
+    }
+    switcher
+}
+
+unsafe fn channel_switcher_overlay_unref(switcher: *mut ChannelSwitcherOverlay) {
+    if switcher.is_null() || (*switcher).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+
+    if !(*switcher).cancel.is_null() {
+        g_cancellable_cancel((*switcher).cancel);
+        clear_object(&mut (*switcher).cancel);
+    }
+    if !(*switcher).previews.is_null() {
+        g_ptr_array_unref((*switcher).previews);
+    }
+    if !(*switcher).preview_cards.is_null() {
+        g_ptr_array_unref((*switcher).preview_cards);
+    }
+    if !(*switcher).image_cache.is_null() {
+        g_hash_table_destroy((*switcher).image_cache);
+    }
+    if !(*switcher).image_waiters.is_null() {
+        g_hash_table_destroy((*switcher).image_waiters);
+    }
+    g_free((*switcher).cached_channels_key as *mut c_void);
+
+    remove_weak_pointer(&mut (*switcher).direct_channel_entry);
+    remove_weak_pointer(&mut (*switcher).search_entry);
+    remove_weak_pointer(&mut (*switcher).grid);
+    remove_weak_pointer(&mut (*switcher).scroller);
+    remove_weak_pointer(&mut (*switcher).panel);
+    remove_weak_pointer(&mut (*switcher).backdrop);
+    remove_weak_pointer(&mut (*switcher).overlay);
+
+    drop(Box::from_raw(switcher));
+}
+
+unsafe extern "C" fn channel_switcher_source_data_free(data: *mut c_void) {
+    channel_switcher_overlay_unref(data as *mut ChannelSwitcherOverlay);
+}
+
+unsafe extern "C" fn channel_switcher_signal_data_free(data: *mut c_void, _closure: *mut c_void) {
+    channel_switcher_overlay_unref(data as *mut ChannelSwitcherOverlay);
+}
+
+unsafe fn connect_switcher_signal(
+    instance: *mut c_void,
+    detailed_signal: *const c_char,
+    handler: *const c_void,
+    switcher: *mut ChannelSwitcherOverlay,
+) {
+    g_signal_connect_data(
+        instance,
+        detailed_signal,
+        handler,
+        channel_switcher_overlay_ref(switcher) as *mut c_void,
+        Some(channel_switcher_signal_data_free),
+        0,
+    );
+}
+
+unsafe fn add_switcher_idle(
+    function: Option<GSourceFunc>,
+    switcher: *mut ChannelSwitcherOverlay,
+) -> c_uint {
+    g_idle_add_full(
+        G_PRIORITY_DEFAULT_IDLE,
+        function,
+        channel_switcher_overlay_ref(switcher) as *mut c_void,
+        Some(channel_switcher_source_data_free),
+    )
+}
+
+unsafe fn add_switcher_timeout(
+    interval: c_uint,
+    function: Option<GSourceFunc>,
+    switcher: *mut ChannelSwitcherOverlay,
+) -> c_uint {
+    g_timeout_add_full(
+        G_PRIORITY_DEFAULT,
+        interval,
+        function,
+        channel_switcher_overlay_ref(switcher) as *mut c_void,
+        Some(channel_switcher_source_data_free),
+    )
+}
+
 unsafe fn bump_generation(switcher: *mut ChannelSwitcherOverlay) {
     (*switcher).generation = (*switcher).generation.wrapping_add(1);
+}
+
+unsafe fn switcher_is_closing(switcher: *mut ChannelSwitcherOverlay) -> bool {
+    switcher.is_null() || (*switcher).closing.load(Ordering::Acquire)
 }
 
 unsafe fn error_message(error: *mut GError) -> *const c_char {
@@ -751,6 +875,7 @@ unsafe fn remote_image_data_free(data: *mut RemoteImageData) {
     g_free(data.url as *mut c_void);
     g_free(data.cache_key as *mut c_void);
     g_ptr_array_unref(data.waiters);
+    channel_switcher_overlay_unref(data.switcher);
 }
 
 unsafe extern "C" fn decode_remote_image_data_free(data: *mut c_void) {
@@ -909,9 +1034,21 @@ unsafe fn decode_cover_image_from_bytes(
 }
 
 unsafe fn live_fetch_callback_data_free(data: *mut LiveFetchCallbackData) {
-    if !data.is_null() {
-        drop(Box::from_raw(data));
+    if data.is_null() {
+        return;
     }
+
+    let data = Box::from_raw(data);
+    channel_switcher_overlay_unref(data.switcher);
+}
+
+unsafe fn channel_list_fetch_callback_data_free(data: *mut ChannelListFetchCallbackData) {
+    if data.is_null() {
+        return;
+    }
+
+    let data = Box::from_raw(data);
+    channel_switcher_overlay_unref(data.switcher);
 }
 
 unsafe fn remove_image_waiters_if_current(data: *mut RemoteImageData) {
@@ -963,6 +1100,15 @@ unsafe extern "C" fn on_remote_image_decoded(
         g_task_propagate_pointer(result as *mut GTask, &mut error) as *mut DecodedRemoteImage;
 
     remove_image_waiters_if_current(data);
+
+    if (*switcher).closing.load(Ordering::Acquire) {
+        if !image.is_null() {
+            decoded_remote_image_free(image as *mut c_void);
+        }
+        g_clear_error(&mut error);
+        remote_image_data_free(data);
+        return;
+    }
 
     if !image.is_null() {
         let texture = gdk_memory_texture_new(
@@ -1028,6 +1174,13 @@ unsafe extern "C" fn on_remote_image_loaded(
         return;
     }
 
+    if (*(*data).switcher).closing.load(Ordering::Acquire) {
+        remove_image_waiters_if_current(data);
+        g_free(contents as *mut c_void);
+        remote_image_data_free(data);
+        return;
+    }
+
     let bytes = g_bytes_new_take(contents as *mut c_void, length);
     let decode_data = Box::into_raw(Box::new(DecodeRemoteImageData {
         bytes,
@@ -1056,7 +1209,10 @@ unsafe fn load_remote_image(
     width: c_int,
     height: c_int,
 ) {
-    if !is_nonempty(url) || (*switcher).image_cache.is_null() || (*switcher).image_waiters.is_null()
+    if (*switcher).closing.load(Ordering::Acquire)
+        || !is_nonempty(url)
+        || (*switcher).image_cache.is_null()
+        || (*switcher).image_waiters.is_null()
     {
         return;
     }
@@ -1087,7 +1243,7 @@ unsafe fn load_remote_image(
     );
 
     let data = Box::into_raw(Box::new(RemoteImageData {
-        switcher,
+        switcher: channel_switcher_overlay_ref(switcher),
         url: g_strdup(url),
         cache_key: g_strdup(cache_key),
         waiters: g_ptr_array_ref(waiters),
@@ -1281,40 +1437,8 @@ unsafe fn extract_twitch_channel_name(value: *const c_char) -> *mut c_char {
         return ptr::null_mut();
     }
 
-    let bytes = CStr::from_ptr(value).to_bytes();
-    let start_trim = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end_trim = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map(|index| index + 1)
-        .unwrap_or(start_trim);
-    let trimmed = &bytes[start_trim..end_trim];
-    if trimmed.is_empty() {
-        return ptr::null_mut();
-    }
-
-    let twitch_prefix = b"twitch.tv/";
-    let mut start = find_bytes(trimmed, twitch_prefix)
-        .map(|index| index + twitch_prefix.len())
-        .unwrap_or(0);
-    while start < trimmed.len() && (trimmed[start] == b'/' || trimmed[start] == b'@') {
-        start += 1;
-    }
-
-    let mut end = start;
-    while end < trimmed.len() && (trimmed[end].is_ascii_alphanumeric() || trimmed[end] == b'_') {
-        end += 1;
-    }
-    if end == start {
-        return ptr::null_mut();
-    }
-
-    let mut channel = trimmed[start..end].to_vec();
-    channel.push(0);
-    g_ascii_strdown(channel.as_ptr() as *const c_char, -1)
+    normalize_twitch_channel(CStr::from_ptr(value).to_bytes())
+        .map_or(ptr::null_mut(), |channel| dup_bytes(&channel))
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1328,6 +1452,10 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 unsafe extern "C" fn on_channel_button_clicked(button: *mut GtkButton, user_data: *mut c_void) {
     let switcher = user_data as *mut ChannelSwitcherOverlay;
+    if switcher_is_closing(switcher) {
+        return;
+    }
+
     let channel_name =
         g_object_get_data(button as *mut GObject, cstr!("channel-name")) as *const c_char;
     let channel = find_settings_channel(switcher, channel_name);
@@ -1359,7 +1487,10 @@ unsafe fn activate_dynamic_channel(
     switcher: *mut ChannelSwitcherOverlay,
     channel_name: *const c_char,
 ) {
-    if switcher.is_null() || (*switcher).activate_callback.is_none() || !is_nonempty(channel_name) {
+    if switcher_is_closing(switcher)
+        || (*switcher).activate_callback.is_none()
+        || !is_nonempty(channel_name)
+    {
         return;
     }
 
@@ -1386,7 +1517,7 @@ unsafe fn activate_dynamic_channel(
 }
 
 unsafe fn open_direct_channel(switcher: *mut ChannelSwitcherOverlay) {
-    if switcher.is_null() || (*switcher).direct_channel_entry.is_null() {
+    if switcher_is_closing(switcher) || (*switcher).direct_channel_entry.is_null() {
         return;
     }
 
@@ -1507,13 +1638,11 @@ unsafe fn create_channel_card(
         g_strdup(label) as *mut c_void,
         Some(g_free_destroy),
     );
-    g_signal_connect_data(
+    connect_switcher_signal(
         button as *mut c_void,
         cstr!("clicked"),
         on_channel_button_clicked as *const c_void,
-        switcher as *mut c_void,
-        ptr::null_mut(),
-        0,
+        switcher,
     );
 
     let card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
@@ -1634,7 +1763,8 @@ unsafe fn preview_matches_filter(preview: *mut TwitchStreamPreview, filter: *con
 
 unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
     let switcher = user_data as *mut ChannelSwitcherOverlay;
-    if (*switcher).panel.is_null()
+    if switcher_is_closing(switcher)
+        || (*switcher).panel.is_null()
         || (*switcher).previews.is_null()
         || (*switcher).preview_cards.is_null()
     {
@@ -1704,7 +1834,7 @@ unsafe fn ensure_preview_cards(switcher: *mut ChannelSwitcherOverlay) -> bool {
         }
         if (*switcher).preview_card_build_source == 0 {
             (*switcher).preview_card_build_source =
-                g_idle_add(Some(build_preview_card_batch), switcher as *mut c_void);
+                add_switcher_idle(Some(build_preview_card_batch), switcher);
         }
         return false;
     }
@@ -1719,7 +1849,7 @@ unsafe fn ensure_preview_cards(switcher: *mut ChannelSwitcherOverlay) -> bool {
     }
 
     (*switcher).preview_card_build_source =
-        g_idle_add(Some(build_preview_card_batch), switcher as *mut c_void);
+        add_switcher_idle(Some(build_preview_card_batch), switcher);
     false
 }
 
@@ -1776,6 +1906,9 @@ unsafe extern "C" fn apply_search_filter(user_data: *mut c_void) -> c_int {
     let switcher = user_data as *mut ChannelSwitcherOverlay;
 
     (*switcher).search_debounce_source = 0;
+    if switcher_is_closing(switcher) {
+        return G_SOURCE_REMOVE;
+    }
     render_live_channels(switcher);
 
     G_SOURCE_REMOVE
@@ -1783,6 +1916,9 @@ unsafe extern "C" fn apply_search_filter(user_data: *mut c_void) -> c_int {
 
 unsafe extern "C" fn on_search_changed(_editable: *mut GtkEditable, user_data: *mut c_void) {
     let switcher = user_data as *mut ChannelSwitcherOverlay;
+    if switcher_is_closing(switcher) {
+        return;
+    }
 
     remove_source_if_active(&mut (*switcher).search_debounce_source);
     if (*switcher).panel.is_null()
@@ -1792,11 +1928,8 @@ unsafe extern "C" fn on_search_changed(_editable: *mut GtkEditable, user_data: *
         return;
     }
 
-    (*switcher).search_debounce_source = g_timeout_add(
-        SEARCH_DEBOUNCE_MS,
-        Some(apply_search_filter),
-        switcher as *mut c_void,
-    );
+    (*switcher).search_debounce_source =
+        add_switcher_timeout(SEARCH_DEBOUNCE_MS, Some(apply_search_filter), switcher);
 }
 
 unsafe fn activate_first_visible_channel(switcher: *mut ChannelSwitcherOverlay) {
@@ -1817,6 +1950,9 @@ unsafe fn activate_first_visible_channel(switcher: *mut ChannelSwitcherOverlay) 
 
 unsafe extern "C" fn on_search_activate(_entry: *mut GtkSearchEntry, user_data: *mut c_void) {
     let switcher = user_data as *mut ChannelSwitcherOverlay;
+    if switcher_is_closing(switcher) {
+        return;
+    }
 
     remove_source_if_active(&mut (*switcher).search_debounce_source);
     render_live_channels(switcher);
@@ -1833,7 +1969,10 @@ unsafe extern "C" fn on_live_channels_fetched(
     let mut error: *mut GError = ptr::null_mut();
     let previews = twitch_stream_info_fetch_live_channels_finish(result, &mut error);
 
-    if (*data).generation != (*switcher).generation || (*switcher).panel.is_null() {
+    if (*switcher).closing.load(Ordering::Acquire)
+        || (*data).generation != (*switcher).generation
+        || (*switcher).panel.is_null()
+    {
         g_clear_error(&mut error);
         if !previews.is_null() {
             g_ptr_array_unref(previews);
@@ -1953,7 +2092,7 @@ unsafe fn start_live_channel_fetch(
 
     (*switcher).cancel = g_cancellable_new();
     let data = Box::into_raw(Box::new(LiveFetchCallbackData {
-        switcher,
+        switcher: channel_switcher_overlay_ref(switcher),
         generation: (*switcher).generation,
     }));
     twitch_stream_info_fetch_live_channels_async(
@@ -1977,10 +2116,13 @@ unsafe extern "C" fn on_channel_list_fetched(
     let mut channel_count = 0;
     let channels = twitch_channel_list_fetch_finish(result, &mut channel_count, &mut error);
 
-    if (*data).generation != (*switcher).generation || (*switcher).panel.is_null() {
+    if (*switcher).closing.load(Ordering::Acquire)
+        || (*data).generation != (*switcher).generation
+        || (*switcher).panel.is_null()
+    {
         g_clear_error(&mut error);
         g_strfreev(channels);
-        drop(Box::from_raw(data));
+        channel_list_fetch_callback_data_free(data);
         return;
     }
 
@@ -1997,22 +2139,29 @@ unsafe extern "C" fn on_channel_list_fetched(
         }
         g_clear_error(&mut error);
         g_strfreev(channels);
-        drop(Box::from_raw(data));
+        channel_list_fetch_callback_data_free(data);
         return;
     }
 
     start_live_channel_fetch(switcher, channels, channel_count, TRUE);
 
     g_strfreev(channels);
-    drop(Box::from_raw(data));
+    channel_list_fetch_callback_data_free(data);
 }
 
 unsafe extern "C" fn on_close_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    channel_switcher_overlay_hide(user_data as *mut ChannelSwitcherOverlay);
+    let switcher = user_data as *mut ChannelSwitcherOverlay;
+    if !switcher_is_closing(switcher) {
+        channel_switcher_overlay_hide(switcher);
+    }
 }
 
 unsafe extern "C" fn on_settings_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let switcher = user_data as *mut ChannelSwitcherOverlay;
+    if switcher_is_closing(switcher) {
+        return;
+    }
+
     let callback = (*switcher).settings_callback;
     let callback_data = (*switcher).settings_user_data;
 
@@ -2029,8 +2178,9 @@ unsafe extern "C" fn on_backdrop_pressed(
     _y: c_double,
     user_data: *mut c_void,
 ) {
-    if n_press == 1 {
-        channel_switcher_overlay_hide(user_data as *mut ChannelSwitcherOverlay);
+    let switcher = user_data as *mut ChannelSwitcherOverlay;
+    if n_press == 1 && !switcher_is_closing(switcher) {
+        channel_switcher_overlay_hide(switcher);
     }
 }
 
@@ -2086,6 +2236,8 @@ pub unsafe fn channel_switcher_overlay_new<O>(
         user_data,
         settings_callback,
         settings_user_data,
+        ref_count: AtomicUsize::new(1),
+        closing: AtomicBool::new(false),
     }));
     add_weak_pointer((*switcher).overlay, &mut (*switcher).overlay);
 
@@ -2099,13 +2251,11 @@ pub unsafe fn channel_switcher_overlay_new<O>(
     gtk_widget_set_visible((*switcher).backdrop, FALSE);
     let backdrop_click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(backdrop_click as *mut GtkGestureSingle, GDK_BUTTON_PRIMARY);
-    g_signal_connect_data(
+    connect_switcher_signal(
         backdrop_click as *mut c_void,
         cstr!("pressed"),
         on_backdrop_pressed as *const c_void,
-        switcher as *mut c_void,
-        ptr::null_mut(),
-        0,
+        switcher,
     );
     gtk_widget_add_controller((*switcher).backdrop, backdrop_click as *mut c_void);
     gtk_overlay_add_overlay(overlay, (*switcher).backdrop);
@@ -2127,21 +2277,17 @@ pub unsafe fn channel_switcher_overlay_new<O>(
         (*switcher).search_entry as *mut GtkSearchEntry,
         cstr!("Filter live channels"),
     );
-    g_signal_connect_data(
+    connect_switcher_signal(
         (*switcher).search_entry as *mut c_void,
         cstr!("changed"),
         on_search_changed as *const c_void,
-        switcher as *mut c_void,
-        ptr::null_mut(),
-        0,
+        switcher,
     );
-    g_signal_connect_data(
+    connect_switcher_signal(
         (*switcher).search_entry as *mut c_void,
         cstr!("activate"),
         on_search_activate as *const c_void,
-        switcher as *mut c_void,
-        ptr::null_mut(),
-        0,
+        switcher,
     );
     (*switcher).direct_channel_entry = gtk_entry_new();
     add_weak_pointer(
@@ -2170,21 +2316,17 @@ pub unsafe fn channel_switcher_overlay_new<O>(
         (*switcher).direct_channel_entry,
         cstr!("Enter a channel name or Twitch URL"),
     );
-    g_signal_connect_data(
+    connect_switcher_signal(
         (*switcher).direct_channel_entry as *mut c_void,
         cstr!("activate"),
         on_direct_channel_activate as *const c_void,
-        switcher as *mut c_void,
-        ptr::null_mut(),
-        0,
+        switcher,
     );
-    g_signal_connect_data(
+    connect_switcher_signal(
         (*switcher).direct_channel_entry as *mut c_void,
         cstr!("icon-press"),
         on_direct_channel_icon_pressed as *const c_void,
-        switcher as *mut c_void,
-        ptr::null_mut(),
-        0,
+        switcher,
     );
     let header_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(header_spacer, TRUE);
@@ -2195,13 +2337,11 @@ pub unsafe fn channel_switcher_overlay_new<O>(
     );
     gtk_widget_add_css_class(settings_button, cstr!("channel-switcher-action"));
     gtk_widget_set_tooltip_text(settings_button, cstr!("Edit channels"));
-    g_signal_connect_data(
+    connect_switcher_signal(
         settings_button as *mut c_void,
         cstr!("clicked"),
         on_settings_clicked as *const c_void,
-        switcher as *mut c_void,
-        ptr::null_mut(),
-        0,
+        switcher,
     );
     let close_button = gtk_button_new();
     gtk_button_set_child(
@@ -2210,13 +2350,11 @@ pub unsafe fn channel_switcher_overlay_new<O>(
     );
     gtk_widget_add_css_class(close_button, cstr!("channel-switcher-close"));
     gtk_widget_set_tooltip_text(close_button, cstr!("Close"));
-    g_signal_connect_data(
+    connect_switcher_signal(
         close_button as *mut c_void,
         cstr!("clicked"),
         on_close_clicked as *const c_void,
-        switcher as *mut c_void,
-        ptr::null_mut(),
-        0,
+        switcher,
     );
     let input_separator = gtk_label_new(cstr!("|"));
     gtk_widget_add_css_class(input_separator, cstr!("channel-switcher-header-separator"));
@@ -2266,7 +2404,7 @@ pub unsafe fn channel_switcher_overlay_set_settings(
     switcher: *mut ChannelSwitcherOverlay,
     settings: *mut AppSettings,
 ) {
-    if switcher.is_null() {
+    if switcher.is_null() || (*switcher).closing.load(Ordering::Acquire) {
         return;
     }
 
@@ -2286,7 +2424,11 @@ pub unsafe fn channel_switcher_overlay_show_at(
     _x: c_double,
     _y: c_double,
 ) {
-    if switcher.is_null() || (*switcher).settings.is_null() || (*switcher).panel.is_null() {
+    if switcher.is_null()
+        || (*switcher).closing.load(Ordering::Acquire)
+        || (*switcher).settings.is_null()
+        || (*switcher).panel.is_null()
+    {
         return;
     }
 
@@ -2315,7 +2457,7 @@ pub unsafe fn channel_switcher_overlay_show_at(
     clear_object(&mut (*switcher).cancel);
     (*switcher).cancel = g_cancellable_new();
     let data = Box::into_raw(Box::new(ChannelListFetchCallbackData {
-        switcher,
+        switcher: channel_switcher_overlay_ref(switcher),
         generation: (*switcher).generation,
     }));
     twitch_channel_list_fetch_async(
@@ -2355,12 +2497,17 @@ pub unsafe fn channel_switcher_overlay_hide(switcher: *mut ChannelSwitcherOverla
 
 pub unsafe fn channel_switcher_overlay_is_visible(switcher: *mut ChannelSwitcherOverlay) -> c_int {
     (switcher.is_null() == false
+        && !(*switcher).closing.load(Ordering::Acquire)
         && !(*switcher).panel.is_null()
         && gtk_widget_get_visible((*switcher).panel) != 0) as c_int
 }
 
 pub unsafe fn channel_switcher_overlay_free(switcher: *mut ChannelSwitcherOverlay) {
     if switcher.is_null() {
+        return;
+    }
+
+    if (*switcher).closing.swap(true, Ordering::AcqRel) {
         return;
     }
 
@@ -2379,11 +2526,66 @@ pub unsafe fn channel_switcher_overlay_free(switcher: *mut ChannelSwitcherOverla
     if !(*switcher).backdrop.is_null() && !(*switcher).overlay.is_null() {
         gtk_overlay_remove_overlay((*switcher).overlay, (*switcher).backdrop);
     }
-    (*switcher).panel = ptr::null_mut();
-    (*switcher).backdrop = ptr::null_mut();
-    (*switcher).grid = ptr::null_mut();
-    (*switcher).scroller = ptr::null_mut();
-    (*switcher).search_entry = ptr::null_mut();
-    (*switcher).direct_channel_entry = ptr::null_mut();
-    (*switcher).overlay = ptr::null_mut();
+    remove_weak_pointer(&mut (*switcher).direct_channel_entry);
+    remove_weak_pointer(&mut (*switcher).search_entry);
+    remove_weak_pointer(&mut (*switcher).grid);
+    remove_weak_pointer(&mut (*switcher).scroller);
+    remove_weak_pointer(&mut (*switcher).panel);
+    remove_weak_pointer(&mut (*switcher).backdrop);
+    remove_weak_pointer(&mut (*switcher).overlay);
+
+    channel_switcher_overlay_unref(switcher);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe fn empty_switcher() -> *mut ChannelSwitcherOverlay {
+        Box::into_raw(Box::new(ChannelSwitcherOverlay {
+            overlay: ptr::null_mut(),
+            backdrop: ptr::null_mut(),
+            panel: ptr::null_mut(),
+            grid: ptr::null_mut(),
+            scroller: ptr::null_mut(),
+            search_entry: ptr::null_mut(),
+            direct_channel_entry: ptr::null_mut(),
+            settings: ptr::null_mut(),
+            previews: ptr::null_mut(),
+            preview_cards: ptr::null_mut(),
+            preview_card_columns: 0,
+            preview_card_width: 0,
+            preview_width: 0,
+            preview_height: 0,
+            preview_card_build_source: 0,
+            image_cache: ptr::null_mut(),
+            image_waiters: ptr::null_mut(),
+            cached_channels_key: ptr::null_mut(),
+            cached_at_us: 0,
+            cancel: ptr::null_mut(),
+            search_debounce_source: 0,
+            generation: 0,
+            activate_callback: None,
+            user_data: ptr::null_mut(),
+            settings_callback: None,
+            settings_user_data: ptr::null_mut(),
+            ref_count: AtomicUsize::new(1),
+            closing: AtomicBool::new(false),
+        }))
+    }
+
+    #[test]
+    fn owner_release_waits_for_pending_callback_reference() {
+        unsafe {
+            let switcher = empty_switcher();
+            let pending = channel_switcher_overlay_ref(switcher);
+
+            channel_switcher_overlay_free(switcher);
+
+            assert!((*pending).closing.load(Ordering::Acquire));
+            assert_eq!((*pending).ref_count.load(Ordering::Acquire), 1);
+
+            channel_switcher_overlay_unref(pending);
+        }
+    }
 }

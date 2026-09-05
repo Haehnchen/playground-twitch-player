@@ -3,6 +3,7 @@
 use std::ffi::{c_char, c_double, c_int, c_uint, c_ulonglong, c_void, CStr};
 use std::mem;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::channel_switcher_overlay::{
     channel_switcher_overlay_free, channel_switcher_overlay_is_visible,
@@ -56,6 +57,7 @@ use crate::settings::{
     app_settings_get_hwdec_enabled, app_settings_get_twitch_playback_auth_token, AppSettings,
     AppSettingsChannel,
 };
+use crate::twitch_channel::normalize_twitch_channel;
 use crate::twitch_stream_info::{
     twitch_current_stream_free, twitch_playback_info_empty,
     twitch_stream_info_fetch_current_stream_async, twitch_stream_info_fetch_current_stream_finish,
@@ -74,6 +76,7 @@ macro_rules! cstr {
 
 const MAX_TILES: usize = PLAYER_LAYOUT_MAX_TILES;
 const MPV_MAINLOOP_PRIORITY: c_int = -100;
+const G_PRIORITY_DEFAULT: c_int = 0;
 const STREAM_TITLE_REFRESH_SECONDS: c_uint = 3 * 60;
 const STREAM_QUALITY_CACHE_SECONDS: c_uint = 2 * 60;
 const STREAM_DROPDOWN_WIDTH: c_int = 140;
@@ -505,6 +508,8 @@ struct StreamTile {
     chat_visible: c_int,
     owns_session: c_int,
     title_fetch_in_progress: c_int,
+    wakeup_callback_ref_held: c_int,
+    render_callback_ref_held: c_int,
 }
 
 pub struct PlayerSurface {
@@ -530,7 +535,7 @@ pub struct PlayerSurface {
     move_press_x: c_double,
     move_press_y: c_double,
     move_pressed: c_int,
-    closing: c_int,
+    closing: AtomicBool,
     fullscreen: c_int,
     tile_focused: c_int,
     active_layout_index: usize,
@@ -541,6 +546,7 @@ pub struct PlayerSurface {
     video_fullscreen_restore_tile_focused: c_int,
     video_fullscreen_restore_focused_tile: c_uint,
     started: c_int,
+    ref_count: AtomicUsize,
 }
 
 struct StreamTitleCallbackData {
@@ -599,6 +605,8 @@ struct MpvRenderParam {
 }
 
 type GSourceFunc = unsafe extern "C" fn(*mut c_void) -> c_int;
+type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
+type GClosureNotify = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type GType = usize;
 pub type PlayerSurfaceFullscreenCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 pub type PlayerSurfaceSettingsCallback = Option<unsafe extern "C" fn(*mut c_void)>;
@@ -609,7 +617,6 @@ unsafe extern "C" {
     static epoxy_glClearColor: unsafe extern "C" fn(f32, f32, f32, f32);
     static epoxy_glGetIntegerv: unsafe extern "C" fn(c_uint, *mut c_int);
 
-    fn g_ascii_strdown(str: *const c_char, len: isize) -> *mut c_char;
     fn g_atomic_int_compare_and_exchange(atomic: *mut c_int, oldval: c_int, newval: c_int)
         -> c_int;
     fn g_atomic_int_set(atomic: *mut c_int, newval: c_int);
@@ -623,13 +630,14 @@ unsafe extern "C" {
         priority: c_int,
         function: Option<GSourceFunc>,
         data: *mut c_void,
-        notify: *mut c_void,
+        notify: Option<GDestroyNotify>,
     ) -> c_uint;
     fn g_log(log_domain: *const c_char, log_level: c_int, format: *const c_char, ...);
     fn g_main_context_find_source_by_id(context: *mut c_void, source_id: c_uint) -> *mut GSource;
     fn g_malloc0(n_bytes: usize) -> *mut c_void;
     fn g_object_add_weak_pointer(object: *mut GObject, weak_pointer_location: *mut *mut c_void);
     fn g_object_get_data(object: *mut GObject, key: *const c_char) -> *mut c_void;
+    fn g_object_remove_weak_pointer(object: *mut GObject, weak_pointer_location: *mut *mut c_void);
     fn g_object_unref(object: *mut c_void);
     fn g_ptr_array_unref(array: *mut GPtrArray);
     fn g_signal_connect_data(
@@ -637,17 +645,25 @@ unsafe extern "C" {
         detailed_signal: *const c_char,
         c_handler: *const c_void,
         data: *mut c_void,
-        destroy_data: *mut c_void,
+        destroy_data: Option<GClosureNotify>,
         connect_flags: c_int,
     ) -> usize;
     fn g_source_destroy(source: *mut GSource);
     fn g_strdup(str: *const c_char) -> *mut c_char;
     fn g_strdup_printf(format: *const c_char, ...) -> *mut c_char;
-    fn g_timeout_add(interval: c_uint, function: Option<GSourceFunc>, data: *mut c_void) -> c_uint;
-    fn g_timeout_add_seconds(
+    fn g_timeout_add_full(
+        priority: c_int,
         interval: c_uint,
         function: Option<GSourceFunc>,
         data: *mut c_void,
+        notify: Option<GDestroyNotify>,
+    ) -> c_uint;
+    fn g_timeout_add_seconds_full(
+        priority: c_int,
+        interval: c_uint,
+        function: Option<GSourceFunc>,
+        data: *mut c_void,
+        notify: Option<GDestroyNotify>,
     ) -> c_uint;
     fn g_type_check_instance_is_a(instance: *mut GTypeInstance, iface_type: GType) -> c_int;
 
@@ -806,6 +822,197 @@ unsafe fn clear_object<T>(slot: *mut *mut T) {
 
 unsafe fn add_weak_pointer<T>(object: *mut T, slot: *mut *mut T) {
     g_object_add_weak_pointer(object as *mut GObject, slot as *mut *mut c_void);
+}
+
+unsafe fn remove_weak_pointer<T>(slot: *mut *mut T) {
+    if (*slot).is_null() {
+        return;
+    }
+
+    g_object_remove_weak_pointer((*slot) as *mut GObject, slot as *mut *mut c_void);
+    *slot = ptr::null_mut();
+}
+
+unsafe fn player_surface_ref(state: *mut PlayerSurface) -> *mut PlayerSurface {
+    if !state.is_null() {
+        (*state).ref_count.fetch_add(1, Ordering::Relaxed);
+    }
+    state
+}
+
+unsafe fn player_surface_unref(state: *mut PlayerSurface) {
+    if state.is_null() || (*state).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+
+    g_free(state as *mut c_void);
+}
+
+unsafe fn tile_ref(tile: *mut StreamTile) -> *mut StreamTile {
+    if !tile.is_null() {
+        player_surface_ref((*tile).app);
+    }
+    tile
+}
+
+unsafe extern "C" fn tile_source_data_free(data: *mut c_void) {
+    let tile = data as *mut StreamTile;
+    if !tile.is_null() {
+        player_surface_unref((*tile).app);
+    }
+}
+
+unsafe extern "C" fn surface_source_data_free(data: *mut c_void) {
+    player_surface_unref(data as *mut PlayerSurface);
+}
+
+unsafe extern "C" fn tile_signal_data_free(data: *mut c_void, _closure: *mut c_void) {
+    tile_source_data_free(data);
+}
+
+unsafe extern "C" fn tile_signal_data_ref(data: *mut c_void) -> *mut c_void {
+    tile_ref(data as *mut StreamTile) as *mut c_void
+}
+
+unsafe fn connect_tile_signal(
+    instance: *mut c_void,
+    detailed_signal: *const c_char,
+    handler: *const c_void,
+    tile: *mut StreamTile,
+) {
+    g_signal_connect_data(
+        instance,
+        detailed_signal,
+        handler,
+        tile_ref(tile) as *mut c_void,
+        Some(tile_signal_data_free),
+        0,
+    );
+}
+
+unsafe fn add_tile_idle(
+    priority: c_int,
+    function: Option<GSourceFunc>,
+    tile: *mut StreamTile,
+) -> c_uint {
+    g_idle_add_full(
+        priority,
+        function,
+        tile_ref(tile) as *mut c_void,
+        Some(tile_source_data_free),
+    )
+}
+
+unsafe fn add_tile_timeout(
+    interval: c_uint,
+    function: Option<GSourceFunc>,
+    tile: *mut StreamTile,
+) -> c_uint {
+    g_timeout_add_full(
+        G_PRIORITY_DEFAULT,
+        interval,
+        function,
+        tile_ref(tile) as *mut c_void,
+        Some(tile_source_data_free),
+    )
+}
+
+unsafe fn add_surface_timeout(
+    interval: c_uint,
+    function: Option<GSourceFunc>,
+    state: *mut PlayerSurface,
+) -> c_uint {
+    g_timeout_add_full(
+        G_PRIORITY_DEFAULT,
+        interval,
+        function,
+        player_surface_ref(state) as *mut c_void,
+        Some(surface_source_data_free),
+    )
+}
+
+unsafe fn add_surface_seconds_timeout(
+    interval: c_uint,
+    function: Option<GSourceFunc>,
+    state: *mut PlayerSurface,
+) -> c_uint {
+    g_timeout_add_seconds_full(
+        G_PRIORITY_DEFAULT,
+        interval,
+        function,
+        player_surface_ref(state) as *mut c_void,
+        Some(surface_source_data_free),
+    )
+}
+
+unsafe fn tile_is_closing(tile: *mut StreamTile) -> bool {
+    tile.is_null() || (*tile).app.is_null() || (*(*tile).app).closing.load(Ordering::Acquire)
+}
+
+unsafe fn enable_tile_wakeup_callback(tile: *mut StreamTile) {
+    if (*tile).session.is_null() {
+        return;
+    }
+
+    if (*tile).wakeup_callback_ref_held == 0 {
+        player_surface_ref((*tile).app);
+        (*tile).wakeup_callback_ref_held = TRUE;
+    }
+    player_session_set_wakeup_callback((*tile).session, Some(on_mpv_wakeup), tile as *mut c_void);
+}
+
+unsafe fn disable_tile_wakeup_callback(tile: *mut StreamTile) {
+    if !(*tile).session.is_null() {
+        player_session_set_wakeup_callback((*tile).session, None, ptr::null_mut());
+    }
+    if (*tile).wakeup_callback_ref_held != 0 {
+        (*tile).wakeup_callback_ref_held = FALSE;
+        player_surface_unref((*tile).app);
+    }
+}
+
+unsafe fn enable_tile_render_callback(tile: *mut StreamTile) {
+    if (*tile).mpv_gl.is_null() {
+        return;
+    }
+
+    if (*tile).render_callback_ref_held == 0 {
+        player_surface_ref((*tile).app);
+        (*tile).render_callback_ref_held = TRUE;
+    }
+    mpv_render_context_set_update_callback(
+        (*tile).mpv_gl,
+        Some(on_mpv_render_update),
+        tile as *mut c_void,
+    );
+}
+
+unsafe fn disable_tile_render_callback(tile: *mut StreamTile) {
+    if !(*tile).mpv_gl.is_null() {
+        mpv_render_context_set_update_callback((*tile).mpv_gl, None, ptr::null_mut());
+    }
+    if (*tile).render_callback_ref_held != 0 {
+        (*tile).render_callback_ref_held = FALSE;
+        player_surface_unref((*tile).app);
+    }
+}
+
+unsafe fn stream_title_callback_data_free(data: *mut StreamTitleCallbackData) {
+    if data.is_null() {
+        return;
+    }
+
+    let data = Box::from_raw(data);
+    player_surface_unref((*data.tile).app);
+}
+
+unsafe fn stream_quality_callback_data_free(data: *mut StreamQualityCallbackData) {
+    if data.is_null() {
+        return;
+    }
+
+    let data = Box::from_raw(data);
+    player_surface_unref((*data.tile).app);
 }
 
 unsafe fn is_instance<T>(instance: *mut T, type_: GType) -> bool {
@@ -970,7 +1177,7 @@ unsafe extern "C" fn queue_mpv_render(user_data: *mut c_void) -> c_int {
 }
 
 unsafe fn queue_tile_render(tile: *mut StreamTile) {
-    if (*(*tile).app).closing == 0 && !(*tile).gl_area.is_null() {
+    if !(*(*tile).app).closing.load(Ordering::Acquire) && !(*tile).gl_area.is_null() {
         gtk_gl_area_queue_render((*tile).gl_area as *mut GtkGLArea);
     }
 }
@@ -978,7 +1185,9 @@ unsafe fn queue_tile_render(tile: *mut StreamTile) {
 unsafe extern "C" fn warmup_tile_render(user_data: *mut c_void) -> c_int {
     let tile = user_data as *mut StreamTile;
 
-    if (*(*tile).app).closing != 0 || (*tile).gl_area.is_null() || (*tile).render_warmup_frames <= 0
+    if (*(*tile).app).closing.load(Ordering::Acquire)
+        || (*tile).gl_area.is_null()
+        || (*tile).render_warmup_frames <= 0
     {
         (*tile).render_warmup_source = 0;
         return G_SOURCE_REMOVE;
@@ -992,19 +1201,17 @@ unsafe extern "C" fn warmup_tile_render(user_data: *mut c_void) -> c_int {
 unsafe fn start_render_warmup(tile: *mut StreamTile) {
     remove_source_if_active(&mut (*tile).render_warmup_source);
     (*tile).render_warmup_frames = 90;
-    (*tile).render_warmup_source = g_timeout_add(16, Some(warmup_tile_render), tile as *mut c_void);
+    (*tile).render_warmup_source = add_tile_timeout(16, Some(warmup_tile_render), tile);
 }
 
 unsafe extern "C" fn on_mpv_render_update(ctx: *mut c_void) {
     let tile = ctx as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     if g_atomic_int_compare_and_exchange(&mut (*tile).render_queued, 0, 1) != 0 {
-        g_idle_add_full(
-            MPV_MAINLOOP_PRIORITY,
-            Some(queue_mpv_render),
-            tile as *mut c_void,
-            ptr::null_mut(),
-        );
+        add_tile_idle(MPV_MAINLOOP_PRIORITY, Some(queue_mpv_render), tile);
     }
 }
 
@@ -1014,7 +1221,7 @@ unsafe extern "C" fn process_mpv_events(user_data: *mut c_void) -> c_int {
     g_atomic_int_set(&mut (*tile).event_queued, 0);
 
     let mpv = tile_mpv(tile);
-    if (*(*tile).app).closing != 0 || mpv.is_null() {
+    if (*(*tile).app).closing.load(Ordering::Acquire) || mpv.is_null() {
         return G_SOURCE_REMOVE;
     }
 
@@ -1059,14 +1266,12 @@ unsafe extern "C" fn process_mpv_events(user_data: *mut c_void) -> c_int {
 
 unsafe extern "C" fn on_mpv_wakeup(ctx: *mut c_void) {
     let tile = ctx as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     if g_atomic_int_compare_and_exchange(&mut (*tile).event_queued, 0, 1) != 0 {
-        g_idle_add_full(
-            MPV_MAINLOOP_PRIORITY,
-            Some(process_mpv_events),
-            tile as *mut c_void,
-            ptr::null_mut(),
-        );
+        add_tile_idle(MPV_MAINLOOP_PRIORITY, Some(process_mpv_events), tile);
     }
 }
 
@@ -1075,16 +1280,12 @@ unsafe fn dup_twitch_channel_name(value: *const c_char) -> *mut c_char {
         return ptr::null_mut();
     }
 
-    let bytes = CStr::from_ptr(value).to_bytes();
-    if bytes.is_empty()
-        || !bytes
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
-    {
+    let Some(mut channel) = normalize_twitch_channel(CStr::from_ptr(value).to_bytes()) else {
         return ptr::null_mut();
-    }
+    };
 
-    g_ascii_strdown(value, bytes.len() as isize)
+    channel.push(0);
+    g_strdup(channel.as_ptr() as *const c_char)
 }
 
 unsafe fn target_to_label(target: *const c_char, channel: *const c_char) -> *mut c_char {
@@ -1245,7 +1446,10 @@ unsafe extern "C" fn on_tile_twitch_playback_close_clicked(
     _button: *mut GtkButton,
     user_data: *mut c_void,
 ) {
-    hide_tile_twitch_playback_panel(user_data as *mut StreamTile);
+    let tile = user_data as *mut StreamTile;
+    if !tile_is_closing(tile) {
+        hide_tile_twitch_playback_panel(tile);
+    }
 }
 
 unsafe extern "C" fn on_tile_twitch_playback_clicked(
@@ -1253,7 +1457,7 @@ unsafe extern "C" fn on_tile_twitch_playback_clicked(
     user_data: *mut c_void,
 ) {
     let tile = user_data as *mut StreamTile;
-    if (*tile).twitch_playback_panel.is_null() {
+    if tile_is_closing(tile) || (*tile).twitch_playback_panel.is_null() {
         return;
     }
     if !(*tile).stream_settings_popover.is_null() {
@@ -1269,6 +1473,10 @@ unsafe extern "C" fn on_tile_twitch_playback_settings_clicked(
     user_data: *mut c_void,
 ) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
+
     let state = (*tile).app;
 
     hide_tile_twitch_playback_panel(tile);
@@ -1332,17 +1540,19 @@ unsafe extern "C" fn on_tile_title_fetched(
     if (*data).generation != (*tile).title_generation {
         g_clear_error(&mut error);
         twitch_current_stream_free(stream);
-        drop(Box::from_raw(data));
+        stream_title_callback_data_free(data);
         return;
     }
 
     (*tile).title_fetch_in_progress = FALSE;
     clear_object(&mut (*tile).title_cancel);
 
-    if (*(*tile).app).closing != 0 || player_session_is_playing((*tile).session) == 0 {
+    if (*(*tile).app).closing.load(Ordering::Acquire)
+        || player_session_is_playing((*tile).session) == 0
+    {
         g_clear_error(&mut error);
         twitch_current_stream_free(stream);
-        drop(Box::from_raw(data));
+        stream_title_callback_data_free(data);
         return;
     }
 
@@ -1357,7 +1567,7 @@ unsafe extern "C" fn on_tile_title_fetched(
         }
         g_clear_error(&mut error);
         twitch_current_stream_free(stream);
-        drop(Box::from_raw(data));
+        stream_title_callback_data_free(data);
         return;
     }
 
@@ -1367,11 +1577,11 @@ unsafe extern "C" fn on_tile_title_fetched(
     g_free(title as *mut c_void);
     g_free(metadata as *mut c_void);
     twitch_current_stream_free(stream);
-    drop(Box::from_raw(data));
+    stream_title_callback_data_free(data);
 }
 
 unsafe fn request_tile_title_update(tile: *mut StreamTile, force: c_int) {
-    if (*(*tile).app).closing != 0
+    if (*(*tile).app).closing.load(Ordering::Acquire)
         || player_session_is_playing((*tile).session) == 0
         || !is_nonempty((*tile).channel)
     {
@@ -1386,7 +1596,7 @@ unsafe fn request_tile_title_update(tile: *mut StreamTile, force: c_int) {
     }
 
     let data = Box::into_raw(Box::new(StreamTitleCallbackData {
-        tile,
+        tile: tile_ref(tile),
         generation: (*tile).title_generation.wrapping_add(1),
     }));
     (*tile).title_generation = (*data).generation;
@@ -1405,7 +1615,7 @@ unsafe fn request_tile_title_update(tile: *mut StreamTile, force: c_int) {
 unsafe extern "C" fn refresh_surface_stream_titles(user_data: *mut c_void) -> c_int {
     let state = user_data as *mut PlayerSurface;
 
-    if (*state).closing != 0 {
+    if (*state).closing.load(Ordering::Acquire) {
         (*state).title_refresh_source = 0;
         return G_SOURCE_REMOVE;
     }
@@ -1555,8 +1765,7 @@ unsafe fn apply_stored_chat_width(tile: *mut StreamTile, width: c_int) {
 
 unsafe fn queue_chat_position_update(tile: *mut StreamTile) {
     if (*tile).chat_position_source == 0 {
-        (*tile).chat_position_source =
-            g_timeout_add(50, Some(apply_chat_position), tile as *mut c_void);
+        (*tile).chat_position_source = add_tile_timeout(50, Some(apply_chat_position), tile);
     }
 }
 
@@ -1564,7 +1773,7 @@ unsafe extern "C" fn apply_chat_position(user_data: *mut c_void) -> c_int {
     let tile = user_data as *mut StreamTile;
     let state = (*tile).app;
 
-    if (*state).closing != 0 || (*tile).container.is_null() {
+    if (*state).closing.load(Ordering::Acquire) || (*tile).container.is_null() {
         (*tile).chat_position_source = 0;
         return G_SOURCE_REMOVE;
     }
@@ -1587,7 +1796,10 @@ unsafe extern "C" fn on_chat_paned_layout_changed(
 ) {
     let tile = user_data as *mut StreamTile;
     let state = (*tile).app;
-    if (*state).closing != 0 || (*tile).chat_visible == 0 || (*tile).container.is_null() {
+    if (*state).closing.load(Ordering::Acquire)
+        || (*tile).chat_visible == 0
+        || (*tile).container.is_null()
+    {
         return;
     }
 
@@ -1656,6 +1868,10 @@ unsafe fn sync_chat_for_tile(tile: *mut StreamTile) {
 
 unsafe extern "C" fn on_tile_chat_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
+
     let close_active = (*tile).chat_visible != 0;
 
     activate_tile_chat(tile, (!close_active) as c_int);
@@ -1711,7 +1927,7 @@ unsafe fn clear_tile_render_context(tile: *mut StreamTile) {
     }
 
     if !(*tile).mpv_gl.is_null() {
-        mpv_render_context_set_update_callback((*tile).mpv_gl, None, ptr::null_mut());
+        disable_tile_render_callback(tile);
         mpv_render_context_free((*tile).mpv_gl);
         (*tile).mpv_gl = ptr::null_mut();
     }
@@ -1723,7 +1939,7 @@ unsafe fn clear_tile_render_context(tile: *mut StreamTile) {
 
 unsafe fn reset_owned_tile_session(tile: *mut StreamTile) {
     clear_tile_render_context(tile);
-    player_session_set_wakeup_callback((*tile).session, None, ptr::null_mut());
+    disable_tile_wakeup_callback(tile);
     if (*tile).owns_session != 0 {
         player_session_free((*tile).session);
         (*tile).session = player_session_new();
@@ -1767,7 +1983,7 @@ unsafe fn ensure_tile_session(tile: *mut StreamTile) -> c_int {
         (*tile).session,
         app_settings_get_hwdec_enabled((*(*tile).app).settings),
     );
-    player_session_set_wakeup_callback((*tile).session, Some(on_mpv_wakeup), tile as *mut c_void);
+    enable_tile_wakeup_callback(tile);
     if !(*tile).gl_area.is_null()
         && gtk_widget_get_realized((*tile).gl_area) != 0
         && create_mpv_render_context(tile) == 0
@@ -1804,6 +2020,9 @@ unsafe extern "C" fn activate_tile_context_channel(
     user_data: *mut c_void,
 ) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     set_tile_channel(tile, channel);
     show_tile_overlay(tile);
@@ -1811,6 +2030,9 @@ unsafe extern "C" fn activate_tile_context_channel(
 
 unsafe extern "C" fn on_volume_changed(range: *mut GtkRange, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     player_volume_sync_session_from_range((*tile).session, range);
     if player_session_get_muted((*tile).session) != 0 {
@@ -1820,6 +2042,9 @@ unsafe extern "C" fn on_volume_changed(range: *mut GtkRange, user_data: *mut c_v
 
 unsafe extern "C" fn on_tile_close_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     stop_tile_stream(tile);
     show_tile_overlay(tile);
@@ -1827,6 +2052,9 @@ unsafe extern "C" fn on_tile_close_clicked(_button: *mut GtkButton, user_data: *
 
 unsafe extern "C" fn on_empty_tile_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     channel_switcher_overlay_show_at((*tile).channel_switcher, 0.0, 0.0);
     show_tile_overlay(tile);
@@ -1834,6 +2062,9 @@ unsafe extern "C" fn on_empty_tile_clicked(_button: *mut GtkButton, user_data: *
 
 unsafe extern "C" fn on_mute_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     if !is_nonempty((*tile).channel) {
         return;
@@ -1845,6 +2076,9 @@ unsafe extern "C" fn on_mute_clicked(_button: *mut GtkButton, user_data: *mut c_
 
 unsafe extern "C" fn on_tile_quality_auto_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     reload_tile_stream_auto(tile);
     if !(*tile).stream_settings_popover.is_null() {
@@ -1858,6 +2092,10 @@ unsafe extern "C" fn on_tile_quality_button_clicked(
     user_data: *mut c_void,
 ) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
+
     let quality = g_object_get_data(button as *mut GObject, cstr!("stream-quality"))
         as *const TwitchStreamQuality;
 
@@ -1873,6 +2111,9 @@ unsafe extern "C" fn on_tile_stream_info_toggle_clicked(
     user_data: *mut c_void,
 ) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     player_session_toggle_stream_info((*tile).session);
     if !(*tile).stream_settings_popover.is_null() {
@@ -1898,7 +2139,7 @@ unsafe extern "C" fn on_tile_stream_qualities_fetched(
             g_ptr_array_unref(qualities);
         }
         g_clear_error(&mut error);
-        drop(Box::from_raw(data));
+        stream_quality_callback_data_free(data);
         return;
     }
 
@@ -1919,18 +2160,18 @@ unsafe extern "C" fn on_tile_stream_qualities_fetched(
             set_tile_twitch_playback_unavailable(tile);
         }
         g_clear_error(&mut error);
-        drop(Box::from_raw(data));
+        stream_quality_callback_data_free(data);
         return;
     }
 
     player_stream_quality_state_mark_fetched(&mut (*tile).stream_quality);
     set_tile_twitch_playback_info(tile, &playback_info);
     populate_tile_quality_buttons(tile);
-    drop(Box::from_raw(data));
+    stream_quality_callback_data_free(data);
 }
 
 unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int) {
-    if (*(*tile).app).closing != 0 || !is_nonempty((*tile).channel) {
+    if (*(*tile).app).closing.load(Ordering::Acquire) || !is_nonempty((*tile).channel) {
         return;
     }
     if (*tile).stream_quality.fetch_in_progress != 0 && force == 0 {
@@ -1952,7 +2193,7 @@ unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force: c_int) {
     );
 
     let data = Box::into_raw(Box::new(StreamQualityCallbackData {
-        tile,
+        tile: tile_ref(tile),
         generation: player_stream_quality_state_begin_fetch(&mut (*tile).stream_quality),
     }));
 
@@ -1976,6 +2217,8 @@ unsafe fn populate_tile_quality_buttons(tile: *mut StreamTile) {
         tile as *mut c_void,
         on_tile_quality_auto_clicked as *const c_void,
         tile as *mut c_void,
+        Some(tile_signal_data_ref),
+        Some(tile_signal_data_free),
     );
 }
 
@@ -1985,7 +2228,7 @@ unsafe extern "C" fn on_tile_stream_settings_clicked(
 ) {
     let tile = user_data as *mut StreamTile;
 
-    if (*tile).stream_settings_popover.is_null() {
+    if tile_is_closing(tile) || (*tile).stream_settings_popover.is_null() {
         return;
     }
     hide_tile_twitch_playback_panel(tile);
@@ -2001,6 +2244,9 @@ unsafe extern "C" fn on_tile_stream_settings_clicked(
 
 unsafe extern "C" fn on_channel_refresh_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     if player_session_is_playing((*tile).session) == 0 {
         return;
@@ -2016,6 +2262,9 @@ unsafe extern "C" fn on_channel_refresh_clicked(_button: *mut GtkButton, user_da
 
 unsafe extern "C" fn on_channel_button_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
 
     channel_switcher_overlay_show_at((*tile).channel_switcher, 0.0, 0.0);
     show_tile_overlay(tile);
@@ -2040,7 +2289,7 @@ unsafe extern "C" fn hide_footers(user_data: *mut c_void) -> c_int {
 
     (*state).visible_footer_tile = ptr::null_mut();
 
-    if (*state).closing == 0 {
+    if !(*state).closing.load(Ordering::Acquire) {
         if !(*state).top_controls.is_null() {
             gtk_widget_set_visible((*state).top_controls, FALSE);
         }
@@ -2056,13 +2305,13 @@ unsafe extern "C" fn hide_footers(user_data: *mut c_void) -> c_int {
 
 unsafe fn schedule_footer_hide(state: *mut PlayerSurface) {
     remove_source_if_active(&mut (*state).footer_hide_source);
-    (*state).footer_hide_source = g_timeout_add(1800, Some(hide_footers), state as *mut c_void);
+    (*state).footer_hide_source = add_surface_timeout(1800, Some(hide_footers), state);
 }
 
 unsafe fn show_tile_overlay(tile: *mut StreamTile) {
     let state = (*tile).app;
 
-    if (*state).closing != 0 {
+    if (*state).closing.load(Ordering::Acquire) {
         return;
     }
 
@@ -2309,7 +2558,7 @@ unsafe fn reset_tile_for_template_switch(tile: *mut StreamTile) {
     clear_pointer(&mut (*tile).channel);
 
     if !(*tile).session.is_null() {
-        player_session_set_wakeup_callback((*tile).session, None, ptr::null_mut());
+        disable_tile_wakeup_callback(tile);
         player_session_stop((*tile).session);
         if (*tile).owns_session != 0 {
             player_session_free((*tile).session);
@@ -2407,7 +2656,7 @@ unsafe fn toggle_tile_focus(tile: *mut StreamTile) {
 unsafe fn apply_video_fullscreen_focus(tile: *mut StreamTile) {
     let state = (*tile).app;
 
-    if (*state).closing != 0 {
+    if (*state).closing.load(Ordering::Acquire) {
         return;
     }
 
@@ -2510,7 +2759,10 @@ unsafe fn request_tile_fullscreen_toggle(tile: *mut StreamTile) {
 }
 
 unsafe extern "C" fn on_tile_focus_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    toggle_tile_focus(user_data as *mut StreamTile);
+    let tile = user_data as *mut StreamTile;
+    if !tile_is_closing(tile) {
+        toggle_tile_focus(tile);
+    }
 }
 
 unsafe fn get_toplevel_event_data_from_event(
@@ -2576,6 +2828,10 @@ unsafe extern "C" fn on_tile_motion(
     user_data: *mut c_void,
 ) {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
+
     let state = (*tile).app;
 
     if player_motion_tracker_ignore_stationary(
@@ -2598,8 +2854,9 @@ unsafe extern "C" fn on_video_pressed(
     _y: c_double,
     user_data: *mut c_void,
 ) {
-    if n_press == 2 {
-        request_tile_fullscreen_toggle(user_data as *mut StreamTile);
+    let tile = user_data as *mut StreamTile;
+    if n_press == 2 && !tile_is_closing(tile) {
+        request_tile_fullscreen_toggle(tile);
     }
 }
 
@@ -2609,6 +2866,10 @@ unsafe extern "C" fn on_video_legacy_event(
     user_data: *mut c_void,
 ) -> c_int {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
     let state = (*tile).app;
     let type_ = gdk_event_get_event_type(event);
 
@@ -2661,6 +2922,10 @@ unsafe extern "C" fn on_tile_scroll(
     user_data: *mut c_void,
 ) -> c_int {
     let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return GDK_EVENT_PROPAGATE;
+    }
+
     if channel_switcher_overlay_is_visible((*tile).channel_switcher) != 0 {
         return GDK_EVENT_PROPAGATE;
     }
@@ -2683,11 +2948,15 @@ unsafe extern "C" fn on_context_pressed(
     y: c_double,
     user_data: *mut c_void,
 ) {
+    let tile = user_data as *mut StreamTile;
+    if tile_is_closing(tile) {
+        return;
+    }
+
     if n_press != 1 {
         return;
     }
 
-    let tile = user_data as *mut StreamTile;
     channel_switcher_overlay_show_at((*tile).channel_switcher, x, y);
     show_tile_overlay(tile);
 }
@@ -2698,6 +2967,10 @@ unsafe extern "C" fn on_gl_render(
     user_data: *mut c_void,
 ) -> c_int {
     let tile = user_data as *mut StreamTile;
+
+    if tile_is_closing(tile) {
+        return TRUE;
+    }
 
     if (*tile).mpv_gl.is_null() {
         gtk_gl_area_attach_buffers(area);
@@ -2775,7 +3048,7 @@ unsafe fn create_mpv_render_context(tile: *mut StreamTile) -> c_int {
     }
 
     if !(*tile).mpv_gl.is_null() {
-        mpv_render_context_set_update_callback((*tile).mpv_gl, None, ptr::null_mut());
+        disable_tile_render_callback(tile);
         mpv_render_context_free((*tile).mpv_gl);
         (*tile).mpv_gl = ptr::null_mut();
     }
@@ -2805,11 +3078,7 @@ unsafe fn create_mpv_render_context(tile: *mut StreamTile) -> c_int {
         return FALSE;
     }
 
-    mpv_render_context_set_update_callback(
-        (*tile).mpv_gl,
-        Some(on_mpv_render_update),
-        tile as *mut c_void,
-    );
+    enable_tile_render_callback(tile);
     // The session may already be playing; force mpv to bind video to this new GLArea.
     player_session_reenable_video((*tile).session);
     start_render_warmup(tile);
@@ -2820,6 +3089,10 @@ unsafe fn create_mpv_render_context(tile: *mut StreamTile) -> c_int {
 unsafe extern "C" fn on_gl_realize(_area: *mut GtkGLArea, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
 
+    if tile_is_closing(tile) {
+        return;
+    }
+
     if !tile_mpv(tile).is_null() && create_mpv_render_context(tile) == 0 {
         set_tile_status(tile, cstr!("Render error"));
     }
@@ -2827,6 +3100,10 @@ unsafe extern "C" fn on_gl_realize(_area: *mut GtkGLArea, user_data: *mut c_void
 
 unsafe extern "C" fn on_gl_unrealize(area: *mut GtkGLArea, user_data: *mut c_void) {
     let tile = user_data as *mut StreamTile;
+
+    if tile_is_closing(tile) {
+        return;
+    }
 
     gtk_gl_area_make_current(area);
     clear_tile_render_context(tile);
@@ -2859,13 +3136,11 @@ unsafe fn create_tile_twitch_playback_panel(tile: *mut StreamTile) -> *mut GtkWi
     );
     gtk_widget_add_css_class(settings_button, cstr!("twitch-playback-settings"));
     gtk_widget_set_tooltip_text(settings_button, cstr!("Playback authentication settings"));
-    g_signal_connect_data(
+    connect_tile_signal(
         settings_button as *mut c_void,
         cstr!("clicked"),
         on_tile_twitch_playback_settings_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     let close_button = gtk_button_new();
@@ -2875,13 +3150,11 @@ unsafe fn create_tile_twitch_playback_panel(tile: *mut StreamTile) -> *mut GtkWi
     );
     gtk_widget_add_css_class(close_button, cstr!("twitch-playback-close"));
     gtk_widget_set_tooltip_text(close_button, cstr!("Close"));
-    g_signal_connect_data(
+    connect_tile_signal(
         close_button as *mut c_void,
         cstr!("clicked"),
         on_tile_twitch_playback_close_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     gtk_box_append(header as *mut GtkBox, title);
@@ -2930,13 +3203,11 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
     );
     gtk_widget_set_halign((*tile).channel_combo, GTK_ALIGN_FILL);
     gtk_widget_set_hexpand((*tile).channel_combo, TRUE);
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).channel_combo as *mut c_void,
         cstr!("clicked"),
         on_channel_button_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     gtk_overlay_set_child(channel_selector as *mut GtkOverlay, (*tile).channel_combo);
@@ -2958,24 +3229,20 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
         channel_selector as *mut GtkOverlay,
         (*tile).channel_refresh_button,
     );
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).channel_refresh_button as *mut c_void,
         cstr!("clicked"),
         on_channel_refresh_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     (*tile).close_button = player_overlay_button_new(player_trash_icon_new(), cstr!("Clear slot"));
     gtk_widget_add_css_class((*tile).close_button, cstr!("tile-close-button"));
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).close_button as *mut c_void,
         cstr!("clicked"),
         on_tile_close_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     (*tile).stream_info = player_footer_stream_info_new();
@@ -2993,36 +3260,30 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
     );
     gtk_scale_set_draw_value((*tile).volume_scale as *mut GtkScale, FALSE);
     gtk_widget_set_size_request((*tile).volume_scale, PLAYER_VOLUME_SCALE_WIDTH, -1);
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).volume_scale as *mut c_void,
         cstr!("value-changed"),
         on_volume_changed as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     (*tile).mute_button = player_volume_mute_button_new((*tile).session);
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).mute_button as *mut c_void,
         cstr!("clicked"),
         on_mute_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     (*tile).focus_button = player_overlay_button_new(
         player_tile_focus_icon_new(PLAYER_TILE_FOCUS_ICON_EXPAND),
         cstr!("Focus tile"),
     );
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).focus_button as *mut c_void,
         cstr!("clicked"),
         on_tile_focus_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     (*tile).chat_toggle_button = player_overlay_button_new(
@@ -3030,25 +3291,21 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
         cstr!("Open chat"),
     );
     gtk_widget_add_css_class((*tile).chat_toggle_button, cstr!("chat-toggle"));
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).chat_toggle_button as *mut c_void,
         cstr!("clicked"),
         on_tile_chat_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     (*tile).stream_info_button =
         player_overlay_button_new(player_stream_settings_icon_new(), cstr!("Stream settings"));
     gtk_widget_add_css_class((*tile).stream_info_button, cstr!("stream-settings-button"));
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).stream_info_button as *mut c_void,
         cstr!("clicked"),
         on_tile_stream_settings_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     let mut twitch_playback_button: *mut GtkWidget = ptr::null_mut();
@@ -3060,21 +3317,17 @@ unsafe fn create_tile_footer(tile: *mut StreamTile) -> *mut GtkWidget {
         &mut twitch_playback_button,
         &mut info_button,
     );
-    g_signal_connect_data(
+    connect_tile_signal(
         twitch_playback_button as *mut c_void,
         cstr!("clicked"),
         on_tile_twitch_playback_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
-    g_signal_connect_data(
+    connect_tile_signal(
         info_button as *mut c_void,
         cstr!("clicked"),
         on_tile_stream_info_toggle_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     gtk_box_append(box_ as *mut GtkBox, channel_selector);
@@ -3152,21 +3405,17 @@ unsafe fn create_stream_tile(
     gtk_widget_set_valign(bottom_separator, GTK_ALIGN_END);
     gtk_widget_set_size_request(bottom_separator, -1, 1);
     gtk_overlay_add_overlay((*tile).frame as *mut GtkOverlay, bottom_separator);
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).container as *mut c_void,
         cstr!("notify::position"),
         on_chat_paned_layout_changed as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).container as *mut c_void,
         cstr!("notify::max-position"),
         on_chat_paned_layout_changed as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     (*tile).overlay = gtk_overlay_new();
@@ -3194,13 +3443,11 @@ unsafe fn create_stream_tile(
     gtk_widget_set_tooltip_text((*tile).empty_label, cstr!("Select channel"));
     gtk_widget_set_halign((*tile).empty_label, GTK_ALIGN_CENTER);
     gtk_widget_set_valign((*tile).empty_label, GTK_ALIGN_CENTER);
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).empty_label as *mut c_void,
         cstr!("clicked"),
         on_empty_tile_clicked as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
     gtk_overlay_add_overlay((*tile).overlay as *mut GtkOverlay, (*tile).empty_label);
 
@@ -3226,86 +3473,70 @@ unsafe fn create_stream_tile(
 
     let video_click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(video_click as *mut GtkGestureSingle, GDK_BUTTON_PRIMARY);
-    g_signal_connect_data(
+    connect_tile_signal(
         video_click as *mut c_void,
         cstr!("pressed"),
         on_video_pressed as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
     gtk_widget_add_controller((*tile).gl_area, video_click as *mut c_void);
 
     let context_click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(context_click as *mut GtkGestureSingle, GDK_BUTTON_SECONDARY);
-    g_signal_connect_data(
+    connect_tile_signal(
         context_click as *mut c_void,
         cstr!("pressed"),
         on_context_pressed as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
     gtk_widget_add_controller((*tile).overlay, context_click as *mut c_void);
 
     let video_legacy = gtk_event_controller_legacy_new();
-    g_signal_connect_data(
+    connect_tile_signal(
         video_legacy as *mut c_void,
         cstr!("event"),
         on_video_legacy_event as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
     gtk_widget_add_controller((*tile).gl_area, video_legacy as *mut c_void);
 
     let video_motion = gtk_event_controller_motion_new();
     gtk_event_controller_set_propagation_phase(video_motion, GTK_PHASE_CAPTURE);
-    g_signal_connect_data(
+    connect_tile_signal(
         video_motion as *mut c_void,
         cstr!("motion"),
         on_tile_motion as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
     gtk_widget_add_controller((*tile).overlay, video_motion as *mut c_void);
 
     let tile_scroll = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
     gtk_event_controller_set_propagation_phase(tile_scroll, GTK_PHASE_CAPTURE);
-    g_signal_connect_data(
+    connect_tile_signal(
         tile_scroll as *mut c_void,
         cstr!("scroll"),
         on_tile_scroll as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
     gtk_widget_add_controller((*tile).overlay, tile_scroll as *mut c_void);
 
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).gl_area as *mut c_void,
         cstr!("realize"),
         on_gl_realize as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).gl_area as *mut c_void,
         cstr!("unrealize"),
         on_gl_unrealize as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
-    g_signal_connect_data(
+    connect_tile_signal(
         (*tile).gl_area as *mut c_void,
         cstr!("render"),
         on_gl_render as *const c_void,
-        tile as *mut c_void,
-        ptr::null_mut(),
-        0,
+        tile,
     );
 
     update_tile_empty_state(tile);
@@ -3349,7 +3580,9 @@ pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
         return;
     }
 
-    (*state).closing = TRUE;
+    if (*state).closing.swap(true, Ordering::AcqRel) {
+        return;
+    }
 
     remove_source_if_active(&mut (*state).footer_hide_source);
     remove_source_if_active(&mut (*state).title_refresh_source);
@@ -3365,7 +3598,7 @@ pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
         clear_tile_render_context(tile);
         reset_tile_stream_title(tile);
         clear_tile_stream_qualities(tile);
-        player_session_set_wakeup_callback((*tile).session, None, ptr::null_mut());
+        disable_tile_wakeup_callback(tile);
         if (*tile).owns_session != 0 {
             player_session_free((*tile).session);
         }
@@ -3373,10 +3606,10 @@ pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
 
         clear_pointer(&mut (*tile).label);
         clear_pointer(&mut (*tile).channel);
-        (*tile).frame = ptr::null_mut();
-        (*tile).container = ptr::null_mut();
-        (*tile).overlay = ptr::null_mut();
-        (*tile).gl_area = ptr::null_mut();
+        remove_weak_pointer(&mut (*tile).frame);
+        remove_weak_pointer(&mut (*tile).container);
+        remove_weak_pointer(&mut (*tile).overlay);
+        remove_weak_pointer(&mut (*tile).gl_area);
         (*tile).footer = ptr::null_mut();
         (*tile).channel_combo = ptr::null_mut();
         (*tile).channel_label = ptr::null_mut();
@@ -3409,11 +3642,11 @@ pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
         clear_pointer(&mut (*state).targets[i]);
     }
 
-    (*state).root_overlay = ptr::null_mut();
-    (*state).grid = ptr::null_mut();
+    remove_weak_pointer(&mut (*state).grid);
+    remove_weak_pointer(&mut (*state).root_overlay);
     (*state).primary_session = ptr::null_mut();
     (*state).settings = ptr::null_mut();
-    /* mpv may already have queued idle callbacks that still carry tile pointers. */
+    player_surface_unref(state);
 }
 
 pub unsafe fn player_surface_new<W>(
@@ -3431,6 +3664,8 @@ pub unsafe fn player_surface_new<W>(
     install_css();
 
     let state = g_malloc0(mem::size_of::<PlayerSurface>()) as *mut PlayerSurface;
+    ptr::addr_of_mut!((*state).closing).write(AtomicBool::new(false));
+    ptr::addr_of_mut!((*state).ref_count).write(AtomicUsize::new(1));
     (*state).window = window as *mut GtkWidget;
     (*state).primary_session = primary_session;
     (*state).target_count = if !targets.is_null() {
@@ -3493,10 +3728,10 @@ pub unsafe fn player_surface_new<W>(
     restore_active_layout_with_primary_slot(state, 0);
 
     schedule_footer_hide(state);
-    (*state).title_refresh_source = g_timeout_add_seconds(
+    (*state).title_refresh_source = add_surface_seconds_timeout(
         STREAM_TITLE_REFRESH_SECONDS,
         Some(refresh_surface_stream_titles),
-        state as *mut c_void,
+        state,
     );
 
     state
@@ -3654,5 +3889,27 @@ pub unsafe fn player_surface_set_settings(player: *mut PlayerSurface, settings: 
             app_settings_get_hwdec_enabled(settings),
         );
         channel_switcher_overlay_set_settings((*player).tiles[i].channel_switcher, settings);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_release_waits_for_pending_callback_reference() {
+        unsafe {
+            let state = g_malloc0(mem::size_of::<PlayerSurface>()) as *mut PlayerSurface;
+            ptr::addr_of_mut!((*state).closing).write(AtomicBool::new(false));
+            ptr::addr_of_mut!((*state).ref_count).write(AtomicUsize::new(1));
+            let pending = player_surface_ref(state);
+
+            player_surface_free(state);
+
+            assert!((*pending).closing.load(Ordering::Acquire));
+            assert_eq!((*pending).ref_count.load(Ordering::Acquire), 1);
+
+            player_surface_unref(pending);
+        }
     }
 }

@@ -36,6 +36,7 @@ pub struct TwitchCurrentStream {
     pub viewer_count: c_uint,
 }
 
+#[repr(C)]
 pub struct TwitchStreamQuality {
     pub label: *mut c_char,
     pub url: *mut c_char,

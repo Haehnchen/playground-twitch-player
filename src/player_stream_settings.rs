@@ -1,7 +1,7 @@
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
-use std::ptr;
 
 use crate::player_icons::{player_account_icon_new, player_info_icon_new};
+use crate::twitch_stream_info::{GPtrArray, TwitchStreamQuality};
 
 const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
 const GTK_ORIENTATION_VERTICAL: c_int = 1;
@@ -40,21 +40,8 @@ pub struct GObject {
     _private: [u8; 0],
 }
 
-#[repr(C)]
-pub struct GPtrArray {
-    pdata: *mut *mut c_void,
-    len: c_uint,
-}
-
-#[repr(C)]
-pub struct TwitchStreamQuality {
-    label: *mut c_char,
-    url: *mut c_char,
-    width: c_uint,
-    height: c_uint,
-    bandwidth: c_uint,
-    frame_rate: f64,
-}
+pub type PlayerStreamSettingsDataRef = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
+pub type PlayerStreamSettingsDataFree = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
 unsafe extern "C" {
     fn g_object_set_data(object: *mut GObject, key: *const c_char, data: *mut c_void);
@@ -63,7 +50,7 @@ unsafe extern "C" {
         detailed_signal: *const c_char,
         c_handler: *mut c_void,
         data: *mut c_void,
-        destroy_data: *mut c_void,
+        destroy_data: Option<PlayerStreamSettingsDataFree>,
         connect_flags: c_int,
     ) -> usize;
     fn g_strcmp0(str1: *const c_char, str2: *const c_char) -> c_int;
@@ -89,13 +76,24 @@ unsafe extern "C" {
     fn gtk_widget_set_valign(widget: *mut GtkWidget, align: c_int);
 }
 
-unsafe fn connect_clicked(widget: *mut GtkWidget, callback: *const c_void, user_data: *mut c_void) {
+unsafe fn connect_clicked(
+    widget: *mut GtkWidget,
+    callback: *const c_void,
+    user_data: *mut c_void,
+    user_data_ref: Option<PlayerStreamSettingsDataRef>,
+    user_data_free: Option<PlayerStreamSettingsDataFree>,
+) {
+    let callback_data = if let Some(user_data_ref) = user_data_ref {
+        user_data_ref(user_data)
+    } else {
+        user_data
+    };
     g_signal_connect_data(
         widget as *mut c_void,
         b"clicked\0".as_ptr() as *const c_char,
         callback as *mut c_void,
-        user_data,
-        ptr::null_mut(),
+        callback_data,
+        user_data_free,
         0,
     );
 }
@@ -258,20 +256,21 @@ unsafe fn current_label(label: *const c_char) -> Vec<u8> {
     value
 }
 
-pub unsafe fn player_stream_settings_quality_list_populate<W, A>(
+pub unsafe fn player_stream_settings_quality_list_populate<W>(
     quality_list_box: *mut W,
     quality_status_label: *mut W,
-    qualities: *mut A,
+    qualities: *mut GPtrArray,
     selected_quality_url: *const c_char,
     selected_quality_label: *const c_char,
     quality_clicked_callback: *const c_void,
     quality_user_data: *mut c_void,
     auto_clicked_callback: *const c_void,
     auto_user_data: *mut c_void,
+    user_data_ref: Option<PlayerStreamSettingsDataRef>,
+    user_data_free: Option<PlayerStreamSettingsDataFree>,
 ) {
     let quality_list_box = quality_list_box as *mut GtkWidget;
     let quality_status_label = quality_status_label as *mut GtkWidget;
-    let qualities = qualities as *mut GPtrArray;
     if quality_list_box.is_null() || quality_status_label.is_null() {
         return;
     }
@@ -316,7 +315,13 @@ pub unsafe fn player_stream_settings_quality_list_populate<W, A>(
             b"stream-quality\0".as_ptr() as *const c_char,
             quality as *mut c_void,
         );
-        connect_clicked(button, quality_clicked_callback, quality_user_data);
+        connect_clicked(
+            button,
+            quality_clicked_callback,
+            quality_user_data,
+            user_data_ref,
+            user_data_free,
+        );
         gtk_box_append(quality_list_box as *mut GtkBox, button);
     }
 
@@ -329,6 +334,12 @@ pub unsafe fn player_stream_settings_quality_list_populate<W, A>(
         },
         auto_selected,
     );
-    connect_clicked(auto_button, auto_clicked_callback, auto_user_data);
+    connect_clicked(
+        auto_button,
+        auto_clicked_callback,
+        auto_user_data,
+        user_data_ref,
+        user_data_free,
+    );
     gtk_box_append(quality_list_box as *mut GtkBox, auto_button);
 }

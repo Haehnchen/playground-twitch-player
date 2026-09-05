@@ -1,6 +1,9 @@
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::io;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::twitch_channel::normalize_twitch_channel;
 
 const G_FILE_TEST_EXISTS: c_int = 1 << 4;
 const JSON_NODE_OBJECT: c_int = 0;
@@ -19,6 +22,7 @@ pub struct AppSettings {
     twitch_oauth_expires_at: i64,
     twitch_playback_auth_token: *mut c_char,
     hwdec_enabled: c_int,
+    ref_count: AtomicUsize,
 }
 
 #[repr(C)]
@@ -188,39 +192,6 @@ unsafe fn is_nonempty(value: *const c_char) -> bool {
     !value.is_null() && *value != 0
 }
 
-fn extract_twitch_channel_name(value: &[u8]) -> Option<Vec<u8>> {
-    if value.is_empty() {
-        return None;
-    }
-
-    let needle = b"twitch.tv/";
-    let mut start = value
-        .windows(needle.len())
-        .position(|window| window == needle)
-        .map(|position| position + needle.len())
-        .unwrap_or(0);
-
-    while start < value.len() && (value[start] == b'/' || value[start] == b'@') {
-        start += 1;
-    }
-
-    let mut end = start;
-    while end < value.len() && (value[end].is_ascii_alphanumeric() || value[end] == b'_') {
-        end += 1;
-    }
-
-    if end == start {
-        return None;
-    }
-
-    Some(
-        value[start..end]
-            .iter()
-            .map(u8::to_ascii_lowercase)
-            .collect(),
-    )
-}
-
 unsafe fn build_filename(parts: &[*const c_char]) -> *mut c_char {
     let mut args: Vec<*mut c_char> = parts.iter().map(|part| *part as *mut c_char).collect();
     args.push(ptr::null_mut());
@@ -235,7 +206,27 @@ pub unsafe fn app_settings_new() -> *mut AppSettings {
         twitch_oauth_expires_at: 0,
         twitch_playback_auth_token: ptr::null_mut(),
         hwdec_enabled: 1,
+        ref_count: AtomicUsize::new(1),
     }))
+}
+
+pub(crate) unsafe fn app_settings_ref(settings: *mut AppSettings) -> *mut AppSettings {
+    if !settings.is_null() {
+        (*settings).ref_count.fetch_add(1, Ordering::Relaxed);
+    }
+    settings
+}
+
+unsafe fn app_settings_unref(settings: *mut AppSettings) {
+    if settings.is_null() || (*settings).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+
+    let settings = Box::from_raw(settings);
+    g_ptr_array_unref(settings.channels);
+    g_free(settings.twitch_oauth_token as *mut c_void);
+    g_free(settings.twitch_refresh_token as *mut c_void);
+    g_free(settings.twitch_playback_auth_token as *mut c_void);
 }
 
 pub unsafe fn app_settings_get_path() -> *mut c_char {
@@ -247,15 +238,7 @@ pub unsafe fn app_settings_get_path() -> *mut c_char {
 }
 
 pub unsafe fn app_settings_free(settings: *mut AppSettings) {
-    if settings.is_null() {
-        return;
-    }
-
-    let settings = Box::from_raw(settings);
-    g_ptr_array_unref(settings.channels);
-    g_free(settings.twitch_oauth_token as *mut c_void);
-    g_free(settings.twitch_refresh_token as *mut c_void);
-    g_free(settings.twitch_playback_auth_token as *mut c_void);
+    app_settings_unref(settings);
 }
 
 pub unsafe fn app_settings_get_channel_count(settings: *const AppSettings) -> c_uint {
@@ -416,8 +399,8 @@ pub unsafe fn app_settings_add_channel(
     let trimmed_label = trimmed_bytes(label);
     let trimmed_channel = trimmed_bytes(channel);
     let trimmed_url = trimmed_bytes(url);
-    let derived_channel = extract_twitch_channel_name(&trimmed_channel)
-        .or_else(|| extract_twitch_channel_name(&trimmed_url));
+    let derived_channel = normalize_twitch_channel(&trimmed_channel)
+        .or_else(|| normalize_twitch_channel(&trimmed_url));
 
     if derived_channel.is_none() && trimmed_url.is_empty() && trimmed_channel.is_empty() {
         return;
@@ -629,4 +612,24 @@ pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut 
     g_free(config_dir as *mut c_void);
     g_free(path as *mut c_void);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_release_waits_for_async_reference() {
+        unsafe {
+            let settings = app_settings_new();
+            let pending = app_settings_ref(settings);
+
+            app_settings_free(settings);
+
+            assert_eq!((*pending).ref_count.load(Ordering::Acquire), 1);
+            assert_eq!(app_settings_get_channel_count(pending), 0);
+
+            app_settings_free(pending);
+        }
+    }
 }

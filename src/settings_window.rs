@@ -3,12 +3,12 @@ use std::ptr;
 
 use crate::player_icons::player_trash_icon_new;
 use crate::settings::{
-    app_settings_add_channel, app_settings_clear_channels, app_settings_get_channel,
-    app_settings_get_channel_count, app_settings_get_hwdec_enabled,
+    app_settings_add_channel, app_settings_clear_channels, app_settings_free,
+    app_settings_get_channel, app_settings_get_channel_count, app_settings_get_hwdec_enabled,
     app_settings_get_twitch_oauth_token, app_settings_get_twitch_playback_auth_token,
-    app_settings_get_twitch_refresh_token, app_settings_save, app_settings_set_hwdec_enabled,
-    app_settings_set_twitch_auth_tokens, app_settings_set_twitch_oauth_token,
-    app_settings_set_twitch_playback_auth_token, AppSettings,
+    app_settings_get_twitch_refresh_token, app_settings_ref, app_settings_save,
+    app_settings_set_hwdec_enabled, app_settings_set_twitch_auth_tokens,
+    app_settings_set_twitch_oauth_token, app_settings_set_twitch_playback_auth_token, AppSettings,
 };
 use crate::twitch_auth::{
     twitch_auth_device_code_free, twitch_auth_poll_device_token_async,
@@ -46,6 +46,7 @@ pub struct SettingsWindow {
     settings: *mut AppSettings,
     saved_callback: Option<SettingsWindowSavedCallback>,
     user_data: *mut c_void,
+    user_data_free: Option<GDestroyNotify>,
     auth_cancel: *mut GCancellable,
     auth_in_progress: c_int,
 }
@@ -299,6 +300,10 @@ unsafe extern "C" fn settings_window_free(data: *mut c_void) {
     if !(*view).auth_cancel.is_null() {
         g_cancellable_cancel((*view).auth_cancel);
         g_object_unref((*view).auth_cancel as *mut c_void);
+    }
+    app_settings_free((*view).settings);
+    if let Some(user_data_free) = (*view).user_data_free {
+        user_data_free((*view).user_data);
     }
     drop(Box::from_raw(view));
 }
@@ -1217,6 +1222,7 @@ pub unsafe fn settings_window_show<W>(
     initial_page: c_int,
     saved_callback: Option<SettingsWindowSavedCallback>,
     user_data: *mut c_void,
+    user_data_free: Option<GDestroyNotify>,
 ) {
     let parent = parent as *mut GtkWindow;
     let view = Box::into_raw(Box::new(SettingsWindow {
@@ -1230,9 +1236,10 @@ pub unsafe fn settings_window_show<W>(
         channels_box: ptr::null_mut(),
         empty_label: ptr::null_mut(),
         status_label: ptr::null_mut(),
-        settings,
+        settings: app_settings_ref(settings),
         saved_callback,
         user_data,
+        user_data_free,
         auth_cancel: ptr::null_mut(),
         auth_in_progress: 0,
     }));

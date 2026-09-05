@@ -1,27 +1,9 @@
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 
+use crate::twitch_stream_info::{GCancellable, GPtrArray, TwitchStreamQuality};
+
 const G_USEC_PER_SEC: i64 = 1_000_000;
-
-#[repr(C)]
-pub struct GCancellable {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GPtrArray {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct TwitchStreamQuality {
-    label: *mut c_char,
-    url: *mut c_char,
-    width: c_uint,
-    height: c_uint,
-    bandwidth: c_uint,
-    frame_rate: f64,
-}
 
 pub struct PlayerStreamQualityState {
     pub cancel: *mut GCancellable,
@@ -117,16 +99,16 @@ pub unsafe fn player_stream_quality_state_cache_is_valid(
         as c_int
 }
 
-pub unsafe fn player_stream_quality_state_select<Q>(
+pub unsafe fn player_stream_quality_state_select(
     state: *mut PlayerStreamQualityState,
-    quality: *const Q,
+    quality: *const TwitchStreamQuality,
 ) {
     if state.is_null() || quality.is_null() {
         return;
     }
 
     let state = &mut *state;
-    let quality = &*(quality as *const TwitchStreamQuality);
+    let quality = &*quality;
     g_free(state.selected_url as *mut c_void);
     g_free(state.selected_label as *mut c_void);
     state.selected_url = g_strdup(quality.url);
@@ -170,11 +152,10 @@ pub unsafe fn player_stream_quality_state_begin_fetch(
     state.generation
 }
 
-pub unsafe fn player_stream_quality_state_finish_fetch<A>(
+pub unsafe fn player_stream_quality_state_finish_fetch(
     state: *mut PlayerStreamQualityState,
-    qualities: *mut A,
+    qualities: *mut GPtrArray,
 ) {
-    let qualities = qualities as *mut GPtrArray;
     if state.is_null() {
         if !qualities.is_null() {
             g_ptr_array_unref(qualities);

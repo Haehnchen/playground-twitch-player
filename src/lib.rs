@@ -18,6 +18,7 @@ pub mod player_volume;
 pub mod settings;
 pub mod settings_window;
 pub mod twitch_auth;
+pub mod twitch_channel;
 pub mod twitch_channel_list;
 pub mod twitch_chat;
 pub mod twitch_stream_info;

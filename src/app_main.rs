@@ -4,6 +4,7 @@ use std::env;
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void, CStr, CString};
 use std::os::unix::ffi::OsStringExt;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::player_icons::{
     player_layout_icon_new, player_layout_menu_icon_new, player_settings_icon_new,
@@ -28,6 +29,7 @@ use crate::settings::{
     app_settings_free, app_settings_get_hwdec_enabled, app_settings_load, AppSettings, GError,
 };
 use crate::settings_window::settings_window_show;
+use crate::twitch_channel::normalize_twitch_channel;
 macro_rules! cstr {
     ($value:literal) => {
         concat!($value, "\0").as_ptr() as *const c_char
@@ -35,6 +37,7 @@ macro_rules! cstr {
 }
 
 const OVERLAY_HIDE_DELAY_MS: c_uint = 1800;
+const G_PRIORITY_DEFAULT: c_int = 0;
 const MAXIMIZE_RESTORE_ATTEMPTS: c_uint = 12;
 const DEFAULT_WINDOW_WIDTH: c_int = 1100;
 const DEFAULT_WINDOW_HEIGHT: c_int = (DEFAULT_WINDOW_WIDTH * 9 + 8) / 16;
@@ -93,13 +96,14 @@ struct AppState {
     maximize_restore_source: c_uint,
     maximize_restore_attempts: c_uint,
     motion_tracker: PlayerMotionTracker,
-    closing: c_int,
+    closing: AtomicBool,
     fullscreen: c_int,
     window_maximized: c_int,
     was_maximized_before_fullscreen: c_int,
     restore_maximized_after_fullscreen: c_int,
     restore_window_width: c_int,
     restore_window_height: c_int,
+    ref_count: AtomicUsize,
 }
 
 struct StartupConfig {
@@ -250,13 +254,13 @@ struct GtkWindow {
 }
 
 type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
+type GClosureNotify = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type GSourceFunc = unsafe extern "C" fn(*mut c_void) -> c_int;
 type GType = usize;
 
 unsafe extern "C" {
     fn g_application_run(application: *mut c_void, argc: c_int, argv: *mut *mut c_char) -> c_int;
     fn g_ascii_strcasecmp(str1: *const c_char, str2: *const c_char) -> c_int;
-    fn g_ascii_strdown(str: *const c_char, len: isize) -> *mut c_char;
     fn g_build_filename(first_element: *const c_char, ...) -> *mut c_char;
     fn g_canonicalize_filename(filename: *const c_char, relative_to: *const c_char) -> *mut c_char;
     fn g_clear_error(error: *mut *mut GError);
@@ -275,6 +279,7 @@ unsafe extern "C" {
     fn g_mkdir_with_parents(pathname: *const c_char, mode: c_int) -> c_int;
     fn g_object_add_weak_pointer(object: *mut GObject, weak_pointer_location: *mut *mut c_void);
     fn g_object_get_data(object: *mut GObject, key: *const c_char) -> *mut c_void;
+    fn g_object_remove_weak_pointer(object: *mut GObject, weak_pointer_location: *mut *mut c_void);
     fn g_object_set_data(object: *mut GObject, key: *const c_char, data: *mut c_void);
     fn g_object_set_data_full(
         object: *mut GObject,
@@ -292,14 +297,20 @@ unsafe extern "C" {
         detailed_signal: *const c_char,
         c_handler: *const c_void,
         data: *mut c_void,
-        destroy_data: *mut c_void,
+        destroy_data: Option<GClosureNotify>,
         connect_flags: c_int,
     ) -> usize;
     fn g_source_destroy(source: *mut GSource);
     fn g_strcmp0(str1: *const c_char, str2: *const c_char) -> c_int;
     fn g_strdup(str: *const c_char) -> *mut c_char;
     fn g_strdup_printf(format: *const c_char, ...) -> *mut c_char;
-    fn g_timeout_add(interval: c_uint, function: Option<GSourceFunc>, data: *mut c_void) -> c_uint;
+    fn g_timeout_add_full(
+        priority: c_int,
+        interval: c_uint,
+        function: Option<GSourceFunc>,
+        data: *mut c_void,
+        notify: Option<GDestroyNotify>,
+    ) -> c_uint;
     fn g_type_check_instance_is_a(instance: *mut GTypeInstance, iface_type: GType) -> c_int;
 
     fn gdk_display_get_default() -> *mut GdkDisplay;
@@ -372,6 +383,7 @@ unsafe extern "C" {
     fn gtk_widget_set_valign(widget: *mut GtkWidget, align: c_int);
     fn gtk_widget_set_vexpand(widget: *mut GtkWidget, expand: c_int);
     fn gtk_widget_set_visible(widget: *mut GtkWidget, visible: c_int);
+    fn gtk_widget_unparent(widget: *mut GtkWidget);
     fn gtk_window_close(window: *mut GtkWindow);
     fn gtk_window_fullscreen(window: *mut GtkWindow);
     fn gtk_window_get_type() -> GType;
@@ -410,30 +422,8 @@ unsafe fn dup_twitch_channel_name(value: *const c_char) -> *mut c_char {
         return ptr::null_mut();
     }
 
-    let bytes = CStr::from_ptr(value).to_bytes();
-    let prefix = b"twitch.tv/";
-    let prefix_index = bytes
-        .windows(prefix.len())
-        .position(|window| window == prefix);
-    let from_twitch_url = prefix_index.is_some();
-    let mut start = prefix_index.map(|index| index + prefix.len()).unwrap_or(0);
-
-    while start < bytes.len() && bytes[start] == b'/' {
-        start += 1;
-    }
-
-    let mut end = start;
-    while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
-        end += 1;
-    }
-
-    if end == start || (!from_twitch_url && end != bytes.len()) {
-        return ptr::null_mut();
-    }
-
-    let mut channel = bytes[start..end].to_vec();
-    channel.push(0);
-    g_ascii_strdown(channel.as_ptr() as *const c_char, (end - start) as isize)
+    normalize_twitch_channel(CStr::from_ptr(value).to_bytes())
+        .map_or(ptr::null_mut(), |channel| dup_bytes(&channel))
 }
 
 unsafe fn configure_rendering_defaults() {
@@ -452,11 +442,68 @@ unsafe fn remove_source_if_active(source_id: *mut c_uint) {
     *source_id = 0;
 }
 
+unsafe fn app_state_ref(state: *mut AppState) -> *mut AppState {
+    if !state.is_null() {
+        (*state).ref_count.fetch_add(1, Ordering::Relaxed);
+    }
+    state
+}
+
+unsafe fn app_state_unref(state: *mut AppState) {
+    if state.is_null() || (*state).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return;
+    }
+
+    drop(Box::from_raw(state));
+}
+
+unsafe extern "C" fn app_state_source_data_free(data: *mut c_void) {
+    app_state_unref(data as *mut AppState);
+}
+
+unsafe extern "C" fn app_state_signal_data_free(data: *mut c_void, _closure: *mut c_void) {
+    app_state_unref(data as *mut AppState);
+}
+
+unsafe fn connect_app_state_signal(
+    instance: *mut c_void,
+    detailed_signal: *const c_char,
+    handler: *const c_void,
+    state: *mut AppState,
+) {
+    g_signal_connect_data(
+        instance,
+        detailed_signal,
+        handler,
+        app_state_ref(state) as *mut c_void,
+        Some(app_state_signal_data_free),
+        0,
+    );
+}
+
+unsafe fn add_app_state_timeout(
+    interval: c_uint,
+    function: Option<GSourceFunc>,
+    state: *mut AppState,
+) -> c_uint {
+    g_timeout_add_full(
+        G_PRIORITY_DEFAULT,
+        interval,
+        function,
+        app_state_ref(state) as *mut c_void,
+        Some(app_state_source_data_free),
+    )
+}
+
+unsafe fn app_state_is_closing(state: *mut AppState) -> bool {
+    state.is_null() || (*state).closing.load(Ordering::Acquire)
+}
+
 unsafe extern "C" fn hide_window_overlay(user_data: *mut c_void) -> c_int {
     let state = user_data as *mut AppState;
     (*state).overlay_hide_source = 0;
 
-    if (*state).closing == 0 {
+    if !(*state).closing.load(Ordering::Acquire) {
         gtk_widget_set_visible((*state).top_left_controls, FALSE);
         gtk_widget_set_visible((*state).top_controls, FALSE);
     }
@@ -466,15 +513,15 @@ unsafe extern "C" fn hide_window_overlay(user_data: *mut c_void) -> c_int {
 
 unsafe fn schedule_window_overlay_hide(state: *mut AppState) {
     remove_source_if_active(&mut (*state).overlay_hide_source);
-    (*state).overlay_hide_source = g_timeout_add(
-        OVERLAY_HIDE_DELAY_MS,
-        Some(hide_window_overlay),
-        state as *mut c_void,
-    );
+    if app_state_is_closing(state) {
+        return;
+    }
+    (*state).overlay_hide_source =
+        add_app_state_timeout(OVERLAY_HIDE_DELAY_MS, Some(hide_window_overlay), state);
 }
 
 unsafe fn show_window_overlay(state: *mut AppState) {
-    if (*state).closing != 0 {
+    if (*state).closing.load(Ordering::Acquire) {
         return;
     }
 
@@ -557,12 +604,17 @@ unsafe extern "C" fn on_resize_pressed(
     _y: c_double,
     user_data: *mut c_void,
 ) {
+    let state = user_data as *mut AppState;
+    if app_state_is_closing(state) {
+        return;
+    }
+
     if n_press != 1 {
         return;
     }
 
     let edge = g_object_get_data(gesture as *mut GObject, cstr!("resize-edge")) as isize as c_int;
-    begin_window_resize(user_data as *mut AppState, gesture as *mut GtkGesture, edge);
+    begin_window_resize(state, gesture as *mut GtkGesture, edge);
 }
 
 unsafe fn create_resize_handle(
@@ -595,13 +647,11 @@ unsafe fn create_resize_handle(
         cstr!("resize-edge"),
         edge as isize as *mut c_void,
     );
-    g_signal_connect_data(
+    connect_app_state_signal(
         click as *mut c_void,
         cstr!("pressed"),
         on_resize_pressed as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
     gtk_widget_add_controller(handle, click as *mut c_void);
 
@@ -715,7 +765,9 @@ unsafe extern "C" fn restore_maximized_after_fullscreen(user_data: *mut c_void) 
         ptr::null_mut()
     };
 
-    if (*state).closing != 0 || window.is_null() || (*state).restore_maximized_after_fullscreen == 0
+    if (*state).closing.load(Ordering::Acquire)
+        || window.is_null()
+        || (*state).restore_maximized_after_fullscreen == 0
     {
         (*state).maximize_restore_source = 0;
         return G_SOURCE_REMOVE;
@@ -754,20 +806,17 @@ unsafe extern "C" fn restore_maximized_after_fullscreen(user_data: *mut c_void) 
 unsafe fn schedule_maximized_restore_after_fullscreen(state: *mut AppState) {
     remove_source_if_active(&mut (*state).maximize_restore_source);
 
-    if (*state).restore_maximized_after_fullscreen == 0 {
+    if app_state_is_closing(state) || (*state).restore_maximized_after_fullscreen == 0 {
         return;
     }
 
     (*state).maximize_restore_attempts = 0;
-    (*state).maximize_restore_source = g_timeout_add(
-        50,
-        Some(restore_maximized_after_fullscreen),
-        state as *mut c_void,
-    );
+    (*state).maximize_restore_source =
+        add_app_state_timeout(50, Some(restore_maximized_after_fullscreen), state);
 }
 
 unsafe fn set_fullscreen(state: *mut AppState, fullscreen: c_int) {
-    if (*state).fullscreen == fullscreen {
+    if app_state_is_closing(state) || (*state).fullscreen == fullscreen {
         return;
     }
 
@@ -800,7 +849,10 @@ unsafe extern "C" fn on_window_fullscreen_changed(
     _pspec: *mut GParamSpec,
     user_data: *mut c_void,
 ) {
-    schedule_maximized_restore_after_fullscreen(user_data as *mut AppState);
+    let state = user_data as *mut AppState;
+    if !app_state_is_closing(state) {
+        schedule_maximized_restore_after_fullscreen(state);
+    }
 }
 
 unsafe extern "C" fn on_window_maximized_changed(
@@ -810,7 +862,8 @@ unsafe extern "C" fn on_window_maximized_changed(
 ) {
     let state = user_data as *mut AppState;
 
-    if (*state).fullscreen != 0
+    if app_state_is_closing(state)
+        || (*state).fullscreen != 0
         || (*state).window.is_null()
         || gtk_window_is_fullscreen((*state).window as *mut GtkWindow) != 0
     {
@@ -820,16 +873,30 @@ unsafe extern "C" fn on_window_maximized_changed(
     (*state).window_maximized = gtk_window_is_maximized((*state).window as *mut GtkWindow);
 }
 
+unsafe extern "C" fn on_window_close_request(
+    _window: *mut GtkWindow,
+    user_data: *mut c_void,
+) -> c_int {
+    shutdown_state(user_data as *mut AppState);
+    GDK_EVENT_PROPAGATE
+}
+
 unsafe fn toggle_fullscreen(state: *mut AppState) {
     set_fullscreen(state, ((*state).fullscreen == 0) as c_int);
 }
 
 unsafe extern "C" fn on_content_fullscreen_requested(user_data: *mut c_void) {
-    toggle_fullscreen(user_data as *mut AppState);
+    let state = user_data as *mut AppState;
+    if !app_state_is_closing(state) {
+        toggle_fullscreen(state);
+    }
 }
 
 unsafe extern "C" fn on_content_settings_requested(user_data: *mut c_void) {
-    show_settings_window(user_data as *mut AppState, SETTINGS_WINDOW_PAGE_CHANNELS);
+    let state = user_data as *mut AppState;
+    if !app_state_is_closing(state) {
+        show_settings_window(state, SETTINGS_WINDOW_PAGE_CHANNELS);
+    }
 }
 
 unsafe fn destroy_active_content(state: *mut AppState) {
@@ -949,6 +1016,10 @@ unsafe fn set_layout_mode(state: *mut AppState, layout_index: usize) {
 
 unsafe extern "C" fn on_layout_choice_clicked(button: *mut GtkButton, user_data: *mut c_void) {
     let state = user_data as *mut AppState;
+    if app_state_is_closing(state) {
+        return;
+    }
+
     let stored_index = g_object_get_data(button as *mut GObject, cstr!("layout-index")) as usize;
     if stored_index == 0 {
         return;
@@ -962,7 +1033,7 @@ unsafe extern "C" fn on_layout_choice_clicked(button: *mut GtkButton, user_data:
 
 unsafe extern "C" fn on_layout_menu_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let state = user_data as *mut AppState;
-    if (*state).layout_popover.is_null() {
+    if app_state_is_closing(state) || (*state).layout_popover.is_null() {
         return;
     }
 
@@ -971,7 +1042,10 @@ unsafe extern "C" fn on_layout_menu_clicked(_button: *mut GtkButton, user_data: 
 }
 
 unsafe extern "C" fn on_layout_popover_closed(_popover: *mut GtkPopover, user_data: *mut c_void) {
-    schedule_window_overlay_hide(user_data as *mut AppState);
+    let state = user_data as *mut AppState;
+    if !app_state_is_closing(state) {
+        schedule_window_overlay_hide(state);
+    }
 }
 
 unsafe fn create_layout_popover(
@@ -1016,24 +1090,20 @@ unsafe fn create_layout_popover(
             cstr!("layout-index"),
             (layout_index + 1) as *mut c_void,
         );
-        g_signal_connect_data(
+        connect_app_state_signal(
             button as *mut c_void,
             cstr!("clicked"),
             on_layout_choice_clicked as *const c_void,
-            state as *mut c_void,
-            ptr::null_mut(),
-            0,
+            state,
         );
         gtk_box_append(menu as *mut GtkBox, button);
     }
 
-    g_signal_connect_data(
+    connect_app_state_signal(
         popover as *mut c_void,
         cstr!("closed"),
         on_layout_popover_closed as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
 
     popover
@@ -1041,6 +1111,9 @@ unsafe fn create_layout_popover(
 
 unsafe extern "C" fn on_settings_saved(_settings: *mut AppSettings, user_data: *mut c_void) {
     let state = user_data as *mut AppState;
+    if app_state_is_closing(state) {
+        return;
+    }
 
     if !(*state).player_surface.is_null() {
         player_surface_set_settings((*state).player_surface, (*state).settings);
@@ -1050,32 +1123,47 @@ unsafe extern "C" fn on_settings_saved(_settings: *mut AppSettings, user_data: *
 }
 
 unsafe fn show_settings_window(state: *mut AppState, initial_page: c_int) {
+    if app_state_is_closing(state) {
+        return;
+    }
+
     settings_window_show(
         (*state).window as *mut GtkWindow,
         (*state).settings,
         initial_page,
         Some(on_settings_saved),
-        state as *mut c_void,
+        app_state_ref(state) as *mut c_void,
+        Some(app_state_source_data_free),
     );
     show_window_overlay(state);
 }
 
 unsafe extern "C" fn on_settings_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    show_settings_window(user_data as *mut AppState, SETTINGS_WINDOW_PAGE_GENERAL);
+    let state = user_data as *mut AppState;
+    if !app_state_is_closing(state) {
+        show_settings_window(state, SETTINGS_WINDOW_PAGE_GENERAL);
+    }
 }
 
 unsafe extern "C" fn on_minimize_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let state = user_data as *mut AppState;
-    gtk_window_minimize((*state).window as *mut GtkWindow);
+    if !app_state_is_closing(state) && !(*state).window.is_null() {
+        gtk_window_minimize((*state).window as *mut GtkWindow);
+    }
 }
 
 unsafe extern "C" fn on_fullscreen_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    toggle_fullscreen(user_data as *mut AppState);
+    let state = user_data as *mut AppState;
+    if !app_state_is_closing(state) {
+        toggle_fullscreen(state);
+    }
 }
 
 unsafe extern "C" fn on_close_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
     let state = user_data as *mut AppState;
-    gtk_window_close((*state).window as *mut GtkWindow);
+    if !app_state_is_closing(state) && !(*state).window.is_null() {
+        gtk_window_close((*state).window as *mut GtkWindow);
+    }
 }
 
 unsafe extern "C" fn on_root_motion(
@@ -1085,6 +1173,9 @@ unsafe extern "C" fn on_root_motion(
     user_data: *mut c_void,
 ) {
     let state = user_data as *mut AppState;
+    if app_state_is_closing(state) {
+        return;
+    }
 
     if player_motion_tracker_ignore_stationary(
         &mut (*state).motion_tracker,
@@ -1107,6 +1198,9 @@ unsafe extern "C" fn on_key_pressed(
     user_data: *mut c_void,
 ) -> c_int {
     let state = user_data as *mut AppState;
+    if app_state_is_closing(state) {
+        return GDK_EVENT_PROPAGATE;
+    }
 
     if !(*state).player_surface.is_null() {
         return player_surface_handle_key((*state).player_surface, keyval, modifiers);
@@ -1584,13 +1678,17 @@ unsafe fn write_user_desktop_identity(argv0: *const c_char) {
     g_free(quoted_exec as *mut c_void);
 }
 
-unsafe extern "C" fn destroy_state(user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    (*state).closing = TRUE;
+unsafe fn shutdown_state(state: *mut AppState) {
+    if (*state).closing.swap(true, Ordering::AcqRel) {
+        return;
+    }
 
     remove_source_if_active(&mut (*state).overlay_hide_source);
     remove_source_if_active(&mut (*state).maximize_restore_source);
 
+    if !(*state).layout_popover.is_null() {
+        gtk_widget_unparent((*state).layout_popover);
+    }
     destroy_active_content(state);
     if !(*state).primary_session.is_null() {
         player_session_free((*state).primary_session);
@@ -1600,8 +1698,31 @@ unsafe extern "C" fn destroy_state(user_data: *mut c_void) {
     (*state).settings = ptr::null_mut();
 }
 
+unsafe extern "C" fn destroy_state(user_data: *mut c_void) {
+    let state = user_data as *mut AppState;
+    shutdown_state(state);
+
+    remove_weak_pointer(&mut (*state).layout_popover);
+    remove_weak_pointer(&mut (*state).top_controls);
+    remove_weak_pointer(&mut (*state).top_left_controls);
+    remove_weak_pointer(&mut (*state).root_overlay);
+    (*state).settings_button = ptr::null_mut();
+    (*state).window = ptr::null_mut();
+
+    app_state_unref(state);
+}
+
 unsafe fn add_weak_pointer<T>(object: *mut T, slot: *mut *mut T) {
     g_object_add_weak_pointer(object as *mut GObject, slot as *mut *mut c_void);
+}
+
+unsafe fn remove_weak_pointer<T>(slot: *mut *mut T) {
+    if (*slot).is_null() {
+        return;
+    }
+
+    g_object_remove_weak_pointer((*slot) as *mut GObject, slot as *mut *mut c_void);
+    *slot = ptr::null_mut();
 }
 
 unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *mut c_void) {
@@ -1639,13 +1760,14 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         maximize_restore_source: 0,
         maximize_restore_attempts: 0,
         motion_tracker: PlayerMotionTracker::new(),
-        closing: FALSE,
+        closing: AtomicBool::new(false),
         fullscreen: FALSE,
         window_maximized: FALSE,
         was_maximized_before_fullscreen: FALSE,
         restore_maximized_after_fullscreen: FALSE,
         restore_window_width: 0,
         restore_window_height: 0,
+        ref_count: AtomicUsize::new(1),
     }));
     player_session_set_hwdec_enabled(
         (*state).primary_session,
@@ -1661,21 +1783,23 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
     );
     gtk_window_set_decorated((*state).window as *mut GtkWindow, FALSE);
     gtk_window_set_icon_name((*state).window as *mut GtkWindow, c_app_id());
-    g_signal_connect_data(
+    connect_app_state_signal(
         (*state).window as *mut c_void,
         cstr!("notify::fullscreened"),
         on_window_fullscreen_changed as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
-    g_signal_connect_data(
+    connect_app_state_signal(
         (*state).window as *mut c_void,
         cstr!("notify::maximized"),
         on_window_maximized_changed as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
+    );
+    connect_app_state_signal(
+        (*state).window as *mut c_void,
+        cstr!("close-request"),
+        on_window_close_request as *const c_void,
+        state,
     );
 
     (*state).root_overlay = gtk_overlay_new();
@@ -1700,13 +1824,11 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         (*state).top_left_controls as *mut GtkBox,
         (*state).settings_button,
     );
-    g_signal_connect_data(
+    connect_app_state_signal(
         (*state).settings_button as *mut c_void,
         cstr!("clicked"),
         on_settings_clicked as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
 
     let layout_menu_button =
@@ -1716,13 +1838,11 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         (*state).top_left_controls as *mut GtkBox,
         layout_menu_button,
     );
-    g_signal_connect_data(
+    connect_app_state_signal(
         layout_menu_button as *mut c_void,
         cstr!("clicked"),
         on_layout_menu_clicked as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
 
     (*state).layout_popover = create_layout_popover(state, layout_menu_button);
@@ -1743,13 +1863,11 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         cstr!("Minimize"),
     );
     gtk_box_append((*state).top_controls as *mut GtkBox, minimize_button);
-    g_signal_connect_data(
+    connect_app_state_signal(
         minimize_button as *mut c_void,
         cstr!("clicked"),
         on_minimize_clicked as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
 
     let fullscreen_button = player_overlay_button_new(
@@ -1757,13 +1875,11 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         cstr!("Fullscreen"),
     );
     gtk_box_append((*state).top_controls as *mut GtkBox, fullscreen_button);
-    g_signal_connect_data(
+    connect_app_state_signal(
         fullscreen_button as *mut c_void,
         cstr!("clicked"),
         on_fullscreen_clicked as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
 
     let close_button = player_overlay_button_new(
@@ -1772,36 +1888,30 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
     );
     gtk_widget_add_css_class(close_button, cstr!("close-button"));
     gtk_box_append((*state).top_controls as *mut GtkBox, close_button);
-    g_signal_connect_data(
+    connect_app_state_signal(
         close_button as *mut c_void,
         cstr!("clicked"),
         on_close_clicked as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
 
     let motion = gtk_event_controller_motion_new();
     gtk_event_controller_set_propagation_phase(motion, GTK_PHASE_CAPTURE);
-    g_signal_connect_data(
+    connect_app_state_signal(
         motion as *mut c_void,
         cstr!("motion"),
         on_root_motion as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
     gtk_widget_add_controller((*state).root_overlay, motion as *mut c_void);
 
     let key_controller = gtk_event_controller_key_new();
     gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
-    g_signal_connect_data(
+    connect_app_state_signal(
         key_controller as *mut c_void,
         cstr!("key-pressed"),
         on_key_pressed as *const c_void,
-        state as *mut c_void,
-        ptr::null_mut(),
-        0,
+        state,
     );
     gtk_widget_add_controller((*state).window, key_controller as *mut c_void);
 
@@ -1881,11 +1991,60 @@ unsafe fn run_with_args(args: &[CString]) -> c_int {
         cstr!("activate"),
         on_activate as *const c_void,
         &mut config as *mut StartupConfig as *mut c_void,
-        ptr::null_mut(),
+        None,
         0,
     );
 
     let status = g_application_run(application as *mut c_void, 1, argv.as_mut_ptr());
     g_object_unref(application as *mut c_void);
     status
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe fn empty_state() -> *mut AppState {
+        Box::into_raw(Box::new(AppState {
+            window: ptr::null_mut(),
+            root_overlay: ptr::null_mut(),
+            top_left_controls: ptr::null_mut(),
+            top_controls: ptr::null_mut(),
+            settings_button: ptr::null_mut(),
+            layout_popover: ptr::null_mut(),
+            settings: ptr::null_mut(),
+            primary_session: ptr::null_mut(),
+            player_surface: ptr::null_mut(),
+            startup_target: ptr::null(),
+            initial_targets: ptr::null(),
+            initial_target_count: 0,
+            overlay_hide_source: 0,
+            maximize_restore_source: 0,
+            maximize_restore_attempts: 0,
+            motion_tracker: PlayerMotionTracker::new(),
+            closing: AtomicBool::new(false),
+            fullscreen: FALSE,
+            window_maximized: FALSE,
+            was_maximized_before_fullscreen: FALSE,
+            restore_maximized_after_fullscreen: FALSE,
+            restore_window_width: 0,
+            restore_window_height: 0,
+            ref_count: AtomicUsize::new(1),
+        }))
+    }
+
+    #[test]
+    fn owner_release_waits_for_pending_callback_reference() {
+        unsafe {
+            let state = empty_state();
+            let pending = app_state_ref(state);
+
+            destroy_state(state as *mut c_void);
+
+            assert!((*pending).closing.load(Ordering::Acquire));
+            assert_eq!((*pending).ref_count.load(Ordering::Acquire), 1);
+
+            app_state_unref(pending);
+        }
+    }
 }
