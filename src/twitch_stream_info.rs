@@ -1,4 +1,6 @@
+use crate::glib_strings::{dup_bytes, is_nonempty};
 use std::ffi::{CStr, c_char, c_double, c_int, c_uint, c_void};
+
 use std::ptr;
 
 const JSON_NODE_OBJECT: c_int = 0;
@@ -275,19 +277,6 @@ unsafe extern "C" {
 #[repr(C)]
 pub struct GDateTime {
     _private: [u8; 0],
-}
-
-unsafe fn is_nonempty(value: *const c_char) -> bool {
-    unsafe { !value.is_null() && *value != 0 }
-}
-
-unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    unsafe {
-        let mut value = Vec::with_capacity(bytes.len() + 1);
-        value.extend_from_slice(bytes);
-        value.push(0);
-        g_strdup(value.as_ptr() as *const c_char)
-    }
 }
 
 fn json_escape_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -727,26 +716,24 @@ unsafe fn parse_resolution_attribute(line: &[u8], width: *mut c_uint, height: *m
     }
 }
 
-unsafe fn build_quality_label(
+fn build_quality_label(
     _width: c_uint,
     height: c_uint,
     frame_rate: c_double,
     bandwidth: c_uint,
 ) -> *mut c_char {
-    unsafe {
-        let label = if height > 0 {
-            if frame_rate >= 50.0 {
-                format!("{height}p60")
-            } else {
-                format!("{height}p")
-            }
-        } else if bandwidth > 0 {
-            format!("{} kbps", std::cmp::max(1, bandwidth / 1000))
+    let label = if height > 0 {
+        if frame_rate >= 50.0 {
+            format!("{height}p60")
         } else {
-            "Unknown".to_string()
-        };
-        dup_bytes(label.as_bytes())
-    }
+            format!("{height}p")
+        }
+    } else if bandwidth > 0 {
+        format!("{} kbps", std::cmp::max(1, bandwidth / 1000))
+    } else {
+        "Unknown".to_string()
+    };
+    dup_bytes(label.as_bytes())
 }
 
 unsafe extern "C" fn compare_stream_qualities(a: *const c_void, b: *const c_void) -> c_int {
@@ -1649,7 +1636,7 @@ unsafe extern "C" fn twitch_stream_qualities_result_free(data: *mut c_void) {
     }
 }
 
-pub unsafe fn twitch_stream_info_error_quark() -> c_uint {
+pub fn twitch_stream_info_error_quark() -> c_uint {
     unsafe { g_quark_from_static_string(c"twitch-stream-info-error".as_ptr()) }
 }
 
@@ -1665,6 +1652,9 @@ unsafe extern "C" fn twitch_current_stream_free_destroy(data: *mut c_void) {
     }
 }
 
+/// # Safety
+/// - Null or owned module result; original GLib-allocated string fields.
+/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
 pub unsafe fn twitch_stream_preview_free(preview: *mut TwitchStreamPreview) {
     unsafe {
         if preview.is_null() {
@@ -1681,6 +1671,9 @@ pub unsafe fn twitch_stream_preview_free(preview: *mut TwitchStreamPreview) {
     }
 }
 
+/// # Safety
+/// - Null or owned module result; original GLib-allocated string fields.
+/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
 pub unsafe fn twitch_current_stream_free(stream: *mut TwitchCurrentStream) {
     unsafe {
         if stream.is_null() {
@@ -1699,6 +1692,9 @@ unsafe extern "C" fn twitch_stream_quality_free_destroy(data: *mut c_void) {
     }
 }
 
+/// # Safety
+/// - Null or owned module result; original GLib-allocated string fields.
+/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
 pub unsafe fn twitch_stream_quality_free(quality: *mut TwitchStreamQuality) {
     unsafe {
         if quality.is_null() {
@@ -1710,6 +1706,9 @@ pub unsafe fn twitch_stream_quality_free(quality: *mut TwitchStreamQuality) {
     }
 }
 
+/// # Safety
+/// - Null or owned module result; original GLib-allocated string fields.
+/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
 pub unsafe fn twitch_followed_channel_free(channel: *mut TwitchFollowedChannel) {
     unsafe {
         if channel.is_null() {
@@ -1721,34 +1720,35 @@ pub unsafe fn twitch_followed_channel_free(channel: *mut TwitchFollowedChannel) 
     }
 }
 
-pub unsafe fn twitch_stream_info_format_viewer_count(viewer_count: c_uint) -> *mut c_char {
-    unsafe {
-        let text = if viewer_count >= 1_000_000 {
-            format!("{:.1}M", viewer_count as f64 / 1_000_000.0)
-        } else if viewer_count >= 1000 {
-            format!("{:.1}K", viewer_count as f64 / 1000.0)
-        } else {
-            viewer_count.to_string()
-        };
-        dup_bytes(text.as_bytes())
+fn format_viewer_count(viewer_count: c_uint) -> String {
+    if viewer_count >= 1_000_000 {
+        format!("{:.1}M", viewer_count as f64 / 1_000_000.0)
+    } else if viewer_count >= 1000 {
+        format!("{:.1}K", viewer_count as f64 / 1000.0)
+    } else {
+        viewer_count.to_string()
     }
 }
 
-unsafe fn format_live_duration_from_span(span: i64) -> *mut c_char {
-    unsafe {
-        let span = span.max(0);
-        let total_minutes = span / 60_000_000;
-        let hours = total_minutes / 60;
-        let minutes = total_minutes % 60;
-        let text = if hours > 0 {
-            format!("{hours}h {minutes}m")
-        } else {
-            format!("{minutes}m")
-        };
-        dup_bytes(text.as_bytes())
+/// Result owned; release with `g_free`.
+pub fn twitch_stream_info_format_viewer_count(viewer_count: c_uint) -> *mut c_char {
+    dup_bytes(format_viewer_count(viewer_count).as_bytes())
+}
+
+fn format_live_duration_from_span(span: i64) -> String {
+    let total_minutes = span.max(0) / 60_000_000;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
     }
 }
 
+/// # Safety
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
+/// - Result owned; release with `g_free`.
 pub unsafe fn twitch_stream_info_format_live_duration(started_at: *const c_char) -> *mut c_char {
     unsafe {
         if !is_nonempty(started_at) {
@@ -1763,10 +1763,13 @@ pub unsafe fn twitch_stream_info_format_live_duration(started_at: *const c_char)
         let result = format_live_duration_from_span(g_date_time_difference(now, started));
         g_date_time_unref(now);
         g_date_time_unref(started);
-        result
+        dup_bytes(result.as_bytes())
     }
 }
 
+/// # Safety
+/// - `stream`: null or live struct; string fields valid C strings, unchanged during call.
+/// - Result owned; release with `g_free`.
 pub unsafe fn twitch_stream_info_format_current_stream_title(
     stream: *const TwitchCurrentStream,
 ) -> *mut c_char {
@@ -1790,6 +1793,9 @@ unsafe fn append_metadata_segment(metadata: &mut Vec<u8>, segment: *const c_char
     }
 }
 
+/// # Safety
+/// - `stream`: null or live struct; string fields valid C strings, unchanged during call.
+/// - Result owned; release with `g_free`.
 pub unsafe fn twitch_stream_info_format_current_stream_metadata(
     stream: *const TwitchCurrentStream,
 ) -> *mut c_char {
@@ -1810,6 +1816,10 @@ pub unsafe fn twitch_stream_info_format_current_stream_metadata(
     }
 }
 
+/// # Safety
+/// - `cancel`: null or live `GCancellable`.
+/// - Callback: declared C ABI, no unwind; data valid through completion.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn twitch_stream_info_fetch_current_stream_async(
     channel: *const c_char,
     cancel: *mut GCancellable,
@@ -1834,6 +1844,10 @@ pub unsafe fn twitch_stream_info_fetch_current_stream_async(
     }
 }
 
+/// # Safety
+/// - `result`: matching async result, consumed once on originating main context.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - Result owned; release with matching module free function.
 pub unsafe fn twitch_stream_info_fetch_current_stream_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,
@@ -1846,6 +1860,10 @@ pub unsafe fn twitch_stream_info_fetch_current_stream_finish(
     }
 }
 
+/// # Safety
+/// - `cancel`: null or live `GCancellable`.
+/// - Callback: declared C ABI, no unwind; data valid through completion.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn twitch_stream_info_fetch_stream_qualities_async(
     channel: *const c_char,
     oauth_token: *const c_char,
@@ -1876,6 +1894,11 @@ pub unsafe fn twitch_stream_info_fetch_stream_qualities_async(
     }
 }
 
+/// # Safety
+/// - `result`: matching async result, consumed once on originating main context.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - `playback_info_out`: null or writable `TwitchPlaybackInfo` slot.
+/// - Result owned; release with `g_ptr_array_unref`.
 pub unsafe fn twitch_stream_info_fetch_stream_qualities_finish(
     result: *mut GAsyncResult,
     playback_info_out: *mut TwitchPlaybackInfo,
@@ -1904,6 +1927,11 @@ pub unsafe fn twitch_stream_info_fetch_stream_qualities_finish(
     }
 }
 
+/// # Safety
+/// - `cancel`: null or live `GCancellable`.
+/// - Callback: declared C ABI, no unwind; data valid through completion.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
+/// - `channels`: `channel_count` readable string-pointer slots.
 pub unsafe fn twitch_stream_info_fetch_live_channels_async(
     channels: *const *const c_char,
     channel_count: c_uint,
@@ -1936,6 +1964,10 @@ pub unsafe fn twitch_stream_info_fetch_live_channels_async(
     }
 }
 
+/// # Safety
+/// - `result`: matching async result, consumed once on originating main context.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - Result owned; release with `g_ptr_array_unref`.
 pub unsafe fn twitch_stream_info_fetch_live_channels_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,
@@ -1948,6 +1980,11 @@ pub unsafe fn twitch_stream_info_fetch_live_channels_finish(
     }
 }
 
+/// # Safety
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
+/// - `cancel`: null or live `GCancellable`.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - Result owned; release with matching token/array free function.
 pub unsafe fn twitch_stream_info_fetch_followed_channels(
     client_id: *const c_char,
     oauth_token: *const c_char,
@@ -2063,6 +2100,10 @@ unsafe extern "C" fn twitch_followed_channel_free_destroy(data: *mut c_void) {
     }
 }
 
+/// # Safety
+/// - `cancel`: null or live `GCancellable`.
+/// - Callback: declared C ABI, no unwind; data valid through completion.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn twitch_stream_info_fetch_followed_channels_async(
     client_id: *const c_char,
     oauth_token: *const c_char,
@@ -2089,6 +2130,10 @@ pub unsafe fn twitch_stream_info_fetch_followed_channels_async(
     }
 }
 
+/// # Safety
+/// - `result`: matching async result, consumed once on originating main context.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - Result owned; release with `g_ptr_array_unref`.
 pub unsafe fn twitch_stream_info_fetch_followed_channels_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,
@@ -2101,66 +2146,530 @@ pub unsafe fn twitch_stream_info_fetch_followed_channels_finish(
     }
 }
 
-pub unsafe fn twitch_stream_info_test_build_stream_title_request_body(
-    channel: *const c_char,
-) -> *mut c_char {
-    unsafe { build_stream_title_request_body(channel) }
-}
+#[cfg(test)]
+mod tests {
+    use super as twitch_stream_info;
+    use std::ffi::{CStr, CString, c_char, c_longlong, c_uint, c_void};
+    use std::ptr;
 
-pub unsafe fn twitch_stream_info_test_build_live_channels_request_body(
-    channels: *const *const c_char,
-    channel_count: c_uint,
-) -> *mut c_char {
-    unsafe { build_live_channels_request_body(channels, channel_count) }
-}
+    const TWITCH_GQL_QUERY: &str = "query($login:String!){user(login:$login){stream{title viewersCount createdAt game{name}}}}";
+    const TWITCH_GQL_LIVE_CHANNELS_QUERY: &str = "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:320,height:180) game{name}}}}";
+    const G_TIME_SPAN_MINUTE: c_longlong = 60_000_000;
 
-pub unsafe fn twitch_stream_info_test_parse_current_stream_response(
-    json: *const c_char,
-    length: usize,
-    error: *mut *mut GError,
-) -> *mut TwitchCurrentStream {
-    unsafe { parse_current_stream_response(json, length, error) }
-}
+    use super::{g_free, g_ptr_array_new_with_free_func, g_ptr_array_unref};
 
-pub unsafe fn twitch_stream_info_test_parse_stream_qualities_playlist(
-    playlist: *const c_char,
-    error: *mut *mut GError,
-) -> *mut GPtrArray {
-    unsafe { parse_stream_qualities_playlist(playlist, error) }
-}
+    unsafe extern "C" {
+        fn g_clear_error(error: *mut *mut twitch_stream_info::GError);
+    }
 
-pub unsafe fn twitch_stream_info_test_parse_playback_info(
-    value: *const c_char,
-) -> TwitchPlaybackInfo {
-    unsafe { parse_playback_info(value) }
-}
+    fn cstring(value: &str) -> CString {
+        CString::new(value).unwrap()
+    }
 
-pub unsafe fn twitch_stream_info_test_format_live_duration_from_span(span: i64) -> *mut c_char {
-    unsafe { format_live_duration_from_span(span) }
-}
+    unsafe fn str_from_ptr<'a>(value: *const c_char) -> &'a str {
+        unsafe {
+            assert!(!value.is_null());
+            CStr::from_ptr(value).to_str().unwrap()
+        }
+    }
 
-pub unsafe fn twitch_stream_info_test_parse_live_channels_response(
-    json: *const c_char,
-    length: usize,
-    error: *mut *mut GError,
-) -> *mut GPtrArray {
-    unsafe { parse_live_channels_response(json, length, error) }
-}
+    unsafe fn assert_cstr_eq(actual: *const c_char, expected: &str) {
+        unsafe {
+            assert_eq!(str_from_ptr(actual), expected);
+        }
+    }
 
-pub unsafe fn twitch_stream_info_test_parse_helix_user_id_response(
-    json: *const c_char,
-    length: usize,
-    error: *mut *mut GError,
-) -> *mut c_char {
-    unsafe { parse_helix_user_id_response(json, length, error) }
-}
+    unsafe fn ptr_array_index<T>(
+        array: *mut twitch_stream_info::GPtrArray,
+        index: usize,
+    ) -> *mut T {
+        unsafe { *(*array).pdata.add(index) as *mut T }
+    }
 
-pub unsafe fn twitch_stream_info_test_parse_followed_channels_page(
-    json: *const c_char,
-    length: usize,
-    channels: *mut GPtrArray,
-    cursor_out: *mut *mut c_char,
-    error: *mut *mut GError,
-) -> c_int {
-    unsafe { parse_followed_channels_page(json, length, channels, cursor_out, error) }
+    unsafe fn parse_current(
+        json: &str,
+        error: *mut *mut twitch_stream_info::GError,
+    ) -> *mut twitch_stream_info::TwitchCurrentStream {
+        unsafe {
+            let json = cstring(json);
+            twitch_stream_info::parse_current_stream_response(
+                json.as_ptr(),
+                json.as_bytes().len(),
+                error,
+            )
+        }
+    }
+
+    unsafe fn parse_live(
+        json: &str,
+        error: *mut *mut twitch_stream_info::GError,
+    ) -> *mut twitch_stream_info::GPtrArray {
+        unsafe {
+            let json = cstring(json);
+            twitch_stream_info::parse_live_channels_response(
+                json.as_ptr(),
+                json.as_bytes().len(),
+                error,
+            )
+        }
+    }
+
+    unsafe fn parse_helix_user_id(
+        json: &str,
+        error: *mut *mut twitch_stream_info::GError,
+    ) -> *mut c_char {
+        unsafe {
+            let json = cstring(json);
+            twitch_stream_info::parse_helix_user_id_response(
+                json.as_ptr(),
+                json.as_bytes().len(),
+                error,
+            )
+        }
+    }
+
+    unsafe extern "C" fn free_followed_channel(data: *mut c_void) {
+        unsafe {
+            twitch_stream_info::twitch_followed_channel_free(
+                data as *mut twitch_stream_info::TwitchFollowedChannel,
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_stream_title_request_body() {
+        unsafe {
+            let body =
+                twitch_stream_info::build_stream_title_request_body(cstring("papaplatte").as_ptr());
+            assert_cstr_eq(
+                body,
+                &format!(
+                    r#"{{"query":"{TWITCH_GQL_QUERY}","variables":{{"login":"papaplatte"}}}}"#
+                ),
+            );
+            g_free(body as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn test_build_live_channels_request_body() {
+        unsafe {
+            let channels = [cstring("papaplatte"), cstring("rocketbeans")];
+            let ptrs = [channels[0].as_ptr(), channels[1].as_ptr()];
+            let body = twitch_stream_info::build_live_channels_request_body(
+                ptrs.as_ptr(),
+                ptrs.len() as c_uint,
+            );
+
+            assert_cstr_eq(
+                body,
+                &format!(
+                    r#"{{"query":"{TWITCH_GQL_LIVE_CHANNELS_QUERY}","variables":{{"logins":["papaplatte","rocketbeans"]}}}}"#
+                ),
+            );
+            g_free(body as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn test_build_live_channels_request_body_skips_empty_channels() {
+        unsafe {
+            let channels = [cstring("papaplatte"), cstring(""), cstring("rocketbeans")];
+            let ptrs = [
+                channels[0].as_ptr(),
+                channels[1].as_ptr(),
+                ptr::null(),
+                channels[2].as_ptr(),
+            ];
+            let body = twitch_stream_info::build_live_channels_request_body(
+                ptrs.as_ptr(),
+                ptrs.len() as c_uint,
+            );
+
+            assert_cstr_eq(
+                body,
+                &format!(
+                    r#"{{"query":"{TWITCH_GQL_LIVE_CHANNELS_QUERY}","variables":{{"logins":["papaplatte","rocketbeans"]}}}}"#
+                ),
+            );
+            g_free(body as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn test_parse_current_stream_response_returns_title_viewers_and_category() {
+        unsafe {
+            let json = r#"{"data":{"user":{"stream":{"title":"Live now","viewersCount":1234,"createdAt":"2026-04-30T10:00:00Z","game":{"name":"Games + Demos"}}}}}"#;
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let stream = parse_current(json, &mut error);
+
+            assert!(error.is_null());
+            assert!(!stream.is_null());
+            assert_cstr_eq((*stream).title, "Live now");
+            assert_cstr_eq((*stream).started_at, "2026-04-30T10:00:00Z");
+            assert_cstr_eq((*stream).category_name, "Games + Demos");
+            assert_eq!((*stream).viewer_count, 1234);
+            twitch_stream_info::twitch_current_stream_free(stream);
+        }
+    }
+
+    #[test]
+    fn test_parse_current_stream_response_handles_missing_optional_fields() {
+        unsafe {
+            let json = r#"{"data":{"user":{"stream":{"title":null,"viewersCount":null,"createdAt":null,"game":null}}}}"#;
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let stream = parse_current(json, &mut error);
+
+            assert!(error.is_null());
+            assert!(!stream.is_null());
+            assert_cstr_eq((*stream).title, "");
+            assert!((*stream).started_at.is_null());
+            assert!((*stream).category_name.is_null());
+            assert_eq!((*stream).viewer_count, 0);
+            twitch_stream_info::twitch_current_stream_free(stream);
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_qualities_playlist_returns_sorted_variants() {
+        unsafe {
+            let playlist = cstring(
+                "#EXTM3U\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,FRAME-RATE=60.000\n\
+             https://example.test/720p60.m3u8\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,FRAME-RATE=60.000\n\
+             https://example.test/1080p60.m3u8\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=852x480,FRAME-RATE=30.000\n\
+             https://example.test/480p.m3u8\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=160000,NAME=\"Audio Only\"\n\
+             https://example.test/audio.m3u8\n",
+            );
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let qualities =
+                twitch_stream_info::parse_stream_qualities_playlist(playlist.as_ptr(), &mut error);
+
+            assert!(error.is_null());
+            assert!(!qualities.is_null());
+            assert_eq!((*qualities).len, 3);
+
+            let low = ptr_array_index::<twitch_stream_info::TwitchStreamQuality>(qualities, 0);
+            let mid = ptr_array_index::<twitch_stream_info::TwitchStreamQuality>(qualities, 1);
+            let source = ptr_array_index::<twitch_stream_info::TwitchStreamQuality>(qualities, 2);
+
+            assert_cstr_eq((*low).label, "480p");
+            assert_cstr_eq((*mid).label, "720p60");
+            assert_cstr_eq((*source).label, "1080p60");
+            assert_cstr_eq((*source).url, "https://example.test/1080p60.m3u8");
+            assert_eq!((*source).width, 1920);
+            assert_eq!((*source).height, 1080);
+            g_ptr_array_unref(qualities);
+        }
+    }
+
+    #[test]
+    fn test_parse_playback_info_returns_authentication_and_ad_claims() {
+        unsafe {
+            let value = cstring(
+                r#"{"user_id":123456789,"subscriber":true,"turbo":false,"show_ads":false,"hide_ads":true,"server_ads":false}"#,
+            );
+            let info = twitch_stream_info::parse_playback_info(value.as_ptr());
+
+            assert_eq!(info.available, 1);
+            assert_eq!(info.authenticated, 1);
+            assert_eq!(info.user_id, 123456789);
+            assert_eq!(info.subscriber, 1);
+            assert_eq!(info.turbo, 0);
+            assert_eq!(info.show_ads, 0);
+            assert_eq!(info.hide_ads, 1);
+            assert_eq!(info.server_ads, 0);
+        }
+    }
+
+    #[test]
+    fn test_parse_playback_info_handles_anonymous_and_invalid_values() {
+        unsafe {
+            let anonymous = cstring(
+                r#"{"user_id":null,"subscriber":false,"turbo":false,"show_ads":true,"hide_ads":false,"server_ads":true}"#,
+            );
+            let anonymous_info = twitch_stream_info::parse_playback_info(anonymous.as_ptr());
+            let invalid = cstring("{");
+            let invalid_info = twitch_stream_info::parse_playback_info(invalid.as_ptr());
+
+            assert_eq!(anonymous_info.available, 1);
+            assert_eq!(anonymous_info.authenticated, 0);
+            assert_eq!(anonymous_info.user_id, 0);
+            assert_eq!(anonymous_info.show_ads, 1);
+            assert_eq!(anonymous_info.server_ads, 1);
+            assert_eq!(invalid_info.available, 0);
+        }
+    }
+
+    #[test]
+    fn viewer_counts_use_compact_units() {
+        for (count, expected) in [
+            (0, "0"),
+            (999, "999"),
+            (1000, "1.0K"),
+            (1234, "1.2K"),
+            (1_000_000, "1.0M"),
+            (1_234_567, "1.2M"),
+        ] {
+            assert_eq!(twitch_stream_info::format_viewer_count(count), expected);
+        }
+    }
+
+    #[test]
+    fn durations_clamp_future_times_and_use_hours_and_minutes() {
+        for (minutes, expected) in [
+            (-5, "0m"),
+            (0, "0m"),
+            (42, "42m"),
+            (60, "1h 0m"),
+            (65, "1h 5m"),
+        ] {
+            assert_eq!(
+                twitch_stream_info::format_live_duration_from_span(minutes * G_TIME_SPAN_MINUTE),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_start_date_has_no_duration() {
+        unsafe {
+            assert!(
+                twitch_stream_info::twitch_stream_info_format_live_duration(c"not a date".as_ptr())
+                    .is_null()
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_current_stream_title_and_metadata_separately() {
+        unsafe {
+            let title_value = cstring("Live now");
+            let started_value = cstring("2999-01-01T00:00:00Z");
+            let category_value = cstring("Games + Demos");
+            let stream = twitch_stream_info::TwitchCurrentStream {
+                title: title_value.as_ptr() as *mut c_char,
+                started_at: started_value.as_ptr() as *mut c_char,
+                category_name: category_value.as_ptr() as *mut c_char,
+                viewer_count: 1234,
+            };
+            let untitled_value = cstring("");
+            let untitled_category = cstring("Just Chatting");
+            let untitled_stream = twitch_stream_info::TwitchCurrentStream {
+                title: untitled_value.as_ptr() as *mut c_char,
+                started_at: ptr::null_mut(),
+                category_name: untitled_category.as_ptr() as *mut c_char,
+                viewer_count: 42,
+            };
+
+            let title = twitch_stream_info::twitch_stream_info_format_current_stream_title(&stream);
+            let untitled = twitch_stream_info::twitch_stream_info_format_current_stream_title(
+                &untitled_stream,
+            );
+            let metadata =
+                twitch_stream_info::twitch_stream_info_format_current_stream_metadata(&stream);
+            let untitled_metadata =
+                twitch_stream_info::twitch_stream_info_format_current_stream_metadata(
+                    &untitled_stream,
+                );
+
+            assert_cstr_eq(title, "Live now");
+            assert_cstr_eq(untitled, "");
+            assert_cstr_eq(metadata, "1.2K \u{2022} 0m \u{2022} Games + Demos");
+            assert_cstr_eq(untitled_metadata, "42 \u{2022} Just Chatting");
+            g_free(title as *mut c_void);
+            g_free(untitled as *mut c_void);
+            g_free(metadata as *mut c_void);
+            g_free(untitled_metadata as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn test_parse_live_channels_response_returns_only_live_streams() {
+        unsafe {
+            let json = r#"{"data":{"users":[{"login":"LiveOne","displayName":"Live One","profileImageURL":"https://avatar","stream":{"title":"Now live","viewersCount":1234,"createdAt":"2026-04-30T10:00:00Z","game":{"name":"Just Chatting"},"previewImageURL":"https://preview"}},{"login":"BiggerLive","displayName":"Bigger Live","profileImageURL":"https://avatar-big","stream":{"title":"More live","viewersCount":9999,"createdAt":"2026-04-30T09:00:00Z","game":{"name":"Games + Demos"},"previewImageURL":"https://preview-big"}},{"login":"OfflineOne","displayName":"Offline One","profileImageURL":"https://offline","stream":null}]}}"#;
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let previews = parse_live(json, &mut error);
+
+            assert!(error.is_null());
+            assert!(!previews.is_null());
+            assert_eq!((*previews).len, 2);
+
+            let preview = ptr_array_index::<twitch_stream_info::TwitchStreamPreview>(previews, 0);
+            assert_cstr_eq((*preview).channel, "biggerlive");
+            assert_cstr_eq((*preview).display_name, "Bigger Live");
+            assert_cstr_eq((*preview).title, "More live");
+            assert_cstr_eq((*preview).avatar_url, "https://avatar-big");
+            assert_cstr_eq((*preview).preview_url, "https://preview-big");
+            assert_cstr_eq((*preview).started_at, "2026-04-30T09:00:00Z");
+            assert_cstr_eq((*preview).category_name, "Games + Demos");
+            assert_eq!((*preview).viewer_count, 9999);
+
+            let preview = ptr_array_index::<twitch_stream_info::TwitchStreamPreview>(previews, 1);
+            assert_cstr_eq((*preview).channel, "liveone");
+            assert_eq!((*preview).viewer_count, 1234);
+            g_ptr_array_unref(previews);
+        }
+    }
+
+    #[test]
+    fn test_parse_live_channels_response_handles_missing_optional_fields() {
+        unsafe {
+            let json = r#"{"data":{"users":[{"login":"FallbackLogin","displayName":null,"profileImageURL":null,"stream":{"title":null,"viewersCount":null,"createdAt":null,"game":null,"previewImageURL":null}}]}}"#;
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let previews = parse_live(json, &mut error);
+
+            assert!(error.is_null());
+            assert!(!previews.is_null());
+            assert_eq!((*previews).len, 1);
+
+            let preview = ptr_array_index::<twitch_stream_info::TwitchStreamPreview>(previews, 0);
+            assert_cstr_eq((*preview).channel, "fallbacklogin");
+            assert_cstr_eq((*preview).display_name, "FallbackLogin");
+            assert_cstr_eq((*preview).title, "");
+            assert!((*preview).avatar_url.is_null());
+            assert!((*preview).preview_url.is_null());
+            assert!((*preview).started_at.is_null());
+            assert!((*preview).category_name.is_null());
+            assert_eq!((*preview).viewer_count, 0);
+            g_ptr_array_unref(previews);
+        }
+    }
+
+    #[test]
+    fn test_parse_live_channels_response_sorts_equal_viewers_by_display_name() {
+        unsafe {
+            let json = r#"{"data":{"users":[{"login":"zeta","displayName":"Zeta","stream":{"title":"Z","viewersCount":10}},{"login":"alpha","displayName":"Alpha","stream":{"title":"A","viewersCount":10}}]}}"#;
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let previews = parse_live(json, &mut error);
+
+            assert!(error.is_null());
+            assert!(!previews.is_null());
+            assert_eq!((*previews).len, 2);
+
+            assert_cstr_eq(
+                (*ptr_array_index::<twitch_stream_info::TwitchStreamPreview>(previews, 0))
+                    .display_name,
+                "Alpha",
+            );
+            assert_cstr_eq(
+                (*ptr_array_index::<twitch_stream_info::TwitchStreamPreview>(previews, 1))
+                    .display_name,
+                "Zeta",
+            );
+            g_ptr_array_unref(previews);
+        }
+    }
+
+    #[test]
+    fn test_parse_live_channels_response_returns_empty_for_missing_users() {
+        unsafe {
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let previews = parse_live(r#"{"data":{}}"#, &mut error);
+
+            assert!(error.is_null());
+            assert!(!previews.is_null());
+            assert_eq!((*previews).len, 0);
+            g_ptr_array_unref(previews);
+        }
+    }
+
+    #[test]
+    fn test_parse_helix_user_id_response_returns_user_id() {
+        unsafe {
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let user_id =
+                parse_helix_user_id(r#"{"data":[{"id":"12345","login":"viewer"}]}"#, &mut error);
+
+            assert!(error.is_null());
+            assert_cstr_eq(user_id, "12345");
+            g_free(user_id as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn test_parse_followed_channels_page_returns_channels_and_cursor() {
+        unsafe {
+            let json = cstring(
+                r#"{"data":[{"broadcaster_login":"PapaPlatte","broadcaster_name":"Papaplatte"},{"broadcaster_login":"rocketbeans","broadcaster_name":"Rocket Beans TV"}],"pagination":{"cursor":"next-page"}}"#,
+            );
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let channels = g_ptr_array_new_with_free_func(Some(free_followed_channel));
+            let mut cursor: *mut c_char = ptr::null_mut();
+
+            assert_ne!(
+                twitch_stream_info::parse_followed_channels_page(
+                    json.as_ptr(),
+                    json.as_bytes().len(),
+                    channels,
+                    &mut cursor,
+                    &mut error,
+                ),
+                0
+            );
+            assert!(error.is_null());
+            assert_eq!((*channels).len, 2);
+            assert_cstr_eq(cursor, "next-page");
+
+            let channel = ptr_array_index::<twitch_stream_info::TwitchFollowedChannel>(channels, 0);
+            assert_cstr_eq((*channel).channel, "papaplatte");
+            assert_cstr_eq((*channel).display_name, "Papaplatte");
+
+            let channel = ptr_array_index::<twitch_stream_info::TwitchFollowedChannel>(channels, 1);
+            assert_cstr_eq((*channel).channel, "rocketbeans");
+            assert_cstr_eq((*channel).display_name, "Rocket Beans TV");
+
+            g_free(cursor as *mut c_void);
+            g_ptr_array_unref(channels);
+        }
+    }
+
+    #[test]
+    fn test_parse_live_channels_response_reports_invalid_json() {
+        unsafe {
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let previews = parse_live("{", &mut error);
+
+            assert!(previews.is_null());
+            assert!(!error.is_null());
+            g_clear_error(&mut error);
+        }
+    }
+
+    #[test]
+    fn test_parse_current_stream_response_returns_null_for_offline_stream() {
+        unsafe {
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let stream = parse_current(r#"{"data":{"user":{"stream":null}}}"#, &mut error);
+
+            assert!(error.is_null());
+            assert!(stream.is_null());
+        }
+    }
+
+    #[test]
+    fn test_parse_current_stream_response_returns_null_for_missing_user() {
+        unsafe {
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let stream = parse_current(r#"{"data":{"user":null}}"#, &mut error);
+
+            assert!(error.is_null());
+            assert!(stream.is_null());
+        }
+    }
+
+    #[test]
+    fn test_parse_current_stream_response_reports_invalid_json() {
+        unsafe {
+            let mut error: *mut twitch_stream_info::GError = ptr::null_mut();
+            let stream = parse_current("{", &mut error);
+
+            assert!(stream.is_null());
+            assert!(!error.is_null());
+            g_clear_error(&mut error);
+        }
+    }
 }

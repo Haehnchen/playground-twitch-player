@@ -1,5 +1,7 @@
 #![allow(clashing_extern_declarations)]
 
+use crate::glib_strings::is_nonempty;
+
 use std::ffi::{CStr, c_char, c_double, c_int, c_uint, c_ulonglong, c_void};
 use std::mem;
 use std::ptr;
@@ -45,7 +47,8 @@ use crate::player_stream_quality::{
     player_stream_quality_state_select, player_stream_quality_state_select_auto,
 };
 use crate::player_stream_settings::{
-    player_stream_settings_popover_new, player_stream_settings_quality_list_populate,
+    QualitySelectionCallbacks, player_stream_settings_popover_new,
+    player_stream_settings_quality_list_populate,
 };
 use crate::player_style::{player_style_install_footer_css, player_style_install_overlay_css};
 use crate::player_volume::{
@@ -605,6 +608,13 @@ type GType = usize;
 pub type PlayerSurfaceFullscreenCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 pub type PlayerSurfaceSettingsCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 
+pub struct PlayerSurfaceCallbacks {
+    pub fullscreen: PlayerSurfaceFullscreenCallback,
+    pub fullscreen_data: *mut c_void,
+    pub settings: PlayerSurfaceSettingsCallback,
+    pub settings_data: *mut c_void,
+}
+
 unsafe extern "C" {
     static epoxy_eglGetProcAddress: unsafe extern "C" fn(*const c_char) -> *mut c_void;
     static epoxy_glClear: unsafe extern "C" fn(c_uint);
@@ -792,10 +802,6 @@ unsafe extern "C" {
     fn mpv_render_context_update(ctx: *mut MpvRenderContext) -> c_ulonglong;
     fn mpv_wait_event(ctx: *mut MpvHandle, timeout: c_double) -> *mut MpvEvent;
 
-}
-
-unsafe fn is_nonempty(value: *const c_char) -> bool {
-    unsafe { !value.is_null() && *value != 0 }
 }
 
 unsafe fn clear_pointer<T>(slot: *mut *mut T) {
@@ -1151,42 +1157,6 @@ fn player_surface_fullscreen_should_exit_app(
     restore_app_fullscreen: c_int,
 ) -> bool {
     app_fullscreen != 0 && (video_fullscreen_active == 0 || restore_app_fullscreen == 0)
-}
-
-pub fn player_surface_test_fullscreen_should_restore(
-    video_fullscreen_active: c_int,
-    app_fullscreen: c_int,
-    tile_focused: c_int,
-    focused_tile: c_uint,
-    tile_index: c_uint,
-) -> c_int {
-    player_surface_fullscreen_should_restore(
-        video_fullscreen_active,
-        app_fullscreen,
-        tile_focused,
-        focused_tile,
-        tile_index,
-    ) as c_int
-}
-
-pub fn player_surface_test_fullscreen_should_exit_app(
-    app_fullscreen: c_int,
-    video_fullscreen_active: c_int,
-    restore_app_fullscreen: c_int,
-) -> c_int {
-    player_surface_fullscreen_should_exit_app(
-        app_fullscreen,
-        video_fullscreen_active,
-        restore_app_fullscreen,
-    ) as c_int
-}
-
-pub fn player_surface_test_chat_width_for_position(width: c_int, position: c_int) -> c_int {
-    get_chat_width_for_position(width, position)
-}
-
-pub fn player_surface_test_chat_position_for_width(chat_width: c_int, width: c_int) -> c_int {
-    get_chat_paned_position_for_width(chat_width, width)
 }
 
 unsafe fn tile_mpv(tile: *mut StreamTile) -> *mut MpvHandle {
@@ -2387,12 +2357,13 @@ unsafe fn populate_tile_quality_buttons(tile: *mut StreamTile) {
             (*tile).stream_quality.qualities,
             (*tile).stream_quality.selected_url,
             (*tile).stream_quality.selected_label,
-            on_tile_quality_button_clicked as *const c_void,
-            tile as *mut c_void,
-            on_tile_quality_auto_clicked as *const c_void,
-            tile as *mut c_void,
-            Some(tile_signal_data_ref),
-            Some(tile_signal_data_free),
+            QualitySelectionCallbacks {
+                quality_clicked: on_tile_quality_button_clicked as *const c_void,
+                auto_clicked: on_tile_quality_auto_clicked as *const c_void,
+                user_data: tile as *mut c_void,
+                data_ref: Some(tile_signal_data_ref),
+                data_free: Some(tile_signal_data_free),
+            },
         );
     }
 }
@@ -3871,6 +3842,10 @@ unsafe fn get_target_at(state: *mut PlayerSurface, index: c_uint) -> *const c_ch
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
+/// - Release owner once; no subsequent pointer access.
 pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
     unsafe {
         let state = player;
@@ -3949,16 +3924,19 @@ pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `window`: live `GtkWindow`; settings/session outlive the surface.
+/// - Non-null `targets`: `target_count` readable C-string pointers.
+/// - Callbacks: declared C ABI, no unwind; data outlives surface.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn player_surface_new<W>(
     window: *mut W,
     settings: *mut AppSettings,
     primary_session: *mut PlayerSession,
     targets: *const *const c_char,
     target_count: c_uint,
-    fullscreen_callback: PlayerSurfaceFullscreenCallback,
-    fullscreen_user_data: *mut c_void,
-    settings_callback: PlayerSurfaceSettingsCallback,
-    settings_user_data: *mut c_void,
+    callbacks: PlayerSurfaceCallbacks,
 ) -> *mut PlayerSurface {
     unsafe {
         let window = window as *mut GtkWindow;
@@ -3978,10 +3956,10 @@ pub unsafe fn player_surface_new<W>(
             (*state).targets[i as usize] = g_strdup(*targets.add(i as usize));
         }
         (*state).settings = settings;
-        (*state).fullscreen_callback = fullscreen_callback;
-        (*state).fullscreen_user_data = fullscreen_user_data;
-        (*state).settings_callback = settings_callback;
-        (*state).settings_user_data = settings_user_data;
+        (*state).fullscreen_callback = callbacks.fullscreen;
+        (*state).fullscreen_user_data = callbacks.fullscreen_data;
+        (*state).settings_callback = callbacks.settings;
+        (*state).settings_user_data = callbacks.settings_data;
         (*state).active_layout_index = PLAYER_LAYOUT_2X2_INDEX;
 
         (*state).root_overlay = gtk_overlay_new();
@@ -4039,6 +4017,10 @@ pub unsafe fn player_surface_new<W>(
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
+/// - Result: borrowed GTK widget; compatible `W`; invalid after widget destruction.
 pub unsafe fn player_surface_get_widget<W>(player: *mut PlayerSurface) -> *mut W {
     unsafe {
         if !player.is_null() {
@@ -4049,6 +4031,9 @@ pub unsafe fn player_surface_get_widget<W>(player: *mut PlayerSurface) -> *mut W
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_start(player: *mut PlayerSurface) {
     unsafe {
         if player.is_null() || (*player).started != 0 {
@@ -4076,6 +4061,9 @@ pub unsafe fn player_surface_start(player: *mut PlayerSurface) {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_set_fullscreen(player: *mut PlayerSurface, fullscreen: c_int) {
     unsafe {
         if !player.is_null() {
@@ -4098,18 +4086,27 @@ pub unsafe fn player_surface_set_fullscreen(player: *mut PlayerSurface, fullscre
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_apply_single_template(player: *mut PlayerSurface) {
     unsafe {
         player_surface_apply_layout(player, PLAYER_LAYOUT_SINGLE_INDEX);
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_apply_2x2_template(player: *mut PlayerSurface) {
     unsafe {
         player_surface_apply_layout(player, PLAYER_LAYOUT_2X2_INDEX);
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_apply_layout(player: *mut PlayerSurface, layout_index: usize) {
     unsafe {
         if player.is_null() {
@@ -4137,6 +4134,9 @@ pub unsafe fn player_surface_apply_layout(player: *mut PlayerSurface, layout_ind
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_show_overlay(player: *mut PlayerSurface) {
     unsafe {
         if player.is_null() {
@@ -4152,10 +4152,16 @@ pub unsafe fn player_surface_show_overlay(player: *mut PlayerSurface) {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_is_single_template(player: *mut PlayerSurface) -> c_int {
     unsafe { (!player.is_null() && (*player).single_template_active != 0) as c_int }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_get_layout_index(player: *mut PlayerSurface) -> usize {
     unsafe {
         if player.is_null() {
@@ -4170,6 +4176,9 @@ pub unsafe fn player_surface_get_layout_index(player: *mut PlayerSurface) -> usi
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
 pub unsafe fn player_surface_handle_key(
     player: *mut PlayerSurface,
     keyval: c_uint,
@@ -4195,6 +4204,10 @@ pub unsafe fn player_surface_handle_key(
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `player`: null or live instance.
+/// - `settings`: live until replacement/free; serialize mutations.
 pub unsafe fn player_surface_set_settings(player: *mut PlayerSurface, settings: *mut AppSettings) {
     unsafe {
         if player.is_null() {
@@ -4267,5 +4280,75 @@ mod tests {
 
             player_surface_unref(pending);
         }
+    }
+}
+
+#[cfg(test)]
+mod behavior_tests {
+    use super as player_surface;
+    use std::ffi::{c_int, c_uint};
+
+    fn should_restore(
+        video_fullscreen_active: bool,
+        app_fullscreen: bool,
+        tile_focused: bool,
+        focused_tile: c_uint,
+        tile_index: c_uint,
+    ) -> bool {
+        player_surface::player_surface_fullscreen_should_restore(
+            video_fullscreen_active as c_int,
+            app_fullscreen as c_int,
+            tile_focused as c_int,
+            focused_tile,
+            tile_index,
+        )
+    }
+
+    fn should_exit_app(
+        app_fullscreen: bool,
+        video_fullscreen_active: bool,
+        restore_app_fullscreen: bool,
+    ) -> bool {
+        player_surface::player_surface_fullscreen_should_exit_app(
+            app_fullscreen as c_int,
+            video_fullscreen_active as c_int,
+            restore_app_fullscreen as c_int,
+        )
+    }
+
+    fn position_for(chat_width: c_int, window_width: c_int) -> c_int {
+        player_surface::get_chat_paned_position_for_width(chat_width, window_width)
+    }
+
+    fn chat_width_for(window_width: c_int, position: c_int) -> c_int {
+        player_surface::get_chat_width_for_position(window_width, position)
+    }
+
+    #[test]
+    fn fullscreen_restore_and_exit() {
+        assert!(should_restore(true, true, true, 1, 1));
+        assert!(should_exit_app(true, true, false));
+
+        assert!(should_restore(false, true, true, 2, 2));
+        assert!(should_exit_app(true, false, false));
+
+        assert!(should_restore(true, true, true, 0, 0));
+        assert!(!should_exit_app(true, true, true));
+
+        assert!(!should_restore(false, false, false, 0, 1));
+        assert!(!should_exit_app(false, false, false));
+
+        assert!(!should_restore(false, true, true, 0, 1));
+        assert!(!should_restore(false, false, true, 0, 0));
+    }
+
+    #[test]
+    fn chat_width_keeps_video_visible() {
+        assert_eq!(1100 - position_for(220, 1100), 220);
+        assert_eq!(1920 - position_for(460, 1920), 280);
+        assert_eq!(chat_width_for(1100, 1100 - 460), 280);
+        assert_eq!(512 - position_for(220, 512), 220);
+        assert_eq!(400 - position_for(220, 400), 180);
+        assert_eq!(300 - position_for(220, 300), 120);
     }
 }

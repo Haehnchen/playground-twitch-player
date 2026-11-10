@@ -1,5 +1,7 @@
 #![allow(clashing_extern_declarations)]
 
+use crate::glib_strings::{dup_bytes, is_nonempty};
+
 use std::env;
 use std::ffi::{CStr, CString, c_char, c_double, c_int, c_uint, c_void};
 use std::os::unix::ffi::OsStringExt;
@@ -20,7 +22,7 @@ use crate::player_session::{
 };
 use crate::player_style::{player_style_install_footer_css, player_style_install_overlay_css};
 use crate::player_surface::{
-    PlayerSurface, player_surface_apply_layout, player_surface_free,
+    PlayerSurface, PlayerSurfaceCallbacks, player_surface_apply_layout, player_surface_free,
     player_surface_get_layout_index, player_surface_get_widget, player_surface_handle_key,
     player_surface_is_single_template, player_surface_new, player_surface_set_fullscreen,
     player_surface_set_settings, player_surface_show_overlay, player_surface_start,
@@ -394,19 +396,6 @@ unsafe extern "C" {
     fn gtk_window_set_title(window: *mut GtkWindow, title: *const c_char);
     fn gtk_window_unfullscreen(window: *mut GtkWindow);
 
-}
-
-unsafe fn is_nonempty(value: *const c_char) -> bool {
-    unsafe { !value.is_null() && *value != 0 }
-}
-
-unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    unsafe {
-        let mut value = Vec::with_capacity(bytes.len() + 1);
-        value.extend_from_slice(bytes);
-        value.push(0);
-        g_strdup(value.as_ptr() as *const c_char)
-    }
 }
 
 unsafe fn c_app_id() -> *const c_char {
@@ -1025,10 +1014,12 @@ unsafe fn create_player_surface(state: *mut AppState) {
             (*state).primary_session,
             targets.as_ptr(),
             target_count as c_uint,
-            Some(on_content_fullscreen_requested),
-            state as *mut c_void,
-            Some(on_content_settings_requested),
-            state as *mut c_void,
+            PlayerSurfaceCallbacks {
+                fullscreen: Some(on_content_fullscreen_requested),
+                fullscreen_data: state as *mut c_void,
+                settings: Some(on_content_settings_requested),
+                settings_data: state as *mut c_void,
+            },
         );
         player_surface_set_fullscreen((*state).player_surface, (*state).fullscreen);
         gtk_overlay_set_child(

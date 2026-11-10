@@ -1,4 +1,6 @@
+use crate::glib_strings::clear_string;
 use std::ffi::{c_char, c_int, c_uint, c_void};
+
 use std::ptr;
 
 use crate::twitch_stream_info::{GCancellable, GPtrArray, TwitchStreamQuality};
@@ -65,16 +67,8 @@ unsafe fn clear_ptr_array(array: &mut *mut GPtrArray) {
     }
 }
 
-unsafe fn clear_string(value: &mut *mut c_char) {
-    unsafe {
-        if !value.is_null() {
-            let old_value = *value;
-            *value = ptr::null_mut();
-            g_free(old_value as *mut c_void);
-        }
-    }
-}
-
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
 pub unsafe fn player_stream_quality_state_clear(state: *mut PlayerStreamQualityState) {
     unsafe {
         if state.is_null() {
@@ -90,6 +84,8 @@ pub unsafe fn player_stream_quality_state_clear(state: *mut PlayerStreamQualityS
     }
 }
 
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
 pub unsafe fn player_stream_quality_state_reset_selection(state: *mut PlayerStreamQualityState) {
     unsafe {
         if state.is_null() {
@@ -100,6 +96,8 @@ pub unsafe fn player_stream_quality_state_reset_selection(state: *mut PlayerStre
     }
 }
 
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
 pub unsafe fn player_stream_quality_state_cache_is_valid(
     state: *mut PlayerStreamQualityState,
     max_age_seconds: c_uint,
@@ -117,6 +115,9 @@ pub unsafe fn player_stream_quality_state_cache_is_valid(
     }
 }
 
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
+/// - `quality`: null or live entry with valid C strings, not aliasing selected strings.
 pub unsafe fn player_stream_quality_state_select(
     state: *mut PlayerStreamQualityState,
     quality: *const TwitchStreamQuality,
@@ -135,6 +136,8 @@ pub unsafe fn player_stream_quality_state_select(
     }
 }
 
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
 pub unsafe fn player_stream_quality_state_select_auto(state: *mut PlayerStreamQualityState) {
     unsafe {
         if state.is_null() {
@@ -147,6 +150,8 @@ pub unsafe fn player_stream_quality_state_select_auto(state: *mut PlayerStreamQu
     }
 }
 
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
 pub unsafe fn player_stream_quality_state_cancel_fetch(state: *mut PlayerStreamQualityState) {
     unsafe {
         if state.is_null() {
@@ -162,6 +167,8 @@ pub unsafe fn player_stream_quality_state_cancel_fetch(state: *mut PlayerStreamQ
     }
 }
 
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
 pub unsafe fn player_stream_quality_state_begin_fetch(
     state: *mut PlayerStreamQualityState,
 ) -> c_uint {
@@ -178,6 +185,10 @@ pub unsafe fn player_stream_quality_state_begin_fetch(
     }
 }
 
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
+/// - `qualities`: null or owned array of live quality entries; ownership transfers.
+/// - Must not alias the array already owned by `state`.
 pub unsafe fn player_stream_quality_state_finish_fetch(
     state: *mut PlayerStreamQualityState,
     qualities: *mut GPtrArray,
@@ -198,6 +209,8 @@ pub unsafe fn player_stream_quality_state_finish_fetch(
     }
 }
 
+/// # Safety
+/// - `state`: null or initialized instance with valid owned fields; serialize access.
 pub unsafe fn player_stream_quality_state_mark_fetched(state: *mut PlayerStreamQualityState) {
     unsafe {
         if state.is_null() {

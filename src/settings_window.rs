@@ -1,4 +1,6 @@
+use crate::glib_strings::{dup_bytes, is_nonempty};
 use std::ffi::{CStr, c_char, c_double, c_int, c_uint, c_void};
+
 use std::ptr;
 
 use crate::player_icons::player_trash_icon_new;
@@ -241,19 +243,6 @@ unsafe extern "C" {
     fn gtk_window_set_title(window: *mut GtkWindow, title: *const c_char);
     fn gtk_window_set_transient_for(window: *mut GtkWindow, parent: *mut GtkWindow);
 
-}
-
-unsafe fn is_nonempty(value: *const c_char) -> bool {
-    unsafe { !value.is_null() && *value != 0 }
-}
-
-unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    unsafe {
-        let mut value = Vec::with_capacity(bytes.len() + 1);
-        value.extend_from_slice(bytes);
-        value.push(0);
-        g_strdup(value.as_ptr() as *const c_char)
-    }
 }
 
 unsafe fn label_text_or_empty(text: *const c_char) -> *const c_char {
@@ -1191,6 +1180,11 @@ unsafe fn create_footer(view: *mut SettingsWindow) -> *mut GtkWidget {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `parent`: null or live `GtkWindow`; `settings`: live, serialized access.
+/// - Callbacks: declared C ABI, no unwind; data valid until dialog destruction.
+/// - Supplying `user_data_free` transfers callback-data ownership to the dialog.
 pub unsafe fn settings_window_show<W>(
     parent: *mut W,
     settings: *mut AppSettings,

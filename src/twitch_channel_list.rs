@@ -261,7 +261,7 @@ unsafe fn store_followed_cache(channels: *mut GPtrArray) {
     }
 }
 
-pub unsafe fn twitch_channel_list_invalidate_followed_cache() {
+pub fn twitch_channel_list_invalidate_followed_cache() {
     unsafe {
         let mut cache = followed_cache()
             .lock()
@@ -545,6 +545,10 @@ unsafe extern "C" fn fetch_channel_list_worker(
     }
 }
 
+/// # Safety
+/// - `cancel`: null or live `GCancellable`.
+/// - Callback: declared C ABI, no unwind; data valid through completion.
+/// - `settings`: live; serialize access and finish call on its owning main context.
 pub unsafe fn twitch_channel_list_fetch_async(
     settings: *mut AppSettings,
     cancel: *mut GCancellable,
@@ -574,6 +578,11 @@ pub unsafe fn twitch_channel_list_fetch_async(
     }
 }
 
+/// # Safety
+/// - `result`: matching async result, consumed once on originating main context.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - `channel_count_out`: null or writable `c_uint` slot.
+/// - Result owned; release with `g_strfreev`.
 pub unsafe fn twitch_channel_list_fetch_finish(
     result: *mut GAsyncResult,
     channel_count_out: *mut c_uint,

@@ -1,5 +1,7 @@
 #![allow(clashing_extern_declarations)]
 
+use crate::glib_strings::{dup_bytes, is_nonempty};
+
 use std::ffi::{CStr, CString, c_char, c_double, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -578,19 +580,6 @@ unsafe extern "C" fn g_object_unref_destroy(data: *mut c_void) {
 unsafe extern "C" fn g_ptr_array_unref_destroy(data: *mut c_void) {
     unsafe {
         g_ptr_array_unref(data as *mut GPtrArray);
-    }
-}
-
-unsafe fn is_nonempty(value: *const c_char) -> bool {
-    unsafe { !value.is_null() && *value != 0 }
-}
-
-unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    unsafe {
-        let mut value = Vec::with_capacity(bytes.len() + 1);
-        value.extend_from_slice(bytes);
-        value.push(0);
-        g_strdup(value.as_ptr() as *const c_char)
     }
 }
 
@@ -2317,6 +2306,11 @@ unsafe fn add_weak_pointer<T>(object: *mut T, slot: *mut *mut T) {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `overlay`: live `GtkOverlay`, outliving switcher.
+/// - Settings live until replacement/free; callback data outlives switcher.
+/// - Callbacks: declared C ABI, no unwind.
 pub unsafe fn channel_switcher_overlay_new<O>(
     overlay: *mut O,
     settings: *mut AppSettings,
@@ -2537,6 +2531,10 @@ pub unsafe fn channel_switcher_overlay_new<O>(
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `switcher`: null or live instance.
+/// - `settings`: live until replacement/free; serialize mutations.
 pub unsafe fn channel_switcher_overlay_set_settings(
     switcher: *mut ChannelSwitcherOverlay,
     settings: *mut AppSettings,
@@ -2558,6 +2556,9 @@ pub unsafe fn channel_switcher_overlay_set_settings(
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `switcher`: null or live instance.
 pub unsafe fn channel_switcher_overlay_show_at(
     switcher: *mut ChannelSwitcherOverlay,
     _x: c_double,
@@ -2609,6 +2610,9 @@ pub unsafe fn channel_switcher_overlay_show_at(
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `switcher`: null or live instance.
 pub unsafe fn channel_switcher_overlay_hide(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
         if switcher.is_null() {
@@ -2638,6 +2642,9 @@ pub unsafe fn channel_switcher_overlay_hide(switcher: *mut ChannelSwitcherOverla
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `switcher`: null or live instance.
 pub unsafe fn channel_switcher_overlay_is_visible(switcher: *mut ChannelSwitcherOverlay) -> c_int {
     unsafe {
         (!switcher.is_null()
@@ -2647,6 +2654,10 @@ pub unsafe fn channel_switcher_overlay_is_visible(switcher: *mut ChannelSwitcher
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `switcher`: null or live instance.
+/// - Release owner once; no subsequent pointer access.
 pub unsafe fn channel_switcher_overlay_free(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
         if switcher.is_null() {

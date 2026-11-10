@@ -1,4 +1,6 @@
+use crate::glib_strings::is_nonempty;
 use std::ffi::{CStr, c_char, c_float, c_int, c_void};
+
 use std::ptr;
 
 const GTK_ORIENTATION_VERTICAL: c_int = 1;
@@ -77,10 +79,8 @@ unsafe fn create_stream_info_label(css_class: *const c_char, valign: c_int) -> *
     }
 }
 
-unsafe fn is_nonempty(text: *const c_char) -> bool {
-    unsafe { !text.is_null() && *text != 0 }
-}
-
+/// # Safety
+/// - GTK initialized; GTK main thread.
 pub unsafe fn player_footer_stream_info_new() -> *mut PlayerFooterStreamInfo {
     unsafe {
         let mut info = Box::new(PlayerFooterStreamInfo {
@@ -109,6 +109,10 @@ pub unsafe fn player_footer_stream_info_new() -> *mut PlayerFooterStreamInfo {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `info`: null or live instance.
+/// - Result: borrowed GTK widget; compatible `W`; invalid after widget destruction.
 pub unsafe fn player_footer_stream_info_get_widget<W>(info: *mut PlayerFooterStreamInfo) -> *mut W {
     unsafe {
         if info.is_null() {
@@ -119,6 +123,10 @@ pub unsafe fn player_footer_stream_info_get_widget<W>(info: *mut PlayerFooterStr
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `info`: null or live instance.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn player_footer_stream_info_set(
     info: *mut PlayerFooterStreamInfo,
     title: *const c_char,
@@ -163,12 +171,19 @@ pub unsafe fn player_footer_stream_info_set(
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `info`: null or live instance.
 pub unsafe fn player_footer_stream_info_clear(info: *mut PlayerFooterStreamInfo) {
     unsafe {
         player_footer_stream_info_set(info, c"".as_ptr(), c"".as_ptr());
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `info`: null or live instance.
+/// - Release owner once; no subsequent pointer access.
 pub unsafe fn player_footer_stream_info_free(info: *mut PlayerFooterStreamInfo) {
     unsafe {
         if info.is_null() {

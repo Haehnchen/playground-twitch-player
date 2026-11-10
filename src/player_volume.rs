@@ -50,6 +50,11 @@ unsafe fn is_a(widget: *mut GtkWidget, type_: usize) -> bool {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - Session: null or live `PlayerSession`; serialize access.
+/// - `range`: null or live `GtkRange`.
+/// - Generic types must match the GTK/session types.
 pub unsafe fn player_volume_sync_session_from_range<S, R>(session: *mut S, range: *mut R) {
     unsafe {
         let range = range as *mut GtkRange;
@@ -61,6 +66,10 @@ pub unsafe fn player_volume_sync_session_from_range<S, R>(session: *mut S, range
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `volume_scale`: null or live GTK widget.
+/// - Generic types must match the GTK/session types.
 pub unsafe fn player_volume_apply_scroll<W>(volume_scale: *mut W, dx: f64, dy: f64) -> c_int {
     unsafe {
         let volume_scale = volume_scale as *mut GtkWidget;
@@ -77,6 +86,10 @@ pub unsafe fn player_volume_apply_scroll<W>(volume_scale: *mut W, dx: f64, dy: f
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - Session: null or live `PlayerSession`; serialize access.
+/// - Generic types must match the GTK/session types.
 pub unsafe fn player_volume_mute_button_new<S, W>(session: *mut S) -> *mut W {
     unsafe {
         let session = session as *mut PlayerSession;
@@ -91,6 +104,11 @@ pub unsafe fn player_volume_mute_button_new<S, W>(session: *mut S) -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - Session: null or live `PlayerSession`; serialize access.
+/// - `mute_button`: null or live GTK widget.
+/// - Generic types must match the GTK/session types.
 pub unsafe fn player_volume_update_mute_button<W, S>(mute_button: *mut W, session: *mut S) {
     unsafe {
         let mute_button = mute_button as *mut GtkWidget;
@@ -111,6 +129,11 @@ pub unsafe fn player_volume_update_mute_button<W, S>(mute_button: *mut W, sessio
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - Session: null or live `PlayerSession`; serialize access.
+/// - `mute_button`: null or live GTK widget.
+/// - Generic types must match the GTK/session types.
 pub unsafe fn player_volume_set_muted<S, W>(session: *mut S, mute_button: *mut W, muted: c_int) {
     unsafe {
         let session = session as *mut PlayerSession;
@@ -119,6 +142,11 @@ pub unsafe fn player_volume_set_muted<S, W>(session: *mut S, mute_button: *mut W
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - Session: null or live `PlayerSession`; serialize access.
+/// - `mute_button`: null or live GTK widget.
+/// - Generic types must match the GTK/session types.
 pub unsafe fn player_volume_toggle_muted<S, W>(session: *mut S, mute_button: *mut W) {
     unsafe {
         let session = session as *mut PlayerSession;

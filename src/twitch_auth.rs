@@ -215,6 +215,9 @@ unsafe fn auth_response_free(response: *mut AuthResponse) {
     }
 }
 
+/// # Safety
+/// - Null or owned module result; original GLib-allocated string fields.
+/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
 pub unsafe fn twitch_auth_device_code_free(code: *mut TwitchAuthDeviceCode) {
     unsafe {
         if code.is_null() {
@@ -228,6 +231,9 @@ pub unsafe fn twitch_auth_device_code_free(code: *mut TwitchAuthDeviceCode) {
     }
 }
 
+/// # Safety
+/// - Null or owned module result; original GLib-allocated string fields.
+/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
 pub unsafe fn twitch_auth_token_free(token: *mut TwitchAuthToken) {
     unsafe {
         if token.is_null() {
@@ -639,6 +645,11 @@ unsafe fn poll_device_token(
     }
 }
 
+/// # Safety
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
+/// - `cancel`: null or live `GCancellable`.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - Result owned; release with matching token/array free function.
 pub unsafe fn twitch_auth_refresh_token(
     client_id: *const c_char,
     refresh_token: *const c_char,
@@ -770,6 +781,10 @@ unsafe extern "C" fn twitch_auth_token_free_as_destroy(data: *mut c_void) {
     }
 }
 
+/// # Safety
+/// - `cancel`: null or live `GCancellable`.
+/// - Callback: declared C ABI, no unwind; data valid through completion.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn twitch_auth_request_device_code_async(
     client_id: *const c_char,
     cancel: *mut GCancellable,
@@ -795,6 +810,10 @@ pub unsafe fn twitch_auth_request_device_code_async(
     }
 }
 
+/// # Safety
+/// - `result`: matching async result, consumed once on originating main context.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - Result owned; release with matching module free function.
 pub unsafe fn twitch_auth_request_device_code_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,
@@ -808,6 +827,11 @@ pub unsafe fn twitch_auth_request_device_code_finish(
     }
 }
 
+/// # Safety
+/// - `cancel`: null or live `GCancellable`.
+/// - Callback: declared C ABI, no unwind; data valid through completion.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
+/// - `code`: null or live device-code result with valid C strings.
 pub unsafe fn twitch_auth_poll_device_token_async(
     client_id: *const c_char,
     code: *const TwitchAuthDeviceCode,
@@ -842,6 +866,10 @@ pub unsafe fn twitch_auth_poll_device_token_async(
     }
 }
 
+/// # Safety
+/// - `result`: matching async result, consumed once on originating main context.
+/// - `error`: null or writable, initially null `GError*` slot.
+/// - Result owned; release with matching module free function.
 pub unsafe fn twitch_auth_poll_device_token_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,

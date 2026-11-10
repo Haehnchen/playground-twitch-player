@@ -1,4 +1,6 @@
+use crate::glib_strings::is_nonempty;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
+
 use std::io;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -163,30 +165,11 @@ unsafe extern "C" fn app_settings_channel_free(data: *mut c_void) {
     }
 }
 
-unsafe fn c_bytes(value: *const c_char) -> Vec<u8> {
-    unsafe {
-        if value.is_null() {
-            Vec::new()
-        } else {
-            CStr::from_ptr(value).to_bytes().to_vec()
-        }
-    }
-}
-
 unsafe fn trimmed_bytes(value: *const c_char) -> Vec<u8> {
-    unsafe {
-        let bytes = c_bytes(value);
-        let start = bytes
-            .iter()
-            .position(|b| !b.is_ascii_whitespace())
-            .unwrap_or(bytes.len());
-        let end = bytes
-            .iter()
-            .rposition(|b| !b.is_ascii_whitespace())
-            .map(|idx| idx + 1)
-            .unwrap_or(start);
-        bytes[start..end].to_vec()
+    if value.is_null() {
+        return Vec::new();
     }
+    unsafe { CStr::from_ptr(value).to_bytes().trim_ascii().to_vec() }
 }
 
 unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
@@ -194,10 +177,6 @@ unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
         let string = CString::new(bytes).unwrap_or_default();
         g_strdup(string.as_ptr())
     }
-}
-
-unsafe fn is_nonempty(value: *const c_char) -> bool {
-    unsafe { !value.is_null() && *value != 0 }
 }
 
 unsafe fn build_filename(parts: &[*const c_char]) -> *mut c_char {
@@ -208,7 +187,7 @@ unsafe fn build_filename(parts: &[*const c_char]) -> *mut c_char {
     }
 }
 
-pub unsafe fn app_settings_new() -> *mut AppSettings {
+pub fn app_settings_new() -> *mut AppSettings {
     unsafe {
         Box::into_raw(Box::new(AppSettings {
             channels: g_ptr_array_new_with_free_func(Some(app_settings_channel_free)),
@@ -245,7 +224,7 @@ unsafe fn app_settings_unref(settings: *mut AppSettings) {
     }
 }
 
-pub unsafe fn app_settings_get_path() -> *mut c_char {
+pub fn app_settings_get_path() -> *mut c_char {
     unsafe {
         build_filename(&[
             g_get_user_config_dir(),
@@ -255,12 +234,17 @@ pub unsafe fn app_settings_get_path() -> *mut c_char {
     }
 }
 
+/// # Safety
+/// - `settings`: null or owned reference; release each reference once.
+/// - No borrowed-field access after the last release.
 pub unsafe fn app_settings_free(settings: *mut AppSettings) {
     unsafe {
         app_settings_unref(settings);
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
 pub unsafe fn app_settings_get_channel_count(settings: *const AppSettings) -> c_uint {
     unsafe {
         if settings.is_null() {
@@ -271,6 +255,9 @@ pub unsafe fn app_settings_get_channel_count(settings: *const AppSettings) -> c_
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - Result: borrowed until channel mutation or settings destruction.
 pub unsafe fn app_settings_get_channel(
     settings: *const AppSettings,
     index: c_uint,
@@ -284,6 +271,8 @@ pub unsafe fn app_settings_get_channel(
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
 pub unsafe fn app_settings_get_hwdec_enabled(settings: *const AppSettings) -> c_int {
     unsafe {
         if settings.is_null() {
@@ -294,6 +283,8 @@ pub unsafe fn app_settings_get_hwdec_enabled(settings: *const AppSettings) -> c_
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
 pub unsafe fn app_settings_set_hwdec_enabled(settings: *mut AppSettings, enabled: c_int) {
     unsafe {
         if !settings.is_null() {
@@ -302,6 +293,9 @@ pub unsafe fn app_settings_set_hwdec_enabled(settings: *mut AppSettings, enabled
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - Result: borrowed until token mutation or settings destruction.
 pub unsafe fn app_settings_get_twitch_oauth_token(settings: *const AppSettings) -> *const c_char {
     unsafe {
         if settings.is_null() {
@@ -312,6 +306,9 @@ pub unsafe fn app_settings_get_twitch_oauth_token(settings: *const AppSettings) 
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - Result: borrowed until token mutation or settings destruction.
 pub unsafe fn app_settings_get_twitch_refresh_token(settings: *const AppSettings) -> *const c_char {
     unsafe {
         if settings.is_null() {
@@ -322,6 +319,8 @@ pub unsafe fn app_settings_get_twitch_refresh_token(settings: *const AppSettings
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
 pub unsafe fn app_settings_get_twitch_oauth_expires_at(settings: *const AppSettings) -> i64 {
     unsafe {
         if settings.is_null() {
@@ -332,6 +331,9 @@ pub unsafe fn app_settings_get_twitch_oauth_expires_at(settings: *const AppSetti
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - Result: borrowed until token mutation or settings destruction.
 pub unsafe fn app_settings_get_twitch_playback_auth_token(
     settings: *const AppSettings,
 ) -> *const c_char {
@@ -344,6 +346,9 @@ pub unsafe fn app_settings_get_twitch_playback_auth_token(
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn app_settings_set_twitch_playback_auth_token(
     settings: *mut AppSettings,
     token: *const c_char,
@@ -364,6 +369,9 @@ pub unsafe fn app_settings_set_twitch_playback_auth_token(
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn app_settings_set_twitch_oauth_token(
     settings: *mut AppSettings,
     oauth_token: *const c_char,
@@ -388,6 +396,9 @@ pub unsafe fn app_settings_set_twitch_oauth_token(
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn app_settings_set_twitch_auth_tokens(
     settings: *mut AppSettings,
     oauth_token: *const c_char,
@@ -422,6 +433,8 @@ pub unsafe fn app_settings_set_twitch_auth_tokens(
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
 pub unsafe fn app_settings_clear_channels(settings: *mut AppSettings) {
     unsafe {
         if !settings.is_null() {
@@ -430,6 +443,9 @@ pub unsafe fn app_settings_clear_channels(settings: *mut AppSettings) {
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn app_settings_add_channel(
     settings: *mut AppSettings,
     label: *const c_char,
@@ -504,7 +520,7 @@ unsafe fn load_channels(settings: *mut AppSettings, root: *mut JsonObject) {
     }
 }
 
-pub unsafe fn app_settings_load() -> *mut AppSettings {
+pub fn app_settings_load() -> *mut AppSettings {
     unsafe {
         let settings = app_settings_new();
         let path = app_settings_get_path();
@@ -567,6 +583,9 @@ pub unsafe fn app_settings_load() -> *mut AppSettings {
     }
 }
 
+/// # Safety
+/// - `settings`: null or live instance; serialize reads and mutations.
+/// - `error`: null or writable, initially null slot; `E` must represent `GError`.
 pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut E) -> c_int {
     unsafe {
         let error = error as *mut *mut GError;

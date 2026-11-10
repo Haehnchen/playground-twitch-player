@@ -1,4 +1,6 @@
-use std::ffi::{CStr, c_char, c_int, c_uint, c_ulonglong, c_void};
+use crate::glib_strings::dup_bytes;
+use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+
 use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -110,15 +112,12 @@ type GCompareFunc = unsafe extern "C" fn(*const c_void, *const c_void) -> c_int;
 type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
 
 unsafe extern "C" {
-    static g_utf8_skip: *const c_char;
 
     fn g_array_append_vals(array: *mut GArray, data: *const c_void, len: c_uint) -> *mut GArray;
     fn g_array_new(zero_terminated: c_int, clear_: c_int, element_size: c_uint) -> *mut GArray;
     fn g_array_set_clear_func(array: *mut GArray, clear_func: Option<GDestroyNotify>);
     fn g_array_sort(array: *mut GArray, compare_func: Option<GCompareFunc>);
     fn g_array_unref(array: *mut GArray);
-    fn g_ascii_strtoull(nptr: *const c_char, endptr: *mut *mut c_char, base: c_uint)
-    -> c_ulonglong;
     fn g_bytes_new_take(data: *mut c_void, size: usize) -> *mut GBytes;
     fn g_bytes_unref(bytes: *mut GBytes);
     fn g_clear_error(error: *mut *mut GError);
@@ -182,15 +181,6 @@ unsafe extern "C" {
     fn gtk_widget_add_css_class(widget: *mut GtkWidget, css_class: *const c_char);
     fn gtk_widget_set_focusable(widget: *mut GtkWidget, focusable: c_int);
     fn gtk_widget_set_size_request(widget: *mut GtkWidget, width: c_int, height: c_int);
-}
-
-unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    unsafe {
-        let mut value = Vec::with_capacity(bytes.len() + 1);
-        value.extend_from_slice(bytes);
-        value.push(0);
-        g_strdup(value.as_ptr() as *const c_char)
-    }
 }
 
 unsafe fn chat_assets_ref(assets: *mut ChatAssets) -> *mut ChatAssets {
@@ -358,20 +348,11 @@ unsafe extern "C" fn compare_emote_ranges(a: *const c_void, b: *const c_void) ->
     }
 }
 
-unsafe fn parse_uint(bytes: &[u8]) -> Option<c_ulonglong> {
-    unsafe {
-        let mut value = Vec::with_capacity(bytes.len() + 1);
-        value.extend_from_slice(bytes);
-        value.push(0);
-
-        let mut end_ptr: *mut c_char = ptr::null_mut();
-        let parsed = g_ascii_strtoull(value.as_ptr() as *const c_char, &mut end_ptr, 10);
-        if end_ptr == value.as_mut_ptr() as *mut c_char || *end_ptr != 0 {
-            return None;
-        }
-
-        Some(parsed)
+fn parse_uint(bytes: &[u8]) -> Option<c_uint> {
+    if !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
     }
+    std::str::from_utf8(bytes).ok()?.parse().ok()
 }
 
 unsafe fn parse_emote_ranges(emotes: *const c_char) -> *mut GArray {
@@ -407,13 +388,13 @@ unsafe fn parse_emote_ranges(emotes: *const c_char) -> *mut GArray {
                 let Some(end) = parse_uint(&position[dash + 1..]) else {
                     continue;
                 };
-                if end < start || end > c_uint::MAX as c_ulonglong {
+                if end < start || end == c_uint::MAX {
                     continue;
                 }
 
                 let range = EmoteRange {
-                    start: start as c_uint,
-                    end: end as c_uint,
+                    start,
+                    end,
                     id: dup_bytes(id),
                 };
                 g_array_append_vals(ranges, &range as *const EmoteRange as *const c_void, 1);
@@ -430,24 +411,25 @@ unsafe fn parse_emote_ranges(emotes: *const c_char) -> *mut GArray {
     }
 }
 
+fn utf8_byte_offset(text: &[u8], offset: usize) -> Option<usize> {
+    let text = std::str::from_utf8(text).ok()?;
+    text.char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(text.len()))
+        .nth(offset)
+}
+
 unsafe fn utf8_offset_to_pointer_safe(text: *const c_char, offset: c_uint) -> *const c_char {
     unsafe {
-        let mut p = text;
-
-        for _ in 0..offset {
-            if *p == 0 {
-                return ptr::null();
-            }
-
-            let skip = *g_utf8_skip.add(*(p as *const u8) as usize) as isize;
-            p = p.offset(skip);
+        if text.is_null() {
+            return ptr::null();
         }
-
-        p
+        let bytes = CStr::from_ptr(text).to_bytes();
+        utf8_byte_offset(bytes, offset as usize).map_or(ptr::null(), |index| text.add(index))
     }
 }
 
-pub unsafe fn chat_assets_new() -> *mut ChatAssets {
+pub fn chat_assets_new() -> *mut ChatAssets {
     unsafe {
         Box::into_raw(Box::new(ChatAssets {
             image_cache: g_hash_table_new_full(
@@ -462,6 +444,9 @@ pub unsafe fn chat_assets_new() -> *mut ChatAssets {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `assets`: null or owned instance; release once; no subsequent pointer access.
 pub unsafe fn chat_assets_free(assets: *mut ChatAssets) {
     unsafe {
         if assets.is_null() {
@@ -473,6 +458,11 @@ pub unsafe fn chat_assets_free(assets: *mut ChatAssets) {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `assets`: live/open; `buffer` and `view`: matching GTK buffer/view.
+/// - `iter`: writable, valid iterator for `buffer`; generic types match GTK types.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn chat_assets_insert_message_text<B, V, I>(
     assets: *mut ChatAssets,
     buffer: *mut B,
@@ -534,20 +524,40 @@ pub unsafe fn chat_assets_insert_message_text<B, V, I>(
     }
 }
 
-pub unsafe fn chat_assets_test_parse_emote_ranges(emotes: *const c_char) -> *mut GArray {
-    unsafe { parse_emote_ranges(emotes) }
-}
-
-pub unsafe fn chat_assets_test_utf8_offset_to_pointer_safe(
-    text: *const c_char,
-    offset: c_uint,
-) -> *const c_char {
-    unsafe { utf8_offset_to_pointer_safe(text, offset) }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_offsets_respect_character_boundaries() {
+        let text = "aä😀".as_bytes();
+        assert_eq!(utf8_byte_offset(text, 0), Some(0));
+        assert_eq!(utf8_byte_offset(text, 1), Some(1));
+        assert_eq!(utf8_byte_offset(text, 2), Some(3));
+        assert_eq!(utf8_byte_offset(text, 3), Some(7));
+        assert_eq!(utf8_byte_offset(text, 4), None);
+        assert_eq!(utf8_byte_offset(b"", 0), Some(0));
+        assert_eq!(utf8_byte_offset(b"", 1), None);
+        assert_eq!(utf8_byte_offset(b"\xc3", 1), None);
+        assert_eq!(utf8_byte_offset(b"\xff", 0), None);
+    }
+
+    #[test]
+    fn emote_offsets_reject_signs_whitespace_and_overflow() {
+        assert_eq!(parse_uint(b"0"), Some(0));
+        assert_eq!(parse_uint(b"4294967295"), Some(4294967295));
+        for invalid in [
+            b"".as_slice(),
+            b"-1",
+            b"+1",
+            b" 1",
+            b"1 ",
+            b"4294967296",
+            b"1x",
+        ] {
+            assert_eq!(parse_uint(invalid), None, "{invalid:?}");
+        }
+    }
 
     #[test]
     fn owner_release_waits_for_pending_image_reference() {
@@ -562,6 +572,105 @@ mod tests {
             assert!(!(*pending).image_cache.is_null());
 
             chat_assets_unref(pending);
+        }
+    }
+}
+
+#[cfg(test)]
+mod behavior_tests {
+    use super as chat_assets;
+    use std::ffi::{CStr, CString, c_char};
+    use std::ptr;
+    use std::slice;
+
+    use super::g_array_unref;
+
+    fn cstring(value: &str) -> CString {
+        CString::new(value).unwrap()
+    }
+
+    unsafe fn cstr_eq(actual: *const c_char, expected: &str) {
+        unsafe {
+            assert!(!actual.is_null());
+            assert_eq!(CStr::from_ptr(actual).to_str().unwrap(), expected);
+        }
+    }
+
+    unsafe fn parse_emote_ranges(value: *const c_char) -> *mut chat_assets::GArray {
+        unsafe { chat_assets::parse_emote_ranges(value) }
+    }
+
+    unsafe fn ranges_slice<'a>(ranges: *mut chat_assets::GArray) -> &'a [chat_assets::EmoteRange] {
+        unsafe {
+            slice::from_raw_parts(
+                (*ranges).data as *const chat_assets::EmoteRange,
+                (*ranges).len as usize,
+            )
+        }
+    }
+
+    #[test]
+    fn test_parse_emote_ranges_returns_sorted_ranges() {
+        unsafe {
+            let input = cstring("1902:12-16/25:0-4,6-10");
+            let ranges = parse_emote_ranges(input.as_ptr());
+
+            assert!(!ranges.is_null());
+            assert_eq!((*ranges).len, 3);
+
+            let ranges_ref = ranges_slice(ranges);
+            assert_eq!(ranges_ref[0].start, 0);
+            assert_eq!(ranges_ref[0].end, 4);
+            cstr_eq(ranges_ref[0].id, "25");
+            assert_eq!(ranges_ref[1].start, 6);
+            assert_eq!(ranges_ref[1].end, 10);
+            cstr_eq(ranges_ref[1].id, "25");
+            assert_eq!(ranges_ref[2].start, 12);
+            assert_eq!(ranges_ref[2].end, 16);
+            cstr_eq(ranges_ref[2].id, "1902");
+
+            g_array_unref(ranges);
+        }
+    }
+
+    #[test]
+    fn test_parse_emote_ranges_ignores_invalid_specs() {
+        unsafe {
+            let input = cstring("bad/25:4-2,abc-5,1-x,0-4294967295,0-4294967296/33:2-3");
+            let ranges = parse_emote_ranges(input.as_ptr());
+
+            assert!(!ranges.is_null());
+            assert_eq!((*ranges).len, 1);
+
+            let ranges_ref = ranges_slice(ranges);
+            assert_eq!(ranges_ref[0].start, 2);
+            assert_eq!(ranges_ref[0].end, 3);
+            cstr_eq(ranges_ref[0].id, "33");
+
+            g_array_unref(ranges);
+        }
+    }
+
+    #[test]
+    fn test_parse_emote_ranges_returns_null_for_empty_input() {
+        unsafe {
+            assert!(parse_emote_ranges(ptr::null()).is_null());
+            assert!(parse_emote_ranges(cstring("").as_ptr()).is_null());
+            assert!(parse_emote_ranges(cstring("bad/also-bad").as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn test_utf8_offset_to_pointer_safe() {
+        unsafe {
+            let text = b"a\xc3\xa4b\0";
+            let ptr = text.as_ptr() as *const c_char;
+
+            assert_eq!(chat_assets::utf8_offset_to_pointer_safe(ptr, 0), ptr);
+            cstr_eq(chat_assets::utf8_offset_to_pointer_safe(ptr, 1), "äb");
+            cstr_eq(chat_assets::utf8_offset_to_pointer_safe(ptr, 2), "b");
+            cstr_eq(chat_assets::utf8_offset_to_pointer_safe(ptr, 3), "");
+            assert!(chat_assets::utf8_offset_to_pointer_safe(ptr, 4).is_null());
         }
     }
 }

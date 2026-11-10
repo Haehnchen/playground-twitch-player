@@ -18,6 +18,10 @@ unsafe extern "C" {
     fn gtk_widget_set_tooltip_text(widget: *mut GtkWidget, text: *const c_char);
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `icon`: unparented GTK widget; compatible `W`. Parenting transfers ownership.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn player_overlay_button_new<W>(icon: *mut W, tooltip: *const c_char) -> *mut W {
     unsafe {
         let button = gtk_button_new();

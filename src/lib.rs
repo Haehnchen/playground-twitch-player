@@ -4,6 +4,7 @@ pub mod app_main;
 pub mod channel_switcher_overlay;
 pub mod chat_assets;
 pub mod chat_panel;
+mod glib_strings;
 pub mod player_footer;
 pub mod player_icons;
 pub mod player_layout;

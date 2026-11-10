@@ -387,7 +387,8 @@ unsafe fn install_css(css: &CStr, priority: u32) {
 }
 
 /// # Safety
-/// Must run on the GTK main thread with an initialized default display.
+/// - GTK initialized; GTK main thread.
+/// - Default display available.
 pub unsafe fn player_style_install_footer_css() {
     static INSTALLED: Once = Once::new();
     INSTALLED.call_once(|| {
@@ -397,7 +398,8 @@ pub unsafe fn player_style_install_footer_css() {
 }
 
 /// # Safety
-/// Must run on the GTK main thread with an initialized default display.
+/// - GTK initialized; GTK main thread.
+/// - Default display available.
 pub unsafe fn player_style_install_overlay_css() {
     static INSTALLED: Once = Once::new();
     INSTALLED.call_once(|| {

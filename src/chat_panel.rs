@@ -1,4 +1,6 @@
+use crate::glib_strings::is_nonempty;
 use std::ffi::{CStr, c_char, c_double, c_int, c_uint, c_void};
+
 use std::ptr;
 
 use crate::chat_assets::{
@@ -250,10 +252,6 @@ unsafe extern "C" {
 
 }
 
-unsafe fn is_nonempty(value: *const c_char) -> bool {
-    unsafe { !value.is_null() && *value != 0 }
-}
-
 unsafe fn fallback_username_color(name: *const c_char) -> *const c_char {
     unsafe {
         let empty = c"".as_ptr();
@@ -342,6 +340,10 @@ unsafe fn trim_old_lines(panel: *mut ChatPanel) {
     }
 }
 
+fn scroll_is_at_bottom(value: f64, upper: f64, page_size: f64) -> bool {
+    value + page_size >= upper - 2.0
+}
+
 unsafe fn adjustment_is_at_bottom(adjustment: *mut GtkAdjustment) -> bool {
     unsafe {
         if adjustment.is_null() {
@@ -352,7 +354,7 @@ unsafe fn adjustment_is_at_bottom(adjustment: *mut GtkAdjustment) -> bool {
         let upper = gtk_adjustment_get_upper(adjustment);
         let page_size = gtk_adjustment_get_page_size(adjustment);
 
-        value + page_size >= upper - 2.0
+        scroll_is_at_bottom(value, upper, page_size)
     }
 }
 
@@ -690,6 +692,8 @@ unsafe extern "C" fn on_chat_line(line: *const TwitchChatLine, user_data: *mut c
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
 pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
     unsafe {
         let priv_ = Box::into_raw(Box::new(ChatPanelPrivate {
@@ -793,6 +797,10 @@ pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `panel`: null or live instance.
+/// - Result: borrowed GTK widget; compatible `W`; invalid after widget destruction.
 pub unsafe fn chat_panel_get_widget<W>(panel: *mut ChatPanel) -> *mut W {
     unsafe {
         if panel.is_null() {
@@ -803,6 +811,10 @@ pub unsafe fn chat_panel_get_widget<W>(panel: *mut ChatPanel) -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `panel`: null or live instance.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn chat_panel_start(panel: *mut ChatPanel, channel: *const c_char) {
     unsafe {
         if panel.is_null() || channel.is_null() || *channel == 0 {
@@ -814,6 +826,10 @@ pub unsafe fn chat_panel_start(panel: *mut ChatPanel, channel: *const c_char) {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `panel`: null or live instance.
+/// - Release owner once; no subsequent pointer access.
 pub unsafe fn chat_panel_free(panel: *mut ChatPanel) {
     unsafe {
         if panel.is_null() {
@@ -861,16 +877,34 @@ pub unsafe fn chat_panel_free(panel: *mut ChatPanel) {
     }
 }
 
-pub unsafe fn chat_panel_test_fallback_username_color(name: *const c_char) -> *const c_char {
-    unsafe { fallback_username_color(name) }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub unsafe fn chat_panel_test_adjustment_is_at_bottom(adjustment: *mut GtkAdjustment) -> c_int {
-    unsafe {
-        if adjustment_is_at_bottom(adjustment) {
-            1
-        } else {
-            0
+    #[test]
+    fn fallback_colors_are_deterministic() {
+        unsafe {
+            let first = CStr::from_ptr(fallback_username_color(c"alice".as_ptr()));
+            let second = CStr::from_ptr(fallback_username_color(c"alice".as_ptr()));
+            let empty = CStr::from_ptr(fallback_username_color(ptr::null()));
+            assert_eq!(first, second);
+            for color in [first, empty] {
+                assert_eq!(color.to_bytes().len(), 7);
+                assert!(color.to_bytes().starts_with(b"#"));
+            }
         }
+    }
+
+    #[test]
+    fn scroll_bottom_allows_two_pixels_of_tolerance() {
+        assert!(scroll_is_at_bottom(90.0, 100.0, 10.0));
+        assert!(scroll_is_at_bottom(88.0, 100.0, 10.0));
+        assert!(!scroll_is_at_bottom(87.0, 100.0, 10.0));
+        assert!(scroll_is_at_bottom(0.0, 0.0, 10.0));
+    }
+
+    #[test]
+    fn missing_adjustment_counts_as_bottom() {
+        unsafe { assert!(adjustment_is_at_bottom(ptr::null_mut())) };
     }
 }

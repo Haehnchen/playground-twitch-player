@@ -1,4 +1,6 @@
+use crate::glib_strings::dup_bytes;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+
 use std::ptr;
 
 const CHAT_CONNECT_TIMEOUT_SECONDS: c_uint = 15;
@@ -188,15 +190,6 @@ unsafe extern "C" {
     ) -> *mut GThread;
     fn g_thread_unref(thread: *mut GThread);
     fn g_usleep(microseconds: u64);
-}
-
-unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    unsafe {
-        let mut value = Vec::with_capacity(bytes.len() + 1);
-        value.extend_from_slice(bytes);
-        value.push(0);
-        g_strdup(value.as_ptr() as *const c_char)
-    }
 }
 
 unsafe fn dup_ptr(value: *const c_char) -> *mut c_char {
@@ -401,65 +394,37 @@ unsafe fn write_irc_line(
     }
 }
 
-fn chomp_ascii_whitespace(mut bytes: &[u8]) -> &[u8] {
-    while let Some(last) = bytes.last() {
-        if matches!(*last, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
-            bytes = &bytes[..bytes.len() - 1];
-        } else {
-            break;
-        }
-    }
-
-    bytes
-}
-
-unsafe fn extract_irc_tag_bytes(tags: &[u8], key: &[u8]) -> *mut c_char {
-    unsafe {
-        let mut needle = Vec::with_capacity(key.len() + 1);
-        needle.extend_from_slice(key);
-        needle.push(b'=');
-
-        for segment in tags.split(|byte| *byte == b';') {
-            if segment.len() > needle.len() && segment.starts_with(&needle) {
-                let raw = &segment[needle.len()..];
-                let mut decoded = Vec::with_capacity(raw.len());
-                let mut i = 0usize;
-                while i < raw.len() {
-                    if raw[i] == b'\\' && i + 1 < raw.len() {
-                        i += 1;
-                        decoded.push(match raw[i] {
-                            b's' => b' ',
-                            b':' => b';',
-                            b'\\' => b'\\',
-                            b'r' => b'\r',
-                            b'n' => b'\n',
-                            other => other,
-                        });
-                    } else {
-                        decoded.push(raw[i]);
-                    }
+fn extract_irc_tag_bytes(tags: &[u8], key: &[u8]) -> *mut c_char {
+    for segment in tags.split(|byte| *byte == b';') {
+        if let Some(raw) = segment
+            .strip_prefix(key)
+            .and_then(|tail| tail.strip_prefix(b"="))
+            && !raw.is_empty()
+        {
+            let mut decoded = Vec::with_capacity(raw.len());
+            let mut i = 0usize;
+            while i < raw.len() {
+                if raw[i] == b'\\' && i + 1 < raw.len() {
                     i += 1;
+                    decoded.push(match raw[i] {
+                        b's' => b' ',
+                        b':' => b';',
+                        b'\\' => b'\\',
+                        b'r' => b'\r',
+                        b'n' => b'\n',
+                        other => other,
+                    });
+                } else {
+                    decoded.push(raw[i]);
                 }
-
-                return dup_bytes(&decoded);
+                i += 1;
             }
+
+            return dup_bytes(&decoded);
         }
-
-        ptr::null_mut()
     }
-}
 
-unsafe fn extract_irc_tag(tags: *const c_char, key: *const c_char) -> *mut c_char {
-    unsafe {
-        if tags.is_null() || key.is_null() {
-            return ptr::null_mut();
-        }
-
-        extract_irc_tag_bytes(
-            CStr::from_ptr(tags).to_bytes(),
-            CStr::from_ptr(key).to_bytes(),
-        )
-    }
+    ptr::null_mut()
 }
 
 unsafe fn extract_sender_from_prefix(line: *const c_char) -> *mut c_char {
@@ -529,7 +494,7 @@ unsafe fn parse_privmsg(line: *const c_char) -> *mut ParsedPrivmsg {
             name = extract_sender_from_prefix(line);
         }
 
-        let message = dup_bytes(chomp_ascii_whitespace(&bytes[message_start..]));
+        let message = dup_bytes(bytes[message_start..].trim_ascii_end());
 
         Box::into_raw(Box::new(ParsedPrivmsg {
             display_name: name,
@@ -828,6 +793,10 @@ unsafe fn twitch_chat_client_unref(client: *mut TwitchChatClient) {
     }
 }
 
+/// # Safety
+/// - Callback: declared C ABI, no unwind; data valid until client free.
+/// - Line arguments borrowed only during callback.
+/// - Client operations and callbacks serialized on default GLib main context.
 pub unsafe fn twitch_chat_client_new(
     line_func: Option<TwitchChatLineFunc>,
     user_data: *mut c_void,
@@ -849,6 +818,9 @@ pub unsafe fn twitch_chat_client_new(
     }
 }
 
+/// # Safety
+/// - `client`: null or live instance; default GLib main context, serialized callbacks.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn twitch_chat_client_start(client: *mut TwitchChatClient, channel: *const c_char) {
     unsafe {
         if client.is_null() || channel.is_null() || *channel == 0 {
@@ -886,6 +858,8 @@ pub unsafe fn twitch_chat_client_start(client: *mut TwitchChatClient, channel: *
     }
 }
 
+/// # Safety
+/// - `client`: null or live instance; default GLib main context, serialized callbacks.
 pub unsafe fn twitch_chat_client_stop(client: *mut TwitchChatClient) {
     unsafe {
         if client.is_null() {
@@ -900,6 +874,9 @@ pub unsafe fn twitch_chat_client_stop(client: *mut TwitchChatClient) {
     }
 }
 
+/// # Safety
+/// - `client`: null or live instance; default GLib main context, serialized callbacks.
+/// - Release owner once; no subsequent pointer access.
 pub unsafe fn twitch_chat_client_free(client: *mut TwitchChatClient) {
     unsafe {
         if client.is_null() {
@@ -918,23 +895,122 @@ pub unsafe fn twitch_chat_client_free(client: *mut TwitchChatClient) {
     }
 }
 
-pub unsafe fn twitch_chat_test_extract_irc_tag(
-    tags: *const c_char,
-    key: *const c_char,
-) -> *mut c_char {
-    unsafe { extract_irc_tag(tags, key) }
-}
+#[cfg(test)]
+mod tests {
+    use super as twitch_chat;
+    use std::ffi::{CStr, CString, c_char, c_void};
 
-pub unsafe fn twitch_chat_test_extract_sender_from_prefix(line: *const c_char) -> *mut c_char {
-    unsafe { extract_sender_from_prefix(line) }
-}
+    use super::g_free;
 
-pub unsafe fn twitch_chat_test_parse_privmsg(line: *const c_char) -> *mut ParsedPrivmsg {
-    unsafe { parse_privmsg(line) }
-}
+    fn cstring(value: &str) -> CString {
+        CString::new(value).unwrap()
+    }
 
-pub unsafe fn twitch_chat_test_parsed_privmsg_free(message: *mut ParsedPrivmsg) {
-    unsafe {
-        parsed_privmsg_free(message);
+    unsafe fn assert_str_eq(actual: *const c_char, expected: &str) {
+        unsafe {
+            assert!(!actual.is_null());
+            assert_eq!(CStr::from_ptr(actual).to_str().unwrap(), expected);
+        }
+    }
+
+    fn extract_irc_tag(tags: &str, key: &str) -> *mut c_char {
+        twitch_chat::extract_irc_tag_bytes(tags.as_bytes(), key.as_bytes())
+    }
+
+    unsafe fn extract_sender_from_prefix(line: &str) -> *mut c_char {
+        unsafe { twitch_chat::extract_sender_from_prefix(cstring(line).as_ptr()) }
+    }
+
+    unsafe fn parse_privmsg(line: &str) -> *mut twitch_chat::ParsedPrivmsg {
+        unsafe { twitch_chat::parse_privmsg(cstring(line).as_ptr()) }
+    }
+
+    #[test]
+    fn test_extract_irc_tag_returns_decoded_value() {
+        unsafe {
+            let display_name = extract_irc_tag(
+                "display-name=Alice\\sBob;color=#123456;emotes=25:0-4",
+                "display-name",
+            );
+            let reply = extract_irc_tag(
+                "reply-parent-msg-body=hello\\sworld\\:\\\\line\\r\\n;other=x",
+                "reply-parent-msg-body",
+            );
+
+            assert_str_eq(display_name, "Alice Bob");
+            assert_str_eq(reply, "hello world;\\line\r\n");
+            g_free(display_name as *mut c_void);
+            g_free(reply as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn test_extract_irc_tag_matches_exact_key() {
+        unsafe {
+            let id = extract_irc_tag("room-id=123;id=456", "id");
+            let missing = extract_irc_tag("display-name=;", "display-name");
+
+            assert_str_eq(id, "456");
+            assert!(missing.is_null());
+            g_free(id as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn test_extract_sender_from_prefix() {
+        unsafe {
+            let sender =
+                extract_sender_from_prefix(":alice!alice@example.test PRIVMSG #chan :hello");
+            let fallback = extract_sender_from_prefix("PING :tmi.twitch.tv");
+
+            assert_str_eq(sender, "alice");
+            assert_str_eq(fallback, "chat");
+            g_free(sender as *mut c_void);
+            g_free(fallback as *mut c_void);
+        }
+    }
+
+    #[test]
+    fn test_parse_privmsg_with_tags() {
+        unsafe {
+            let message = parse_privmsg(
+                "@display-name=Alice\\sBob;color=#123456;emotes=25:0-4;\
+             reply-parent-display-name=Carol;\
+             reply-parent-msg-body=previous\\smessage \
+             :alice!alice@example.test PRIVMSG #channel :Kappa hello\r",
+            );
+
+            assert!(!message.is_null());
+            assert_str_eq((*message).display_name, "Alice Bob");
+            assert_str_eq((*message).message, "Kappa hello");
+            assert_str_eq((*message).color, "#123456");
+            assert_str_eq((*message).emotes, "25:0-4");
+            assert_str_eq((*message).reply_display_name, "Carol");
+            assert_str_eq((*message).reply_message, "previous message");
+
+            twitch_chat::parsed_privmsg_free(message);
+        }
+    }
+
+    #[test]
+    fn test_parse_privmsg_falls_back_to_sender() {
+        unsafe {
+            let message = parse_privmsg(":fallback!user@example.test PRIVMSG #channel :hello");
+
+            assert!(!message.is_null());
+            assert_str_eq((*message).display_name, "fallback");
+            assert_str_eq((*message).message, "hello");
+            assert!((*message).color.is_null());
+
+            twitch_chat::parsed_privmsg_free(message);
+        }
+    }
+
+    #[test]
+    fn test_parse_privmsg_rejects_non_messages() {
+        unsafe {
+            assert!(parse_privmsg("PING :tmi.twitch.tv").is_null());
+            assert!(parse_privmsg(":server NOTICE #channel :hello").is_null());
+        }
     }
 }

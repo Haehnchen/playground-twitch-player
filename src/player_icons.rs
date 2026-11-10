@@ -571,6 +571,9 @@ unsafe extern "C" fn draw_tile_focus_icon(
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_settings_icon_new<W>() -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -579,6 +582,9 @@ pub unsafe fn player_settings_icon_new<W>() -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_stream_settings_icon_new<W>() -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -587,6 +593,9 @@ pub unsafe fn player_stream_settings_icon_new<W>() -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_info_icon_new<W>() -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -595,6 +604,9 @@ pub unsafe fn player_info_icon_new<W>() -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_account_icon_new<W>() -> *mut W {
     unsafe {
         let icon = gtk_image_new_from_icon_name(c"avatar-default-symbolic".as_ptr());
@@ -604,6 +616,9 @@ pub unsafe fn player_account_icon_new<W>() -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_refresh_icon_new<W>() -> *mut W {
     unsafe {
         let icon = gtk_image_new_from_icon_name(c"view-refresh-symbolic".as_ptr());
@@ -613,6 +628,9 @@ pub unsafe fn player_refresh_icon_new<W>() -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_trash_icon_new<W>() -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -621,6 +639,9 @@ pub unsafe fn player_trash_icon_new<W>() -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_plus_icon_new<W>() -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -629,6 +650,9 @@ pub unsafe fn player_plus_icon_new<W>() -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_window_icon_new<W>(kind: c_int) -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -637,6 +661,9 @@ pub unsafe fn player_window_icon_new<W>(kind: c_int) -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_layout_icon_new<W>(layout: &'static PlayerLayout) -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -651,6 +678,9 @@ pub unsafe fn player_layout_icon_new<W>(layout: &'static PlayerLayout) -> *mut W
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_layout_menu_icon_new<W>() -> *mut W {
     unsafe {
         let icon = gtk_image_new_from_icon_name(c"pan-down-symbolic".as_ptr());
@@ -660,6 +690,9 @@ pub unsafe fn player_layout_menu_icon_new<W>() -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_chat_icon_new<W>(kind: c_int) -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -668,6 +701,9 @@ pub unsafe fn player_chat_icon_new<W>(kind: c_int) -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_volume_icon_new<W>(kind: c_int) -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();
@@ -687,6 +723,9 @@ pub unsafe fn player_volume_icon_new<W>(kind: c_int) -> *mut W {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `W`: compatible GTK widget type.
 pub unsafe fn player_tile_focus_icon_new<W>(kind: c_int) -> *mut W {
     unsafe {
         let icon = gtk_drawing_area_new();

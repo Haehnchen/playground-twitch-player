@@ -1,4 +1,6 @@
+use crate::glib_strings::clear_string;
 use std::ffi::{c_char, c_double, c_int, c_void};
+
 use std::ptr;
 
 const G_LOG_LEVEL_WARNING: c_int = 1 << 4;
@@ -217,17 +219,7 @@ unsafe fn init_mpv(session: *mut PlayerSession) -> c_int {
     }
 }
 
-unsafe fn clear_string(value: &mut *mut c_char) {
-    unsafe {
-        if !value.is_null() {
-            let old_value = *value;
-            *value = ptr::null_mut();
-            g_free(old_value as *mut c_void);
-        }
-    }
-}
-
-pub unsafe fn player_session_new() -> *mut PlayerSession {
+pub fn player_session_new() -> *mut PlayerSession {
     unsafe {
         let mut session = Box::new(PlayerSession {
             mpv: ptr::null_mut(),
@@ -243,6 +235,9 @@ pub unsafe fn player_session_new() -> *mut PlayerSession {
     }
 }
 
+/// # Safety
+/// - `session`: null or owned instance; release once.
+/// - Destroy render contexts first; no remaining handle/string users.
 pub unsafe fn player_session_free(session: *mut PlayerSession) {
     unsafe {
         if session.is_null() {
@@ -262,10 +257,14 @@ pub unsafe fn player_session_free(session: *mut PlayerSession) {
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_is_ready(session: *mut PlayerSession) -> c_int {
     unsafe { (!session.is_null() && !(*session).mpv.is_null()) as c_int }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_is_playing(session: *mut PlayerSession) -> c_int {
     unsafe {
         (player_session_is_ready(session) != 0
@@ -275,6 +274,9 @@ pub unsafe fn player_session_is_playing(session: *mut PlayerSession) -> c_int {
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
+/// - Returned mpv handle: borrowed until session destruction; do not destroy.
 pub unsafe fn player_session_get_mpv(session: *mut PlayerSession) -> *mut MpvHandle {
     unsafe {
         if session.is_null() {
@@ -285,6 +287,9 @@ pub unsafe fn player_session_get_mpv(session: *mut PlayerSession) -> *mut MpvHan
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
+/// - Returned string: borrowed until stream change, stop, or session destruction.
 pub unsafe fn player_session_get_label(session: *mut PlayerSession) -> *const c_char {
     unsafe {
         if session.is_null() {
@@ -295,6 +300,9 @@ pub unsafe fn player_session_get_label(session: *mut PlayerSession) -> *const c_
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
+/// - Returned string: borrowed until stream change, stop, or session destruction.
 pub unsafe fn player_session_get_channel(session: *mut PlayerSession) -> *const c_char {
     unsafe {
         if session.is_null() {
@@ -305,6 +313,9 @@ pub unsafe fn player_session_get_channel(session: *mut PlayerSession) -> *const 
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
+/// - Returned string: borrowed until stream change, stop, or session destruction.
 pub unsafe fn player_session_get_url(session: *mut PlayerSession) -> *const c_char {
     unsafe {
         if session.is_null() {
@@ -315,6 +326,9 @@ pub unsafe fn player_session_get_url(session: *mut PlayerSession) -> *const c_ch
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
+/// - Returned string: owned; release with `g_free`.
 pub unsafe fn player_session_dup_url(session: *mut PlayerSession) -> *mut c_char {
     unsafe {
         let url = player_session_get_url(session);
@@ -326,6 +340,8 @@ pub unsafe fn player_session_dup_url(session: *mut PlayerSession) -> *mut c_char
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_get_volume(session: *mut PlayerSession) -> c_double {
     unsafe {
         if session.is_null() {
@@ -336,6 +352,8 @@ pub unsafe fn player_session_get_volume(session: *mut PlayerSession) -> c_double
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_set_volume(session: *mut PlayerSession, volume: c_double) {
     unsafe {
         if player_session_is_ready(session) == 0 {
@@ -356,6 +374,8 @@ pub unsafe fn player_session_set_volume(session: *mut PlayerSession, volume: c_d
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_get_muted(session: *mut PlayerSession) -> c_int {
     unsafe {
         if session.is_null() {
@@ -366,6 +386,8 @@ pub unsafe fn player_session_get_muted(session: *mut PlayerSession) -> c_int {
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_set_muted(session: *mut PlayerSession, muted: c_int) {
     unsafe {
         if player_session_is_ready(session) == 0 {
@@ -392,12 +414,16 @@ pub unsafe fn player_session_set_muted(session: *mut PlayerSession, muted: c_int
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_toggle_muted(session: *mut PlayerSession) {
     unsafe {
         player_session_set_muted(session, (player_session_get_muted(session) == 0) as c_int);
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_set_hwdec_enabled(session: *mut PlayerSession, enabled: c_int) {
     unsafe {
         if player_session_is_ready(session) == 0 {
@@ -419,6 +445,9 @@ pub unsafe fn player_session_set_hwdec_enabled(session: *mut PlayerSession, enab
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
 pub unsafe fn player_session_set_ytdl_raw_options(
     session: *mut PlayerSession,
     options: *const c_char,
@@ -443,6 +472,10 @@ pub unsafe fn player_session_set_ytdl_raw_options(
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
+/// - Callback: C ABI, no unwind, callable from mpv threads.
+/// - `data`: valid until callbacks are disabled and all in-flight calls finish.
 pub unsafe fn player_session_set_wakeup_callback(
     session: *mut PlayerSession,
     callback: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -455,6 +488,8 @@ pub unsafe fn player_session_set_wakeup_callback(
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_toggle_stream_info(session: *mut PlayerSession) {
     unsafe {
         if player_session_is_ready(session) == 0 {
@@ -477,6 +512,8 @@ pub unsafe fn player_session_toggle_stream_info(session: *mut PlayerSession) {
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_reenable_video(session: *mut PlayerSession) {
     unsafe {
         if player_session_is_playing(session) == 0 {
@@ -495,6 +532,8 @@ pub unsafe fn player_session_reenable_video(session: *mut PlayerSession) {
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_drop_buffers(session: *mut PlayerSession) {
     unsafe {
         if player_session_is_playing(session) == 0 {
@@ -510,6 +549,10 @@ pub unsafe fn player_session_drop_buffers(session: *mut PlayerSession) {
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
+/// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
+/// - Inputs must not alias session strings; those are freed before copying.
 pub unsafe fn player_session_load_stream(
     session: *mut PlayerSession,
     url: *const c_char,
@@ -542,6 +585,8 @@ pub unsafe fn player_session_load_stream(
     }
 }
 
+/// # Safety
+/// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_stop(session: *mut PlayerSession) {
     unsafe {
         if player_session_is_ready(session) == 0 {

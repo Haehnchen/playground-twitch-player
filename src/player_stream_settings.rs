@@ -43,6 +43,14 @@ pub struct GObject {
 pub type PlayerStreamSettingsDataRef = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
 pub type PlayerStreamSettingsDataFree = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
+pub struct QualitySelectionCallbacks {
+    pub quality_clicked: *const c_void,
+    pub auto_clicked: *const c_void,
+    pub user_data: *mut c_void,
+    pub data_ref: Option<PlayerStreamSettingsDataRef>,
+    pub data_free: Option<PlayerStreamSettingsDataFree>,
+}
+
 unsafe extern "C" {
     fn g_object_set_data(object: *mut GObject, key: *const c_char, data: *mut c_void);
     fn g_signal_connect_data(
@@ -159,6 +167,10 @@ unsafe fn player_stream_settings_action_button_new(
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - `relative_to`: live GTK widget; `W`: compatible widget type.
+/// - Non-null output slots: writable; returned children borrowed from popover.
 pub unsafe fn player_stream_settings_popover_new<W>(
     relative_to: *mut W,
     quality_list_box_out: *mut *mut W,
@@ -254,18 +266,19 @@ unsafe fn current_label(label: *const c_char) -> Vec<u8> {
     }
 }
 
+/// # Safety
+/// - GTK initialized; GTK main thread.
+/// - Widgets: live `GtkBox`/`GtkLabel`; selection strings: valid C strings or null.
+/// - Quality entries live while buttons exist; array valid during population.
+/// - Click callbacks: GtkButton::clicked C ABI, no unwind.
+/// - Data outlives buttons, or matching ref/free callbacks retain/release it.
 pub unsafe fn player_stream_settings_quality_list_populate<W>(
     quality_list_box: *mut W,
     quality_status_label: *mut W,
     qualities: *mut GPtrArray,
     selected_quality_url: *const c_char,
     selected_quality_label: *const c_char,
-    quality_clicked_callback: *const c_void,
-    quality_user_data: *mut c_void,
-    auto_clicked_callback: *const c_void,
-    auto_user_data: *mut c_void,
-    user_data_ref: Option<PlayerStreamSettingsDataRef>,
-    user_data_free: Option<PlayerStreamSettingsDataFree>,
+    callbacks: QualitySelectionCallbacks,
 ) {
     unsafe {
         let quality_list_box = quality_list_box as *mut GtkWidget;
@@ -313,10 +326,10 @@ pub unsafe fn player_stream_settings_quality_list_populate<W>(
             );
             connect_clicked(
                 button,
-                quality_clicked_callback,
-                quality_user_data,
-                user_data_ref,
-                user_data_free,
+                callbacks.quality_clicked,
+                callbacks.user_data,
+                callbacks.data_ref,
+                callbacks.data_free,
             );
             gtk_box_append(quality_list_box as *mut GtkBox, button);
         }
@@ -332,10 +345,10 @@ pub unsafe fn player_stream_settings_quality_list_populate<W>(
         );
         connect_clicked(
             auto_button,
-            auto_clicked_callback,
-            auto_user_data,
-            user_data_ref,
-            user_data_free,
+            callbacks.auto_clicked,
+            callbacks.user_data,
+            callbacks.data_ref,
+            callbacks.data_free,
         );
         gtk_box_append(quality_list_box as *mut GtkBox, auto_button);
     }

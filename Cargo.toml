@@ -14,33 +14,8 @@ name = "twitch-player"
 path = "src/main.rs"
 
 [[test]]
-name = "twitch-chat"
-path = "tests/test_twitch_chat.rs"
-harness = false
-
-[[test]]
-name = "twitch-stream-info"
-path = "tests/test_twitch_stream_info.rs"
-harness = false
-
-[[test]]
 name = "settings"
 path = "tests/test_settings.rs"
-harness = false
-
-[[test]]
-name = "chat-assets"
-path = "tests/test_chat_assets.rs"
-harness = false
-
-[[test]]
-name = "chat-panel"
-path = "tests/test_chat_panel.rs"
-harness = false
-
-[[test]]
-name = "player-surface"
-path = "tests/test_player_surface.rs"
 harness = false
 
 [profile.release]
