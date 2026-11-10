@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
 use std::ptr;
 
 use crate::twitch_stream_info::{GAsyncResult, GCancellable, GError};
@@ -149,7 +149,7 @@ unsafe extern "C" {
     fn json_node_get_object(node: *mut JsonNode) -> *mut JsonObject;
     fn json_node_get_string(node: *mut JsonNode) -> *const c_char;
     fn json_object_get_member(object: *mut JsonObject, member_name: *const c_char)
-        -> *mut JsonNode;
+    -> *mut JsonNode;
     fn json_parser_get_root(parser: *mut JsonParser) -> *mut JsonNode;
     fn json_parser_load_from_data(
         parser: *mut JsonParser,
@@ -182,70 +182,82 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" fn device_code_data_free(data: *mut c_void) {
-    if data.is_null() {
-        return;
-    }
+    unsafe {
+        if data.is_null() {
+            return;
+        }
 
-    let data = Box::from_raw(data as *mut DeviceCodeData);
-    g_free(data.client_id as *mut c_void);
+        let data = Box::from_raw(data as *mut DeviceCodeData);
+        g_free(data.client_id as *mut c_void);
+    }
 }
 
 unsafe extern "C" fn poll_token_data_free(data: *mut c_void) {
-    if data.is_null() {
-        return;
-    }
+    unsafe {
+        if data.is_null() {
+            return;
+        }
 
-    let data = Box::from_raw(data as *mut PollTokenData);
-    g_free(data.client_id as *mut c_void);
-    g_free(data.device_code as *mut c_void);
+        let data = Box::from_raw(data as *mut PollTokenData);
+        g_free(data.client_id as *mut c_void);
+        g_free(data.device_code as *mut c_void);
+    }
 }
 
 unsafe fn auth_response_free(response: *mut AuthResponse) {
-    if response.is_null() {
-        return;
-    }
+    unsafe {
+        if response.is_null() {
+            return;
+        }
 
-    let response = Box::from_raw(response);
-    g_free(response.body as *mut c_void);
+        let response = Box::from_raw(response);
+        g_free(response.body as *mut c_void);
+    }
 }
 
 pub unsafe fn twitch_auth_device_code_free(code: *mut TwitchAuthDeviceCode) {
-    if code.is_null() {
-        return;
-    }
+    unsafe {
+        if code.is_null() {
+            return;
+        }
 
-    let code = Box::from_raw(code);
-    g_free(code.device_code as *mut c_void);
-    g_free(code.user_code as *mut c_void);
-    g_free(code.verification_uri as *mut c_void);
+        let code = Box::from_raw(code);
+        g_free(code.device_code as *mut c_void);
+        g_free(code.user_code as *mut c_void);
+        g_free(code.verification_uri as *mut c_void);
+    }
 }
 
 pub unsafe fn twitch_auth_token_free(token: *mut TwitchAuthToken) {
-    if token.is_null() {
-        return;
-    }
+    unsafe {
+        if token.is_null() {
+            return;
+        }
 
-    let token = Box::from_raw(token);
-    g_free(token.access_token as *mut c_void);
-    g_free(token.refresh_token as *mut c_void);
+        let token = Box::from_raw(token);
+        g_free(token.access_token as *mut c_void);
+        g_free(token.refresh_token as *mut c_void);
+    }
 }
 
 unsafe fn append_form_pair(form: &mut Vec<u8>, name: *const c_char, value: *const c_char) {
-    if !form.is_empty() {
-        form.push(b'&');
+    unsafe {
+        if !form.is_empty() {
+            form.push(b'&');
+        }
+
+        let escaped_name = g_uri_escape_string(name, ptr::null(), 1);
+        let empty = c"".as_ptr();
+        let escaped_value =
+            g_uri_escape_string(if value.is_null() { empty } else { value }, ptr::null(), 1);
+
+        form.extend_from_slice(CStr::from_ptr(escaped_name).to_bytes());
+        form.push(b'=');
+        form.extend_from_slice(CStr::from_ptr(escaped_value).to_bytes());
+
+        g_free(escaped_name as *mut c_void);
+        g_free(escaped_value as *mut c_void);
     }
-
-    let escaped_name = g_uri_escape_string(name, ptr::null(), 1);
-    let empty = b"\0".as_ptr() as *const c_char;
-    let escaped_value =
-        g_uri_escape_string(if value.is_null() { empty } else { value }, ptr::null(), 1);
-
-    form.extend_from_slice(CStr::from_ptr(escaped_name).to_bytes());
-    form.push(b'=');
-    form.extend_from_slice(CStr::from_ptr(escaped_value).to_bytes());
-
-    g_free(escaped_name as *mut c_void);
-    g_free(escaped_value as *mut c_void);
 }
 
 unsafe fn post_auth_form(
@@ -254,47 +266,49 @@ unsafe fn post_auth_form(
     cancel: *mut GCancellable,
     error: *mut *mut GError,
 ) -> *mut AuthResponse {
-    let session = soup_session_new();
-    let message = soup_message_new(b"POST\0".as_ptr() as *const c_char, uri);
-    let body_bytes = g_bytes_new_static(body.as_ptr() as *const c_void, body.len());
+    unsafe {
+        let session = soup_session_new();
+        let message = soup_message_new(c"POST".as_ptr(), uri);
+        let body_bytes = g_bytes_new_static(body.as_ptr() as *const c_void, body.len());
 
-    g_object_set(
-        session as *mut c_void,
-        b"timeout\0".as_ptr() as *const c_char,
-        15,
-        ptr::null::<c_char>(),
-    );
-    let request_headers = soup_message_get_request_headers(message);
-    soup_message_headers_append(
-        request_headers,
-        b"Accept\0".as_ptr() as *const c_char,
-        b"application/json\0".as_ptr() as *const c_char,
-    );
-    soup_message_set_request_body_from_bytes(
-        message,
-        b"application/x-www-form-urlencoded\0".as_ptr() as *const c_char,
-        body_bytes,
-    );
+        g_object_set(
+            session as *mut c_void,
+            c"timeout".as_ptr(),
+            15,
+            ptr::null::<c_char>(),
+        );
+        let request_headers = soup_message_get_request_headers(message);
+        soup_message_headers_append(
+            request_headers,
+            c"Accept".as_ptr(),
+            c"application/json".as_ptr(),
+        );
+        soup_message_set_request_body_from_bytes(
+            message,
+            c"application/x-www-form-urlencoded".as_ptr(),
+            body_bytes,
+        );
 
-    let response_bytes = soup_session_send_and_read(session, message, cancel, error);
-    g_bytes_unref(body_bytes);
-    if response_bytes.is_null() {
+        let response_bytes = soup_session_send_and_read(session, message, cancel, error);
+        g_bytes_unref(body_bytes);
+        if response_bytes.is_null() {
+            g_object_unref(message as *mut c_void);
+            g_object_unref(session as *mut c_void);
+            return ptr::null_mut();
+        }
+
+        let mut response_size = 0usize;
+        let response_data = g_bytes_get_data(response_bytes, &mut response_size) as *const c_char;
+        let response = Box::new(AuthResponse {
+            status: soup_message_get_status(message),
+            body: g_strndup(response_data, response_size),
+        });
+
+        g_bytes_unref(response_bytes);
         g_object_unref(message as *mut c_void);
         g_object_unref(session as *mut c_void);
-        return ptr::null_mut();
+        Box::into_raw(response)
     }
-
-    let mut response_size = 0usize;
-    let response_data = g_bytes_get_data(response_bytes, &mut response_size) as *const c_char;
-    let response = Box::new(AuthResponse {
-        status: soup_message_get_status(message),
-        body: g_strndup(response_data, response_size),
-    });
-
-    g_bytes_unref(response_bytes);
-    g_object_unref(message as *mut c_void);
-    g_object_unref(session as *mut c_void);
-    Box::into_raw(response)
 }
 
 unsafe fn parse_json_object(
@@ -302,155 +316,163 @@ unsafe fn parse_json_object(
     json: *const c_char,
     error: *mut *mut GError,
 ) -> *mut JsonObject {
-    if json_parser_load_from_data(parser, json, -1, error) == 0 {
-        return ptr::null_mut();
-    }
+    unsafe {
+        if json_parser_load_from_data(parser, json, -1, error) == 0 {
+            return ptr::null_mut();
+        }
 
-    let root = json_parser_get_root(parser);
-    if root.is_null() || json_node_get_node_type(root) != JSON_NODE_OBJECT {
-        g_set_error(
-            error,
-            g_io_error_quark(),
-            G_IO_ERROR_FAILED,
-            b"Twitch returned invalid JSON\0".as_ptr() as *const c_char,
-        );
-        return ptr::null_mut();
-    }
+        let root = json_parser_get_root(parser);
+        if root.is_null() || json_node_get_node_type(root) != JSON_NODE_OBJECT {
+            g_set_error(
+                error,
+                g_io_error_quark(),
+                G_IO_ERROR_FAILED,
+                c"Twitch returned invalid JSON".as_ptr(),
+            );
+            return ptr::null_mut();
+        }
 
-    json_node_get_object(root)
+        json_node_get_object(root)
+    }
 }
 
 unsafe fn json_string_or_null(object: *mut JsonObject, name: *const c_char) -> *const c_char {
-    let node = json_object_get_member(object, name);
-    if node.is_null() {
-        return ptr::null();
-    }
+    unsafe {
+        let node = json_object_get_member(object, name);
+        if node.is_null() {
+            return ptr::null();
+        }
 
-    let node_type = json_node_get_node_type(node);
-    if node_type == JSON_NODE_NULL || node_type != JSON_NODE_VALUE {
-        return ptr::null();
-    }
+        let node_type = json_node_get_node_type(node);
+        if node_type == JSON_NODE_NULL || node_type != JSON_NODE_VALUE {
+            return ptr::null();
+        }
 
-    json_node_get_string(node)
+        json_node_get_string(node)
+    }
 }
 
 unsafe fn json_uint_or_zero(object: *mut JsonObject, name: *const c_char) -> c_uint {
-    let node = json_object_get_member(object, name);
-    if node.is_null() {
-        return 0;
-    }
+    unsafe {
+        let node = json_object_get_member(object, name);
+        if node.is_null() {
+            return 0;
+        }
 
-    let node_type = json_node_get_node_type(node);
-    if node_type == JSON_NODE_NULL || node_type != JSON_NODE_VALUE {
-        return 0;
-    }
+        let node_type = json_node_get_node_type(node);
+        if node_type == JSON_NODE_NULL || node_type != JSON_NODE_VALUE {
+            return 0;
+        }
 
-    let value = json_node_get_int(node);
-    if value > 0 && value <= c_uint::MAX as i64 {
-        value as c_uint
-    } else {
-        0
+        let value = json_node_get_int(node);
+        if value > 0 && value <= c_uint::MAX as i64 {
+            value as c_uint
+        } else {
+            0
+        }
     }
 }
 
 unsafe fn parse_auth_error_message(json: *const c_char) -> *mut c_char {
-    let parser = json_parser_new();
-    let mut error: *mut GError = ptr::null_mut();
-    let object = parse_json_object(parser, json, &mut error);
-    if object.is_null() {
-        g_clear_error(&mut error);
-        g_object_unref(parser as *mut c_void);
-        return g_strdup(b"\0".as_ptr() as *const c_char);
-    }
-
-    let message = json_string_or_null(object, b"message\0".as_ptr() as *const c_char);
-    let result = if !message.is_null() && *message != 0 {
-        g_strdup(message)
-    } else {
-        let error_name = json_string_or_null(object, b"error\0".as_ptr() as *const c_char);
-        if error_name.is_null() {
-            g_strdup(b"\0".as_ptr() as *const c_char)
-        } else {
-            g_strdup(error_name)
+    unsafe {
+        let parser = json_parser_new();
+        let mut error: *mut GError = ptr::null_mut();
+        let object = parse_json_object(parser, json, &mut error);
+        if object.is_null() {
+            g_clear_error(&mut error);
+            g_object_unref(parser as *mut c_void);
+            return g_strdup(c"".as_ptr());
         }
-    };
-    g_object_unref(parser as *mut c_void);
-    result
+
+        let message = json_string_or_null(object, c"message".as_ptr());
+        let result = if !message.is_null() && *message != 0 {
+            g_strdup(message)
+        } else {
+            let error_name = json_string_or_null(object, c"error".as_ptr());
+            if error_name.is_null() {
+                g_strdup(c"".as_ptr())
+            } else {
+                g_strdup(error_name)
+            }
+        };
+        g_object_unref(parser as *mut c_void);
+        result
+    }
 }
 
 unsafe fn parse_device_code_response(
     json: *const c_char,
     error: *mut *mut GError,
 ) -> *mut TwitchAuthDeviceCode {
-    let parser = json_parser_new();
-    let object = parse_json_object(parser, json, error);
-    if object.is_null() {
-        g_object_unref(parser as *mut c_void);
-        return ptr::null_mut();
-    }
+    unsafe {
+        let parser = json_parser_new();
+        let object = parse_json_object(parser, json, error);
+        if object.is_null() {
+            g_object_unref(parser as *mut c_void);
+            return ptr::null_mut();
+        }
 
-    let device_code = json_string_or_null(object, b"device_code\0".as_ptr() as *const c_char);
-    let user_code = json_string_or_null(object, b"user_code\0".as_ptr() as *const c_char);
-    let verification_uri =
-        json_string_or_null(object, b"verification_uri\0".as_ptr() as *const c_char);
-    if device_code.is_null() || user_code.is_null() || verification_uri.is_null() {
-        g_set_error(
-            error,
-            g_io_error_quark(),
-            G_IO_ERROR_FAILED,
-            b"Twitch did not return a device code\0".as_ptr() as *const c_char,
-        );
-        g_object_unref(parser as *mut c_void);
-        return ptr::null_mut();
-    }
+        let device_code = json_string_or_null(object, c"device_code".as_ptr());
+        let user_code = json_string_or_null(object, c"user_code".as_ptr());
+        let verification_uri = json_string_or_null(object, c"verification_uri".as_ptr());
+        if device_code.is_null() || user_code.is_null() || verification_uri.is_null() {
+            g_set_error(
+                error,
+                g_io_error_quark(),
+                G_IO_ERROR_FAILED,
+                c"Twitch did not return a device code".as_ptr(),
+            );
+            g_object_unref(parser as *mut c_void);
+            return ptr::null_mut();
+        }
 
-    let mut code = Box::new(TwitchAuthDeviceCode {
-        device_code: g_strdup(device_code),
-        user_code: g_strdup(user_code),
-        verification_uri: g_strdup(verification_uri),
-        expires_in: json_uint_or_zero(object, b"expires_in\0".as_ptr() as *const c_char),
-        interval: json_uint_or_zero(object, b"interval\0".as_ptr() as *const c_char),
-    });
-    if code.interval == 0 {
-        code.interval = 5;
+        let mut code = Box::new(TwitchAuthDeviceCode {
+            device_code: g_strdup(device_code),
+            user_code: g_strdup(user_code),
+            verification_uri: g_strdup(verification_uri),
+            expires_in: json_uint_or_zero(object, c"expires_in".as_ptr()),
+            interval: json_uint_or_zero(object, c"interval".as_ptr()),
+        });
+        if code.interval == 0 {
+            code.interval = 5;
+        }
+        g_object_unref(parser as *mut c_void);
+        Box::into_raw(code)
     }
-    g_object_unref(parser as *mut c_void);
-    Box::into_raw(code)
 }
 
 unsafe fn parse_token_response(
     json: *const c_char,
     error: *mut *mut GError,
 ) -> *mut TwitchAuthToken {
-    let parser = json_parser_new();
-    let object = parse_json_object(parser, json, error);
-    if object.is_null() {
-        g_object_unref(parser as *mut c_void);
-        return ptr::null_mut();
-    }
+    unsafe {
+        let parser = json_parser_new();
+        let object = parse_json_object(parser, json, error);
+        if object.is_null() {
+            g_object_unref(parser as *mut c_void);
+            return ptr::null_mut();
+        }
 
-    let access_token = json_string_or_null(object, b"access_token\0".as_ptr() as *const c_char);
-    if access_token.is_null() || *access_token == 0 {
-        g_set_error(
-            error,
-            g_io_error_quark(),
-            G_IO_ERROR_FAILED,
-            b"Twitch did not return an access token\0".as_ptr() as *const c_char,
-        );
-        g_object_unref(parser as *mut c_void);
-        return ptr::null_mut();
-    }
+        let access_token = json_string_or_null(object, c"access_token".as_ptr());
+        if access_token.is_null() || *access_token == 0 {
+            g_set_error(
+                error,
+                g_io_error_quark(),
+                G_IO_ERROR_FAILED,
+                c"Twitch did not return an access token".as_ptr(),
+            );
+            g_object_unref(parser as *mut c_void);
+            return ptr::null_mut();
+        }
 
-    let token = Box::new(TwitchAuthToken {
-        access_token: g_strdup(access_token),
-        refresh_token: g_strdup(json_string_or_null(
-            object,
-            b"refresh_token\0".as_ptr() as *const c_char,
-        )),
-        expires_in: json_uint_or_zero(object, b"expires_in\0".as_ptr() as *const c_char),
-    });
-    g_object_unref(parser as *mut c_void);
-    Box::into_raw(token)
+        let token = Box::new(TwitchAuthToken {
+            access_token: g_strdup(access_token),
+            refresh_token: g_strdup(json_string_or_null(object, c"refresh_token".as_ptr())),
+            expires_in: json_uint_or_zero(object, c"expires_in".as_ptr()),
+        });
+        g_object_unref(parser as *mut c_void);
+        Box::into_raw(token)
+    }
 }
 
 unsafe fn sleep_poll_interval(
@@ -458,18 +480,20 @@ unsafe fn sleep_poll_interval(
     cancel: *mut GCancellable,
     error: *mut *mut GError,
 ) -> c_int {
-    let mut remaining_ms = interval.max(1) * 1000;
-    while remaining_ms > 0 {
-        if g_cancellable_set_error_if_cancelled(cancel, error) != 0 {
-            return 0;
+    unsafe {
+        let mut remaining_ms = interval.max(1) * 1000;
+        while remaining_ms > 0 {
+            if g_cancellable_set_error_if_cancelled(cancel, error) != 0 {
+                return 0;
+            }
+
+            let chunk_ms = remaining_ms.min(100);
+            g_usleep((chunk_ms * 1000) as c_ulong);
+            remaining_ms -= chunk_ms;
         }
 
-        let chunk_ms = remaining_ms.min(100);
-        g_usleep((chunk_ms * 1000) as c_ulong);
-        remaining_ms -= chunk_ms;
+        1
     }
-
-    1
 }
 
 unsafe fn request_device_code(
@@ -477,51 +501,49 @@ unsafe fn request_device_code(
     cancel: *mut GCancellable,
     error: *mut *mut GError,
 ) -> *mut TwitchAuthDeviceCode {
-    let mut form = Vec::new();
-    append_form_pair(
-        &mut form,
-        b"client_id\0".as_ptr() as *const c_char,
-        (*data).client_id,
-    );
-    append_form_pair(
-        &mut form,
-        b"scopes\0".as_ptr() as *const c_char,
-        TWITCH_FOLLOWS_SCOPE.as_ptr() as *const c_char,
-    );
-
-    let response = post_auth_form(
-        TWITCH_DEVICE_URI.as_ptr() as *const c_char,
-        &form,
-        cancel,
-        error,
-    );
-    if response.is_null() {
-        return ptr::null_mut();
-    }
-
-    if (*response).status < 200 || (*response).status >= 300 {
-        let message = parse_auth_error_message((*response).body);
-        g_set_error(
-            error,
-            g_io_error_quark(),
-            G_IO_ERROR_FAILED,
-            b"Twitch auth returned HTTP %u%s%s\0".as_ptr() as *const c_char,
-            (*response).status,
-            if *message != 0 {
-                b": \0".as_ptr() as *const c_char
-            } else {
-                b"\0".as_ptr() as *const c_char
-            },
-            message,
+    unsafe {
+        let mut form = Vec::new();
+        append_form_pair(&mut form, c"client_id".as_ptr(), (*data).client_id);
+        append_form_pair(
+            &mut form,
+            c"scopes".as_ptr(),
+            TWITCH_FOLLOWS_SCOPE.as_ptr() as *const c_char,
         );
-        g_free(message as *mut c_void);
-        auth_response_free(response);
-        return ptr::null_mut();
-    }
 
-    let code = parse_device_code_response((*response).body, error);
-    auth_response_free(response);
-    code
+        let response = post_auth_form(
+            TWITCH_DEVICE_URI.as_ptr() as *const c_char,
+            &form,
+            cancel,
+            error,
+        );
+        if response.is_null() {
+            return ptr::null_mut();
+        }
+
+        if (*response).status < 200 || (*response).status >= 300 {
+            let message = parse_auth_error_message((*response).body);
+            g_set_error(
+                error,
+                g_io_error_quark(),
+                G_IO_ERROR_FAILED,
+                c"Twitch auth returned HTTP %u%s%s".as_ptr(),
+                (*response).status,
+                if *message != 0 {
+                    c": ".as_ptr()
+                } else {
+                    c"".as_ptr()
+                },
+                message,
+            );
+            g_free(message as *mut c_void);
+            auth_response_free(response);
+            return ptr::null_mut();
+        }
+
+        let code = parse_device_code_response((*response).body, error);
+        auth_response_free(response);
+        code
+    }
 }
 
 unsafe fn poll_device_token(
@@ -529,39 +551,114 @@ unsafe fn poll_device_token(
     cancel: *mut GCancellable,
     error: *mut *mut GError,
 ) -> *mut TwitchAuthToken {
-    let mut interval = if (*data).interval > 0 {
-        (*data).interval
-    } else {
-        5
-    };
-    let deadline_us = g_get_monotonic_time() + (*data).expires_in.max(1) as i64 * G_USEC_PER_SEC;
+    unsafe {
+        let mut interval = if (*data).interval > 0 {
+            (*data).interval
+        } else {
+            5
+        };
+        let deadline_us =
+            g_get_monotonic_time() + (*data).expires_in.max(1) as i64 * G_USEC_PER_SEC;
 
-    while g_get_monotonic_time() < deadline_us {
-        if g_cancellable_set_error_if_cancelled(cancel, error) != 0 {
+        while g_get_monotonic_time() < deadline_us {
+            if g_cancellable_set_error_if_cancelled(cancel, error) != 0 {
+                return ptr::null_mut();
+            }
+
+            let mut form = Vec::new();
+            append_form_pair(&mut form, c"client_id".as_ptr(), (*data).client_id);
+            append_form_pair(
+                &mut form,
+                c"scope".as_ptr(),
+                TWITCH_FOLLOWS_SCOPE.as_ptr() as *const c_char,
+            );
+            append_form_pair(&mut form, c"device_code".as_ptr(), (*data).device_code);
+            append_form_pair(
+                &mut form,
+                c"grant_type".as_ptr(),
+                TWITCH_DEVICE_GRANT.as_ptr() as *const c_char,
+            );
+
+            let response = post_auth_form(
+                TWITCH_TOKEN_URI.as_ptr() as *const c_char,
+                &form,
+                cancel,
+                error,
+            );
+            if response.is_null() {
+                return ptr::null_mut();
+            }
+
+            if (*response).status >= 200 && (*response).status < 300 {
+                let token = parse_token_response((*response).body, error);
+                auth_response_free(response);
+                return token;
+            }
+
+            let message = parse_auth_error_message((*response).body);
+            auth_response_free(response);
+            if g_strcmp0(message, c"authorization_pending".as_ptr()) == 0 {
+                g_free(message as *mut c_void);
+                if sleep_poll_interval(interval, cancel, error) == 0 {
+                    return ptr::null_mut();
+                }
+                continue;
+            }
+            if g_strcmp0(message, c"slow_down".as_ptr()) == 0 {
+                g_free(message as *mut c_void);
+                interval += 5;
+                if sleep_poll_interval(interval, cancel, error) == 0 {
+                    return ptr::null_mut();
+                }
+                continue;
+            }
+
+            g_set_error(
+                error,
+                g_io_error_quark(),
+                G_IO_ERROR_FAILED,
+                c"Twitch authorization failed%s%s".as_ptr(),
+                if *message != 0 {
+                    c": ".as_ptr()
+                } else {
+                    c"".as_ptr()
+                },
+                message,
+            );
+            g_free(message as *mut c_void);
+            return ptr::null_mut();
+        }
+
+        g_set_error(
+            error,
+            g_io_error_quark(),
+            G_IO_ERROR_TIMED_OUT,
+            c"Twitch authorization timed out".as_ptr(),
+        );
+        ptr::null_mut()
+    }
+}
+
+pub unsafe fn twitch_auth_refresh_token(
+    client_id: *const c_char,
+    refresh_token: *const c_char,
+    cancel: *mut GCancellable,
+    error: *mut *mut GError,
+) -> *mut TwitchAuthToken {
+    unsafe {
+        if client_id.is_null() || *client_id == 0 || refresh_token.is_null() || *refresh_token == 0
+        {
             return ptr::null_mut();
         }
 
         let mut form = Vec::new();
+        append_form_pair(&mut form, c"client_id".as_ptr(), client_id);
         append_form_pair(
             &mut form,
-            b"client_id\0".as_ptr() as *const c_char,
-            (*data).client_id,
+            c"grant_type".as_ptr(),
+            TWITCH_REFRESH_GRANT.as_ptr() as *const c_char,
         );
-        append_form_pair(
-            &mut form,
-            b"scope\0".as_ptr() as *const c_char,
-            TWITCH_FOLLOWS_SCOPE.as_ptr() as *const c_char,
-        );
-        append_form_pair(
-            &mut form,
-            b"device_code\0".as_ptr() as *const c_char,
-            (*data).device_code,
-        );
-        append_form_pair(
-            &mut form,
-            b"grant_type\0".as_ptr() as *const c_char,
-            TWITCH_DEVICE_GRANT.as_ptr() as *const c_char,
-        );
+        append_form_pair(&mut form, c"refresh_token".as_ptr(), refresh_token);
 
         let response = post_auth_form(
             TWITCH_TOKEN_URI.as_ptr() as *const c_char,
@@ -573,133 +670,44 @@ unsafe fn poll_device_token(
             return ptr::null_mut();
         }
 
-        if (*response).status >= 200 && (*response).status < 300 {
-            let token = parse_token_response((*response).body, error);
+        if (*response).status < 200 || (*response).status >= 300 {
+            let message = parse_auth_error_message((*response).body);
+            g_set_error(
+                error,
+                g_io_error_quark(),
+                G_IO_ERROR_FAILED,
+                c"Twitch token refresh failed with HTTP %u%s%s".as_ptr(),
+                (*response).status,
+                if *message != 0 {
+                    c": ".as_ptr()
+                } else {
+                    c"".as_ptr()
+                },
+                message,
+            );
+            g_free(message as *mut c_void);
             auth_response_free(response);
-            return token;
+            return ptr::null_mut();
         }
 
-        let message = parse_auth_error_message((*response).body);
+        let token = parse_token_response((*response).body, error);
         auth_response_free(response);
-        if g_strcmp0(
-            message,
-            b"authorization_pending\0".as_ptr() as *const c_char,
-        ) == 0
-        {
-            g_free(message as *mut c_void);
-            if sleep_poll_interval(interval, cancel, error) == 0 {
-                return ptr::null_mut();
-            }
-            continue;
+        if token.is_null() {
+            return ptr::null_mut();
         }
-        if g_strcmp0(message, b"slow_down\0".as_ptr() as *const c_char) == 0 {
-            g_free(message as *mut c_void);
-            interval += 5;
-            if sleep_poll_interval(interval, cancel, error) == 0 {
-                return ptr::null_mut();
-            }
-            continue;
+        if (*token).refresh_token.is_null() || *(*token).refresh_token == 0 {
+            twitch_auth_token_free(token);
+            g_set_error(
+                error,
+                g_io_error_quark(),
+                G_IO_ERROR_FAILED,
+                c"Twitch did not return a refresh token".as_ptr(),
+            );
+            return ptr::null_mut();
         }
 
-        g_set_error(
-            error,
-            g_io_error_quark(),
-            G_IO_ERROR_FAILED,
-            b"Twitch authorization failed%s%s\0".as_ptr() as *const c_char,
-            if *message != 0 {
-                b": \0".as_ptr() as *const c_char
-            } else {
-                b"\0".as_ptr() as *const c_char
-            },
-            message,
-        );
-        g_free(message as *mut c_void);
-        return ptr::null_mut();
+        token
     }
-
-    g_set_error(
-        error,
-        g_io_error_quark(),
-        G_IO_ERROR_TIMED_OUT,
-        b"Twitch authorization timed out\0".as_ptr() as *const c_char,
-    );
-    ptr::null_mut()
-}
-
-pub unsafe fn twitch_auth_refresh_token(
-    client_id: *const c_char,
-    refresh_token: *const c_char,
-    cancel: *mut GCancellable,
-    error: *mut *mut GError,
-) -> *mut TwitchAuthToken {
-    if client_id.is_null() || *client_id == 0 || refresh_token.is_null() || *refresh_token == 0 {
-        return ptr::null_mut();
-    }
-
-    let mut form = Vec::new();
-    append_form_pair(
-        &mut form,
-        b"client_id\0".as_ptr() as *const c_char,
-        client_id,
-    );
-    append_form_pair(
-        &mut form,
-        b"grant_type\0".as_ptr() as *const c_char,
-        TWITCH_REFRESH_GRANT.as_ptr() as *const c_char,
-    );
-    append_form_pair(
-        &mut form,
-        b"refresh_token\0".as_ptr() as *const c_char,
-        refresh_token,
-    );
-
-    let response = post_auth_form(
-        TWITCH_TOKEN_URI.as_ptr() as *const c_char,
-        &form,
-        cancel,
-        error,
-    );
-    if response.is_null() {
-        return ptr::null_mut();
-    }
-
-    if (*response).status < 200 || (*response).status >= 300 {
-        let message = parse_auth_error_message((*response).body);
-        g_set_error(
-            error,
-            g_io_error_quark(),
-            G_IO_ERROR_FAILED,
-            b"Twitch token refresh failed with HTTP %u%s%s\0".as_ptr() as *const c_char,
-            (*response).status,
-            if *message != 0 {
-                b": \0".as_ptr() as *const c_char
-            } else {
-                b"\0".as_ptr() as *const c_char
-            },
-            message,
-        );
-        g_free(message as *mut c_void);
-        auth_response_free(response);
-        return ptr::null_mut();
-    }
-
-    let token = parse_token_response((*response).body, error);
-    auth_response_free(response);
-    if token.is_null() {
-        return ptr::null_mut();
-    }
-    if (*token).refresh_token.is_null() || *(*token).refresh_token == 0 {
-        twitch_auth_token_free(token);
-        g_set_error(
-            error,
-            g_io_error_quark(),
-            G_IO_ERROR_FAILED,
-            b"Twitch did not return a refresh token\0".as_ptr() as *const c_char,
-        );
-        return ptr::null_mut();
-    }
-
-    token
 }
 
 unsafe extern "C" fn request_device_code_worker(
@@ -708,20 +716,22 @@ unsafe extern "C" fn request_device_code_worker(
     task_data: *mut c_void,
     cancel: *mut GCancellable,
 ) {
-    let data = task_data as *mut DeviceCodeData;
-    let mut error: *mut GError = ptr::null_mut();
-    let code = request_device_code(data, cancel, &mut error);
+    unsafe {
+        let data = task_data as *mut DeviceCodeData;
+        let mut error: *mut GError = ptr::null_mut();
+        let code = request_device_code(data, cancel, &mut error);
 
-    if !error.is_null() {
-        g_task_return_error(task, error);
-        return;
+        if !error.is_null() {
+            g_task_return_error(task, error);
+            return;
+        }
+
+        g_task_return_pointer(
+            task,
+            code as *mut c_void,
+            Some(twitch_auth_device_code_free_as_destroy),
+        );
     }
-
-    g_task_return_pointer(
-        task,
-        code as *mut c_void,
-        Some(twitch_auth_device_code_free_as_destroy),
-    );
 }
 
 unsafe extern "C" fn poll_device_token_worker(
@@ -730,28 +740,34 @@ unsafe extern "C" fn poll_device_token_worker(
     task_data: *mut c_void,
     cancel: *mut GCancellable,
 ) {
-    let data = task_data as *mut PollTokenData;
-    let mut error: *mut GError = ptr::null_mut();
-    let token = poll_device_token(data, cancel, &mut error);
+    unsafe {
+        let data = task_data as *mut PollTokenData;
+        let mut error: *mut GError = ptr::null_mut();
+        let token = poll_device_token(data, cancel, &mut error);
 
-    if !error.is_null() {
-        g_task_return_error(task, error);
-        return;
+        if !error.is_null() {
+            g_task_return_error(task, error);
+            return;
+        }
+
+        g_task_return_pointer(
+            task,
+            token as *mut c_void,
+            Some(twitch_auth_token_free_as_destroy),
+        );
     }
-
-    g_task_return_pointer(
-        task,
-        token as *mut c_void,
-        Some(twitch_auth_token_free_as_destroy),
-    );
 }
 
 unsafe extern "C" fn twitch_auth_device_code_free_as_destroy(data: *mut c_void) {
-    twitch_auth_device_code_free(data as *mut TwitchAuthDeviceCode);
+    unsafe {
+        twitch_auth_device_code_free(data as *mut TwitchAuthDeviceCode);
+    }
 }
 
 unsafe extern "C" fn twitch_auth_token_free_as_destroy(data: *mut c_void) {
-    twitch_auth_token_free(data as *mut TwitchAuthToken);
+    unsafe {
+        twitch_auth_token_free(data as *mut TwitchAuthToken);
+    }
 }
 
 pub unsafe fn twitch_auth_request_device_code_async(
@@ -760,32 +776,36 @@ pub unsafe fn twitch_auth_request_device_code_async(
     callback: GAsyncReadyCallback,
     user_data: *mut c_void,
 ) {
-    if client_id.is_null() || *client_id == 0 {
-        return;
-    }
+    unsafe {
+        if client_id.is_null() || *client_id == 0 {
+            return;
+        }
 
-    let data = Box::new(DeviceCodeData {
-        client_id: g_strdup(client_id),
-    });
-    let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
-    g_task_set_task_data(
-        task,
-        Box::into_raw(data) as *mut c_void,
-        Some(device_code_data_free),
-    );
-    g_task_run_in_thread(task, Some(request_device_code_worker));
-    g_object_unref(task as *mut c_void);
+        let data = Box::new(DeviceCodeData {
+            client_id: g_strdup(client_id),
+        });
+        let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
+        g_task_set_task_data(
+            task,
+            Box::into_raw(data) as *mut c_void,
+            Some(device_code_data_free),
+        );
+        g_task_run_in_thread(task, Some(request_device_code_worker));
+        g_object_unref(task as *mut c_void);
+    }
 }
 
 pub unsafe fn twitch_auth_request_device_code_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,
 ) -> *mut TwitchAuthDeviceCode {
-    if g_task_is_valid(result as *mut c_void, ptr::null_mut()) == 0 {
-        return ptr::null_mut();
-    }
+    unsafe {
+        if g_task_is_valid(result as *mut c_void, ptr::null_mut()) == 0 {
+            return ptr::null_mut();
+        }
 
-    g_task_propagate_pointer(result as *mut GTask, error) as *mut TwitchAuthDeviceCode
+        g_task_propagate_pointer(result as *mut GTask, error) as *mut TwitchAuthDeviceCode
+    }
 }
 
 pub unsafe fn twitch_auth_poll_device_token_async(
@@ -795,38 +815,42 @@ pub unsafe fn twitch_auth_poll_device_token_async(
     callback: GAsyncReadyCallback,
     user_data: *mut c_void,
 ) {
-    if client_id.is_null()
-        || *client_id == 0
-        || code.is_null()
-        || (*code).device_code.is_null()
-        || *(*code).device_code == 0
-    {
-        return;
-    }
+    unsafe {
+        if client_id.is_null()
+            || *client_id == 0
+            || code.is_null()
+            || (*code).device_code.is_null()
+            || *(*code).device_code == 0
+        {
+            return;
+        }
 
-    let data = Box::new(PollTokenData {
-        client_id: g_strdup(client_id),
-        device_code: g_strdup((*code).device_code),
-        expires_in: (*code).expires_in,
-        interval: (*code).interval,
-    });
-    let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
-    g_task_set_task_data(
-        task,
-        Box::into_raw(data) as *mut c_void,
-        Some(poll_token_data_free),
-    );
-    g_task_run_in_thread(task, Some(poll_device_token_worker));
-    g_object_unref(task as *mut c_void);
+        let data = Box::new(PollTokenData {
+            client_id: g_strdup(client_id),
+            device_code: g_strdup((*code).device_code),
+            expires_in: (*code).expires_in,
+            interval: (*code).interval,
+        });
+        let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
+        g_task_set_task_data(
+            task,
+            Box::into_raw(data) as *mut c_void,
+            Some(poll_token_data_free),
+        );
+        g_task_run_in_thread(task, Some(poll_device_token_worker));
+        g_object_unref(task as *mut c_void);
+    }
 }
 
 pub unsafe fn twitch_auth_poll_device_token_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,
 ) -> *mut TwitchAuthToken {
-    if g_task_is_valid(result as *mut c_void, ptr::null_mut()) == 0 {
-        return ptr::null_mut();
-    }
+    unsafe {
+        if g_task_is_valid(result as *mut c_void, ptr::null_mut()) == 0 {
+            return ptr::null_mut();
+        }
 
-    g_task_propagate_pointer(result as *mut GTask, error) as *mut TwitchAuthToken
+        g_task_propagate_pointer(result as *mut GTask, error) as *mut TwitchAuthToken
+    }
 }

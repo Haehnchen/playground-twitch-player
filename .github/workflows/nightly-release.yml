@@ -20,16 +20,16 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Cache Cargo build output
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'data/**') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'build.rs', 'src/**', 'tests/**', 'data/**') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -38,7 +38,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
-            cargo \
             libepoxy-dev \
             libgtk-4-dev \
             libjson-glib-dev \
@@ -46,9 +45,17 @@ jobs:
             libsoup-3.0-dev \
             mpv \
             pkg-config \
-            rustc \
             yt-dlp \
             zip
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
 
       - name: Verify dependencies
         run: bash scripts/check-deps.sh

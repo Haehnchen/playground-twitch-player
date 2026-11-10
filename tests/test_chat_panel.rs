@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_double, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_double, c_void};
 use std::ptr;
 use twitch_player_core::chat_panel;
 
@@ -20,49 +20,55 @@ fn cstring(value: &str) -> CString {
 }
 
 unsafe fn color_for(name: *const c_char) -> &'static str {
-    CStr::from_ptr(chat_panel::chat_panel_test_fallback_username_color(name))
-        .to_str()
-        .unwrap()
+    unsafe {
+        CStr::from_ptr(chat_panel::chat_panel_test_fallback_username_color(name))
+            .to_str()
+            .unwrap()
+    }
 }
 
 unsafe fn test_fallback_username_color_is_deterministic() {
-    let alice = cstring("alice");
-    let first = color_for(alice.as_ptr());
-    let second = color_for(alice.as_ptr());
-    let empty = color_for(ptr::null());
+    unsafe {
+        let alice = cstring("alice");
+        let first = color_for(alice.as_ptr());
+        let second = color_for(alice.as_ptr());
+        let empty = color_for(ptr::null());
 
-    assert_eq!(first, second);
-    assert!(first.starts_with('#'));
-    assert_eq!(first.len(), 7);
-    assert!(empty.starts_with('#'));
-    assert_eq!(empty.len(), 7);
+        assert_eq!(first, second);
+        assert!(first.starts_with('#'));
+        assert_eq!(first.len(), 7);
+        assert!(empty.starts_with('#'));
+        assert_eq!(empty.len(), 7);
+    }
 }
 
 unsafe fn test_adjustment_is_at_bottom() {
-    let adjustment = gtk_adjustment_new(90.0, 0.0, 100.0, 1.0, 10.0, 10.0);
+    unsafe {
+        let adjustment = gtk_adjustment_new(90.0, 0.0, 100.0, 1.0, 10.0, 10.0);
 
-    assert_ne!(
-        chat_panel::chat_panel_test_adjustment_is_at_bottom(ptr::null_mut()),
-        0
-    );
-    assert_ne!(
-        chat_panel::chat_panel_test_adjustment_is_at_bottom(adjustment),
-        0
-    );
+        assert_ne!(
+            chat_panel::chat_panel_test_adjustment_is_at_bottom(ptr::null_mut()),
+            0
+        );
+        assert_ne!(
+            chat_panel::chat_panel_test_adjustment_is_at_bottom(adjustment),
+            0
+        );
 
-    gtk_adjustment_set_value(adjustment, 87.0);
-    assert_eq!(
-        chat_panel::chat_panel_test_adjustment_is_at_bottom(adjustment),
-        0
-    );
+        gtk_adjustment_set_value(adjustment, 87.0);
+        assert_eq!(
+            chat_panel::chat_panel_test_adjustment_is_at_bottom(adjustment),
+            0
+        );
 
-    gtk_adjustment_set_value(adjustment, 88.0);
-    assert_ne!(
-        chat_panel::chat_panel_test_adjustment_is_at_bottom(adjustment),
-        0
-    );
+        gtk_adjustment_set_value(adjustment, 88.0);
+        assert_ne!(
+            chat_panel::chat_panel_test_adjustment_is_at_bottom(adjustment),
+            0
+        );
 
-    g_object_unref(adjustment as *mut c_void);
+        g_object_unref(adjustment as *mut c_void);
+    }
 }
 
 fn main() {

@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::io;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -135,7 +135,7 @@ unsafe extern "C" {
         default_value: i64,
     ) -> i64;
     fn json_object_get_member(object: *mut JsonObject, member_name: *const c_char)
-        -> *mut JsonNode;
+    -> *mut JsonNode;
     fn json_object_get_string_member_with_default(
         object: *mut JsonObject,
         member_name: *const c_char,
@@ -151,200 +151,240 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" fn app_settings_channel_free(data: *mut c_void) {
-    if data.is_null() {
-        return;
-    }
+    unsafe {
+        if data.is_null() {
+            return;
+        }
 
-    let channel = Box::from_raw(data as *mut AppSettingsChannel);
-    g_free(channel.label as *mut c_void);
-    g_free(channel.channel as *mut c_void);
-    g_free(channel.url as *mut c_void);
+        let channel = Box::from_raw(data as *mut AppSettingsChannel);
+        g_free(channel.label as *mut c_void);
+        g_free(channel.channel as *mut c_void);
+        g_free(channel.url as *mut c_void);
+    }
 }
 
 unsafe fn c_bytes(value: *const c_char) -> Vec<u8> {
-    if value.is_null() {
-        Vec::new()
-    } else {
-        CStr::from_ptr(value).to_bytes().to_vec()
+    unsafe {
+        if value.is_null() {
+            Vec::new()
+        } else {
+            CStr::from_ptr(value).to_bytes().to_vec()
+        }
     }
 }
 
 unsafe fn trimmed_bytes(value: *const c_char) -> Vec<u8> {
-    let bytes = c_bytes(value);
-    let start = bytes
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|b| !b.is_ascii_whitespace())
-        .map(|idx| idx + 1)
-        .unwrap_or(start);
-    bytes[start..end].to_vec()
+    unsafe {
+        let bytes = c_bytes(value);
+        let start = bytes
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .unwrap_or(bytes.len());
+        let end = bytes
+            .iter()
+            .rposition(|b| !b.is_ascii_whitespace())
+            .map(|idx| idx + 1)
+            .unwrap_or(start);
+        bytes[start..end].to_vec()
+    }
 }
 
 unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    let string = CString::new(bytes).unwrap_or_default();
-    g_strdup(string.as_ptr())
+    unsafe {
+        let string = CString::new(bytes).unwrap_or_default();
+        g_strdup(string.as_ptr())
+    }
 }
 
 unsafe fn is_nonempty(value: *const c_char) -> bool {
-    !value.is_null() && *value != 0
+    unsafe { !value.is_null() && *value != 0 }
 }
 
 unsafe fn build_filename(parts: &[*const c_char]) -> *mut c_char {
-    let mut args: Vec<*mut c_char> = parts.iter().map(|part| *part as *mut c_char).collect();
-    args.push(ptr::null_mut());
-    g_build_filenamev(args.as_mut_ptr())
+    unsafe {
+        let mut args: Vec<*mut c_char> = parts.iter().map(|part| *part as *mut c_char).collect();
+        args.push(ptr::null_mut());
+        g_build_filenamev(args.as_mut_ptr())
+    }
 }
 
 pub unsafe fn app_settings_new() -> *mut AppSettings {
-    Box::into_raw(Box::new(AppSettings {
-        channels: g_ptr_array_new_with_free_func(Some(app_settings_channel_free)),
-        twitch_oauth_token: ptr::null_mut(),
-        twitch_refresh_token: ptr::null_mut(),
-        twitch_oauth_expires_at: 0,
-        twitch_playback_auth_token: ptr::null_mut(),
-        hwdec_enabled: 1,
-        ref_count: AtomicUsize::new(1),
-    }))
+    unsafe {
+        Box::into_raw(Box::new(AppSettings {
+            channels: g_ptr_array_new_with_free_func(Some(app_settings_channel_free)),
+            twitch_oauth_token: ptr::null_mut(),
+            twitch_refresh_token: ptr::null_mut(),
+            twitch_oauth_expires_at: 0,
+            twitch_playback_auth_token: ptr::null_mut(),
+            hwdec_enabled: 1,
+            ref_count: AtomicUsize::new(1),
+        }))
+    }
 }
 
 pub(crate) unsafe fn app_settings_ref(settings: *mut AppSettings) -> *mut AppSettings {
-    if !settings.is_null() {
-        (*settings).ref_count.fetch_add(1, Ordering::Relaxed);
+    unsafe {
+        if !settings.is_null() {
+            (*settings).ref_count.fetch_add(1, Ordering::Relaxed);
+        }
+        settings
     }
-    settings
 }
 
 unsafe fn app_settings_unref(settings: *mut AppSettings) {
-    if settings.is_null() || (*settings).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
-        return;
-    }
+    unsafe {
+        if settings.is_null() || (*settings).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
 
-    let settings = Box::from_raw(settings);
-    g_ptr_array_unref(settings.channels);
-    g_free(settings.twitch_oauth_token as *mut c_void);
-    g_free(settings.twitch_refresh_token as *mut c_void);
-    g_free(settings.twitch_playback_auth_token as *mut c_void);
+        let settings = Box::from_raw(settings);
+        g_ptr_array_unref(settings.channels);
+        g_free(settings.twitch_oauth_token as *mut c_void);
+        g_free(settings.twitch_refresh_token as *mut c_void);
+        g_free(settings.twitch_playback_auth_token as *mut c_void);
+    }
 }
 
 pub unsafe fn app_settings_get_path() -> *mut c_char {
-    build_filename(&[
-        g_get_user_config_dir(),
-        b"twitch-player\0".as_ptr() as *const c_char,
-        b"settings.json\0".as_ptr() as *const c_char,
-    ])
+    unsafe {
+        build_filename(&[
+            g_get_user_config_dir(),
+            c"twitch-player".as_ptr(),
+            c"settings.json".as_ptr(),
+        ])
+    }
 }
 
 pub unsafe fn app_settings_free(settings: *mut AppSettings) {
-    app_settings_unref(settings);
+    unsafe {
+        app_settings_unref(settings);
+    }
 }
 
 pub unsafe fn app_settings_get_channel_count(settings: *const AppSettings) -> c_uint {
-    if settings.is_null() {
-        return 0;
-    }
+    unsafe {
+        if settings.is_null() {
+            return 0;
+        }
 
-    (*(*settings).channels).len
+        (*(*settings).channels).len
+    }
 }
 
 pub unsafe fn app_settings_get_channel(
     settings: *const AppSettings,
     index: c_uint,
 ) -> *const AppSettingsChannel {
-    if settings.is_null() || index >= (*(*settings).channels).len {
-        return ptr::null();
-    }
+    unsafe {
+        if settings.is_null() || index >= (*(*settings).channels).len {
+            return ptr::null();
+        }
 
-    *(*(*settings).channels).pdata.add(index as usize) as *const AppSettingsChannel
+        *(*(*settings).channels).pdata.add(index as usize) as *const AppSettingsChannel
+    }
 }
 
 pub unsafe fn app_settings_get_hwdec_enabled(settings: *const AppSettings) -> c_int {
-    if settings.is_null() {
-        return 1;
-    }
+    unsafe {
+        if settings.is_null() {
+            return 1;
+        }
 
-    (*settings).hwdec_enabled
+        (*settings).hwdec_enabled
+    }
 }
 
 pub unsafe fn app_settings_set_hwdec_enabled(settings: *mut AppSettings, enabled: c_int) {
-    if !settings.is_null() {
-        (*settings).hwdec_enabled = enabled;
+    unsafe {
+        if !settings.is_null() {
+            (*settings).hwdec_enabled = enabled;
+        }
     }
 }
 
 pub unsafe fn app_settings_get_twitch_oauth_token(settings: *const AppSettings) -> *const c_char {
-    if settings.is_null() {
-        return ptr::null();
-    }
+    unsafe {
+        if settings.is_null() {
+            return ptr::null();
+        }
 
-    (*settings).twitch_oauth_token
+        (*settings).twitch_oauth_token
+    }
 }
 
 pub unsafe fn app_settings_get_twitch_refresh_token(settings: *const AppSettings) -> *const c_char {
-    if settings.is_null() {
-        return ptr::null();
-    }
+    unsafe {
+        if settings.is_null() {
+            return ptr::null();
+        }
 
-    (*settings).twitch_refresh_token
+        (*settings).twitch_refresh_token
+    }
 }
 
 pub unsafe fn app_settings_get_twitch_oauth_expires_at(settings: *const AppSettings) -> i64 {
-    if settings.is_null() {
-        return 0;
-    }
+    unsafe {
+        if settings.is_null() {
+            return 0;
+        }
 
-    (*settings).twitch_oauth_expires_at
+        (*settings).twitch_oauth_expires_at
+    }
 }
 
 pub unsafe fn app_settings_get_twitch_playback_auth_token(
     settings: *const AppSettings,
 ) -> *const c_char {
-    if settings.is_null() {
-        return ptr::null();
-    }
+    unsafe {
+        if settings.is_null() {
+            return ptr::null();
+        }
 
-    (*settings).twitch_playback_auth_token
+        (*settings).twitch_playback_auth_token
+    }
 }
 
 pub unsafe fn app_settings_set_twitch_playback_auth_token(
     settings: *mut AppSettings,
     token: *const c_char,
 ) {
-    if settings.is_null() {
-        return;
-    }
+    unsafe {
+        if settings.is_null() {
+            return;
+        }
 
-    let token = trimmed_bytes(token);
-    let new_token = if token.is_empty() {
-        ptr::null_mut()
-    } else {
-        dup_bytes(&token)
-    };
-    g_free((*settings).twitch_playback_auth_token as *mut c_void);
-    (*settings).twitch_playback_auth_token = new_token;
+        let token = trimmed_bytes(token);
+        let new_token = if token.is_empty() {
+            ptr::null_mut()
+        } else {
+            dup_bytes(&token)
+        };
+        g_free((*settings).twitch_playback_auth_token as *mut c_void);
+        (*settings).twitch_playback_auth_token = new_token;
+    }
 }
 
 pub unsafe fn app_settings_set_twitch_oauth_token(
     settings: *mut AppSettings,
     oauth_token: *const c_char,
 ) {
-    if settings.is_null() {
-        return;
-    }
+    unsafe {
+        if settings.is_null() {
+            return;
+        }
 
-    let new_oauth_token = if is_nonempty(oauth_token) {
-        g_strdup(oauth_token)
-    } else {
-        ptr::null_mut()
-    };
-    g_free((*settings).twitch_oauth_token as *mut c_void);
-    (*settings).twitch_oauth_token = new_oauth_token;
-    if (*settings).twitch_oauth_token.is_null() {
-        g_free((*settings).twitch_refresh_token as *mut c_void);
-        (*settings).twitch_refresh_token = ptr::null_mut();
-        (*settings).twitch_oauth_expires_at = 0;
+        let new_oauth_token = if is_nonempty(oauth_token) {
+            g_strdup(oauth_token)
+        } else {
+            ptr::null_mut()
+        };
+        g_free((*settings).twitch_oauth_token as *mut c_void);
+        (*settings).twitch_oauth_token = new_oauth_token;
+        if (*settings).twitch_oauth_token.is_null() {
+            g_free((*settings).twitch_refresh_token as *mut c_void);
+            (*settings).twitch_refresh_token = ptr::null_mut();
+            (*settings).twitch_oauth_expires_at = 0;
+        }
     }
 }
 
@@ -354,35 +394,39 @@ pub unsafe fn app_settings_set_twitch_auth_tokens(
     refresh_token: *const c_char,
     oauth_expires_at: i64,
 ) {
-    if settings.is_null() {
-        return;
+    unsafe {
+        if settings.is_null() {
+            return;
+        }
+
+        let new_oauth_token = if is_nonempty(oauth_token) {
+            g_strdup(oauth_token)
+        } else {
+            ptr::null_mut()
+        };
+        let new_refresh_token = if is_nonempty(refresh_token) {
+            g_strdup(refresh_token)
+        } else {
+            ptr::null_mut()
+        };
+
+        g_free((*settings).twitch_oauth_token as *mut c_void);
+        (*settings).twitch_oauth_token = new_oauth_token;
+        g_free((*settings).twitch_refresh_token as *mut c_void);
+        (*settings).twitch_refresh_token = new_refresh_token;
+        (*settings).twitch_oauth_expires_at = if (*settings).twitch_oauth_token.is_null() {
+            0
+        } else {
+            oauth_expires_at
+        };
     }
-
-    let new_oauth_token = if is_nonempty(oauth_token) {
-        g_strdup(oauth_token)
-    } else {
-        ptr::null_mut()
-    };
-    let new_refresh_token = if is_nonempty(refresh_token) {
-        g_strdup(refresh_token)
-    } else {
-        ptr::null_mut()
-    };
-
-    g_free((*settings).twitch_oauth_token as *mut c_void);
-    (*settings).twitch_oauth_token = new_oauth_token;
-    g_free((*settings).twitch_refresh_token as *mut c_void);
-    (*settings).twitch_refresh_token = new_refresh_token;
-    (*settings).twitch_oauth_expires_at = if (*settings).twitch_oauth_token.is_null() {
-        0
-    } else {
-        oauth_expires_at
-    };
 }
 
 pub unsafe fn app_settings_clear_channels(settings: *mut AppSettings) {
-    if !settings.is_null() {
-        g_ptr_array_set_size((*settings).channels, 0);
+    unsafe {
+        if !settings.is_null() {
+            g_ptr_array_set_size((*settings).channels, 0);
+        }
     }
 }
 
@@ -392,226 +436,212 @@ pub unsafe fn app_settings_add_channel(
     channel: *const c_char,
     url: *const c_char,
 ) {
-    if settings.is_null() {
-        return;
+    unsafe {
+        if settings.is_null() {
+            return;
+        }
+
+        let trimmed_label = trimmed_bytes(label);
+        let trimmed_channel = trimmed_bytes(channel);
+        let trimmed_url = trimmed_bytes(url);
+        let derived_channel = normalize_twitch_channel(&trimmed_channel)
+            .or_else(|| normalize_twitch_channel(&trimmed_url));
+
+        if derived_channel.is_none() && trimmed_url.is_empty() && trimmed_channel.is_empty() {
+            return;
+        }
+
+        let stored_channel = derived_channel.unwrap_or(trimmed_channel);
+        let stored_url = if !trimmed_url.is_empty() {
+            trimmed_url
+        } else if !stored_channel.is_empty() {
+            let mut value = b"https://www.twitch.tv/".to_vec();
+            value.extend_from_slice(&stored_channel);
+            value
+        } else {
+            Vec::new()
+        };
+        let stored_label = if !trimmed_label.is_empty() {
+            trimmed_label
+        } else if !stored_channel.is_empty() {
+            stored_channel.clone()
+        } else {
+            stored_url.clone()
+        };
+
+        let entry = Box::new(AppSettingsChannel {
+            label: dup_bytes(&stored_label),
+            channel: dup_bytes(&stored_channel),
+            url: dup_bytes(&stored_url),
+        });
+        g_ptr_array_add((*settings).channels, Box::into_raw(entry) as *mut c_void);
     }
-
-    let trimmed_label = trimmed_bytes(label);
-    let trimmed_channel = trimmed_bytes(channel);
-    let trimmed_url = trimmed_bytes(url);
-    let derived_channel = normalize_twitch_channel(&trimmed_channel)
-        .or_else(|| normalize_twitch_channel(&trimmed_url));
-
-    if derived_channel.is_none() && trimmed_url.is_empty() && trimmed_channel.is_empty() {
-        return;
-    }
-
-    let stored_channel = derived_channel.unwrap_or(trimmed_channel);
-    let stored_url = if !trimmed_url.is_empty() {
-        trimmed_url
-    } else if !stored_channel.is_empty() {
-        let mut value = b"https://www.twitch.tv/".to_vec();
-        value.extend_from_slice(&stored_channel);
-        value
-    } else {
-        Vec::new()
-    };
-    let stored_label = if !trimmed_label.is_empty() {
-        trimmed_label
-    } else if !stored_channel.is_empty() {
-        stored_channel.clone()
-    } else {
-        stored_url.clone()
-    };
-
-    let entry = Box::new(AppSettingsChannel {
-        label: dup_bytes(&stored_label),
-        channel: dup_bytes(&stored_channel),
-        url: dup_bytes(&stored_url),
-    });
-    g_ptr_array_add((*settings).channels, Box::into_raw(entry) as *mut c_void);
 }
 
 unsafe fn load_channels(settings: *mut AppSettings, root: *mut JsonObject) {
-    let channels_node = json_object_get_member(root, b"channels\0".as_ptr() as *const c_char);
-    if channels_node.is_null() || json_node_get_node_type(channels_node) != JSON_NODE_ARRAY {
-        return;
-    }
-
-    let channels = json_node_get_array(channels_node);
-    for i in 0..json_array_get_length(channels) {
-        let node = json_array_get_element(channels, i);
-        if node.is_null() || json_node_get_node_type(node) != JSON_NODE_OBJECT {
-            continue;
+    unsafe {
+        let channels_node = json_object_get_member(root, c"channels".as_ptr());
+        if channels_node.is_null() || json_node_get_node_type(channels_node) != JSON_NODE_ARRAY {
+            return;
         }
 
-        let item = json_node_get_object(node);
-        let label = json_object_get_string_member_with_default(
-            item,
-            b"label\0".as_ptr() as *const c_char,
-            b"\0".as_ptr() as *const c_char,
-        );
-        let channel = json_object_get_string_member_with_default(
-            item,
-            b"channel\0".as_ptr() as *const c_char,
-            b"\0".as_ptr() as *const c_char,
-        );
-        let url = json_object_get_string_member_with_default(
-            item,
-            b"url\0".as_ptr() as *const c_char,
-            b"\0".as_ptr() as *const c_char,
-        );
-        app_settings_add_channel(settings, label, channel, url);
+        let channels = json_node_get_array(channels_node);
+        for i in 0..json_array_get_length(channels) {
+            let node = json_array_get_element(channels, i);
+            if node.is_null() || json_node_get_node_type(node) != JSON_NODE_OBJECT {
+                continue;
+            }
+
+            let item = json_node_get_object(node);
+            let label =
+                json_object_get_string_member_with_default(item, c"label".as_ptr(), c"".as_ptr());
+            let channel =
+                json_object_get_string_member_with_default(item, c"channel".as_ptr(), c"".as_ptr());
+            let url =
+                json_object_get_string_member_with_default(item, c"url".as_ptr(), c"".as_ptr());
+            app_settings_add_channel(settings, label, channel, url);
+        }
     }
 }
 
 pub unsafe fn app_settings_load() -> *mut AppSettings {
-    let settings = app_settings_new();
-    let path = app_settings_get_path();
+    unsafe {
+        let settings = app_settings_new();
+        let path = app_settings_get_path();
 
-    if g_file_test(path, G_FILE_TEST_EXISTS) == 0 {
-        g_free(path as *mut c_void);
-        return settings;
-    }
+        if g_file_test(path, G_FILE_TEST_EXISTS) == 0 {
+            g_free(path as *mut c_void);
+            return settings;
+        }
 
-    let parser = json_parser_new();
-    let mut error: *mut GError = ptr::null_mut();
-    if json_parser_load_from_file(parser, path, &mut error) == 0 {
-        g_clear_error(&mut error);
+        let parser = json_parser_new();
+        let mut error: *mut GError = ptr::null_mut();
+        if json_parser_load_from_file(parser, path, &mut error) == 0 {
+            g_clear_error(&mut error);
+            g_object_unref(parser as *mut c_void);
+            g_free(path as *mut c_void);
+            return settings;
+        }
+
+        let root_node = json_parser_get_root(parser);
+        if root_node.is_null() || json_node_get_node_type(root_node) != JSON_NODE_OBJECT {
+            g_object_unref(parser as *mut c_void);
+            g_free(path as *mut c_void);
+            return settings;
+        }
+
+        let root = json_node_get_object(root_node);
+        (*settings).hwdec_enabled =
+            json_object_get_boolean_member_with_default(root, c"hwdec".as_ptr(), 1);
+        app_settings_set_twitch_oauth_token(
+            settings,
+            json_object_get_string_member_with_default(
+                root,
+                c"twitch_oauth_token".as_ptr(),
+                ptr::null(),
+            ),
+        );
+        app_settings_set_twitch_auth_tokens(
+            settings,
+            app_settings_get_twitch_oauth_token(settings),
+            json_object_get_string_member_with_default(
+                root,
+                c"twitch_refresh_token".as_ptr(),
+                ptr::null(),
+            ),
+            json_object_get_int_member_with_default(root, c"twitch_oauth_expires_at".as_ptr(), 0),
+        );
+        app_settings_set_twitch_playback_auth_token(
+            settings,
+            json_object_get_string_member_with_default(
+                root,
+                c"twitch_playback_auth_token".as_ptr(),
+                ptr::null(),
+            ),
+        );
+        load_channels(settings, root);
+
         g_object_unref(parser as *mut c_void);
         g_free(path as *mut c_void);
-        return settings;
+        settings
     }
-
-    let root_node = json_parser_get_root(parser);
-    if root_node.is_null() || json_node_get_node_type(root_node) != JSON_NODE_OBJECT {
-        g_object_unref(parser as *mut c_void);
-        g_free(path as *mut c_void);
-        return settings;
-    }
-
-    let root = json_node_get_object(root_node);
-    (*settings).hwdec_enabled =
-        json_object_get_boolean_member_with_default(root, b"hwdec\0".as_ptr() as *const c_char, 1);
-    app_settings_set_twitch_oauth_token(
-        settings,
-        json_object_get_string_member_with_default(
-            root,
-            b"twitch_oauth_token\0".as_ptr() as *const c_char,
-            ptr::null(),
-        ),
-    );
-    app_settings_set_twitch_auth_tokens(
-        settings,
-        app_settings_get_twitch_oauth_token(settings),
-        json_object_get_string_member_with_default(
-            root,
-            b"twitch_refresh_token\0".as_ptr() as *const c_char,
-            ptr::null(),
-        ),
-        json_object_get_int_member_with_default(
-            root,
-            b"twitch_oauth_expires_at\0".as_ptr() as *const c_char,
-            0,
-        ),
-    );
-    app_settings_set_twitch_playback_auth_token(
-        settings,
-        json_object_get_string_member_with_default(
-            root,
-            b"twitch_playback_auth_token\0".as_ptr() as *const c_char,
-            ptr::null(),
-        ),
-    );
-    load_channels(settings, root);
-
-    g_object_unref(parser as *mut c_void);
-    g_free(path as *mut c_void);
-    settings
 }
 
 pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut E) -> c_int {
-    let error = error as *mut *mut GError;
-    let config_dir = build_filename(&[
-        g_get_user_config_dir(),
-        b"twitch-player\0".as_ptr() as *const c_char,
-    ]);
-    let path = app_settings_get_path();
-    if g_mkdir_with_parents(config_dir, 0o700) < 0 {
-        let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        g_set_error(
-            error,
-            g_file_error_quark(),
-            g_file_error_from_errno(errno),
-            b"Could not create %s: %s\0".as_ptr() as *const c_char,
-            config_dir,
-            g_strerror(errno),
-        );
+    unsafe {
+        let error = error as *mut *mut GError;
+        let config_dir = build_filename(&[g_get_user_config_dir(), c"twitch-player".as_ptr()]);
+        let path = app_settings_get_path();
+        if g_mkdir_with_parents(config_dir, 0o700) < 0 {
+            let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            g_set_error(
+                error,
+                g_file_error_quark(),
+                g_file_error_from_errno(errno),
+                c"Could not create %s: %s".as_ptr(),
+                config_dir,
+                g_strerror(errno),
+            );
+            g_free(config_dir as *mut c_void);
+            g_free(path as *mut c_void);
+            return 0;
+        }
+
+        let builder = json_builder_new();
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, c"hwdec".as_ptr());
+        json_builder_add_boolean_value(builder, app_settings_get_hwdec_enabled(settings));
+
+        let oauth_token = app_settings_get_twitch_oauth_token(settings);
+        if is_nonempty(oauth_token) {
+            json_builder_set_member_name(builder, c"twitch_oauth_token".as_ptr());
+            json_builder_add_string_value(builder, oauth_token);
+        }
+        let refresh_token = app_settings_get_twitch_refresh_token(settings);
+        if is_nonempty(refresh_token) {
+            json_builder_set_member_name(builder, c"twitch_refresh_token".as_ptr());
+            json_builder_add_string_value(builder, refresh_token);
+        }
+        let oauth_expires_at = app_settings_get_twitch_oauth_expires_at(settings);
+        if oauth_expires_at > 0 {
+            json_builder_set_member_name(builder, c"twitch_oauth_expires_at".as_ptr());
+            json_builder_add_int_value(builder, oauth_expires_at);
+        }
+        let playback_auth_token = app_settings_get_twitch_playback_auth_token(settings);
+        if is_nonempty(playback_auth_token) {
+            json_builder_set_member_name(builder, c"twitch_playback_auth_token".as_ptr());
+            json_builder_add_string_value(builder, playback_auth_token);
+        }
+
+        json_builder_set_member_name(builder, c"channels".as_ptr());
+        json_builder_begin_array(builder);
+        for i in 0..app_settings_get_channel_count(settings) {
+            let channel = app_settings_get_channel(settings, i);
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, c"label".as_ptr());
+            json_builder_add_string_value(builder, (*channel).label);
+            json_builder_set_member_name(builder, c"channel".as_ptr());
+            json_builder_add_string_value(builder, (*channel).channel);
+            json_builder_set_member_name(builder, c"url".as_ptr());
+            json_builder_add_string_value(builder, (*channel).url);
+            json_builder_end_object(builder);
+        }
+        json_builder_end_array(builder);
+        json_builder_end_object(builder);
+
+        let root = json_builder_get_root(builder);
+        let generator = json_generator_new();
+        json_generator_set_root(generator, root);
+        json_generator_set_pretty(generator, 1);
+        let result = json_generator_to_file(generator, path, error);
+
+        g_object_unref(generator as *mut c_void);
+        json_node_unref(root);
+        g_object_unref(builder as *mut c_void);
         g_free(config_dir as *mut c_void);
         g_free(path as *mut c_void);
-        return 0;
+        result
     }
-
-    let builder = json_builder_new();
-    json_builder_begin_object(builder);
-    json_builder_set_member_name(builder, b"hwdec\0".as_ptr() as *const c_char);
-    json_builder_add_boolean_value(builder, app_settings_get_hwdec_enabled(settings));
-
-    let oauth_token = app_settings_get_twitch_oauth_token(settings);
-    if is_nonempty(oauth_token) {
-        json_builder_set_member_name(builder, b"twitch_oauth_token\0".as_ptr() as *const c_char);
-        json_builder_add_string_value(builder, oauth_token);
-    }
-    let refresh_token = app_settings_get_twitch_refresh_token(settings);
-    if is_nonempty(refresh_token) {
-        json_builder_set_member_name(builder, b"twitch_refresh_token\0".as_ptr() as *const c_char);
-        json_builder_add_string_value(builder, refresh_token);
-    }
-    let oauth_expires_at = app_settings_get_twitch_oauth_expires_at(settings);
-    if oauth_expires_at > 0 {
-        json_builder_set_member_name(
-            builder,
-            b"twitch_oauth_expires_at\0".as_ptr() as *const c_char,
-        );
-        json_builder_add_int_value(builder, oauth_expires_at);
-    }
-    let playback_auth_token = app_settings_get_twitch_playback_auth_token(settings);
-    if is_nonempty(playback_auth_token) {
-        json_builder_set_member_name(
-            builder,
-            b"twitch_playback_auth_token\0".as_ptr() as *const c_char,
-        );
-        json_builder_add_string_value(builder, playback_auth_token);
-    }
-
-    json_builder_set_member_name(builder, b"channels\0".as_ptr() as *const c_char);
-    json_builder_begin_array(builder);
-    for i in 0..app_settings_get_channel_count(settings) {
-        let channel = app_settings_get_channel(settings, i);
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, b"label\0".as_ptr() as *const c_char);
-        json_builder_add_string_value(builder, (*channel).label);
-        json_builder_set_member_name(builder, b"channel\0".as_ptr() as *const c_char);
-        json_builder_add_string_value(builder, (*channel).channel);
-        json_builder_set_member_name(builder, b"url\0".as_ptr() as *const c_char);
-        json_builder_add_string_value(builder, (*channel).url);
-        json_builder_end_object(builder);
-    }
-    json_builder_end_array(builder);
-    json_builder_end_object(builder);
-
-    let root = json_builder_get_root(builder);
-    let generator = json_generator_new();
-    json_generator_set_root(generator, root);
-    json_generator_set_pretty(generator, 1);
-    let result = json_generator_to_file(generator, path, error);
-
-    g_object_unref(generator as *mut c_void);
-    json_node_unref(root);
-    g_object_unref(builder as *mut c_void);
-    g_free(config_dir as *mut c_void);
-    g_free(path as *mut c_void);
-    result
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ check_pkg() {
 
 check_cmd cargo
 check_cmd rustc
+check_cmd pkg-config
 check_cmd strip
 check_cmd mpv
 check_cmd yt-dlp
@@ -34,8 +35,10 @@ check_pkg libsoup-3.0
 if [ "$missing" -ne 0 ]; then
   cat <<'EOF'
 
+Rust: install rustup (https://rustup.rs/); rust-toolchain.toml selects the compiler.
+
 Ubuntu/Debian packages:
-  sudo apt install build-essential cargo rustc pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libjson-glib-dev libsoup-3.0-dev mpv yt-dlp
+  sudo apt install build-essential pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libjson-glib-dev libsoup-3.0-dev mpv yt-dlp
 EOF
   exit 1
 fi

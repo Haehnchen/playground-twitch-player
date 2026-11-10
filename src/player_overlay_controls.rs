@@ -19,12 +19,14 @@ unsafe extern "C" {
 }
 
 pub unsafe fn player_overlay_button_new<W>(icon: *mut W, tooltip: *const c_char) -> *mut W {
-    let button = gtk_button_new();
+    unsafe {
+        let button = gtk_button_new();
 
-    gtk_button_set_child(button as *mut GtkButton, icon as *mut GtkWidget);
-    gtk_button_set_has_frame(button as *mut GtkButton, 0);
-    gtk_widget_add_css_class(button, b"overlay-icon-button\0".as_ptr() as *const c_char);
-    gtk_widget_set_tooltip_text(button, tooltip);
+        gtk_button_set_child(button as *mut GtkButton, icon as *mut GtkWidget);
+        gtk_button_set_has_frame(button as *mut GtkButton, 0);
+        gtk_widget_add_css_class(button, c"overlay-icon-button".as_ptr());
+        gtk_widget_set_tooltip_text(button, tooltip);
 
-    button as *mut W
+        button as *mut W
+    }
 }

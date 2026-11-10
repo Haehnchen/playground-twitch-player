@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_int, c_uint, c_ulonglong, c_void, CStr};
+use std::ffi::{CStr, c_char, c_int, c_uint, c_ulonglong, c_void};
 use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -118,7 +118,7 @@ unsafe extern "C" {
     fn g_array_sort(array: *mut GArray, compare_func: Option<GCompareFunc>);
     fn g_array_unref(array: *mut GArray);
     fn g_ascii_strtoull(nptr: *const c_char, endptr: *mut *mut c_char, base: c_uint)
-        -> c_ulonglong;
+    -> c_ulonglong;
     fn g_bytes_new_take(data: *mut c_void, size: usize) -> *mut GBytes;
     fn g_bytes_unref(bytes: *mut GBytes);
     fn g_clear_error(error: *mut *mut GError);
@@ -185,42 +185,50 @@ unsafe extern "C" {
 }
 
 unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    let mut value = Vec::with_capacity(bytes.len() + 1);
-    value.extend_from_slice(bytes);
-    value.push(0);
-    g_strdup(value.as_ptr() as *const c_char)
+    unsafe {
+        let mut value = Vec::with_capacity(bytes.len() + 1);
+        value.extend_from_slice(bytes);
+        value.push(0);
+        g_strdup(value.as_ptr() as *const c_char)
+    }
 }
 
 unsafe fn chat_assets_ref(assets: *mut ChatAssets) -> *mut ChatAssets {
-    if !assets.is_null() {
-        (*assets).ref_count.fetch_add(1, Ordering::Relaxed);
+    unsafe {
+        if !assets.is_null() {
+            (*assets).ref_count.fetch_add(1, Ordering::Relaxed);
+        }
+        assets
     }
-    assets
 }
 
 unsafe fn chat_assets_unref(assets: *mut ChatAssets) {
-    if assets.is_null() || (*assets).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
-        return;
-    }
+    unsafe {
+        if assets.is_null() || (*assets).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
 
-    if !(*assets).image_cache.is_null() {
-        g_hash_table_destroy((*assets).image_cache);
-        (*assets).image_cache = ptr::null_mut();
+        if !(*assets).image_cache.is_null() {
+            g_hash_table_destroy((*assets).image_cache);
+            (*assets).image_cache = ptr::null_mut();
+        }
+        drop(Box::from_raw(assets));
     }
-    drop(Box::from_raw(assets));
 }
 
 unsafe fn image_load_data_free(data: *mut ImageLoadData) {
-    if data.is_null() {
-        return;
-    }
+    unsafe {
+        if data.is_null() {
+            return;
+        }
 
-    let data = Box::from_raw(data);
-    if !data.picture.is_null() {
-        g_object_unref(data.picture as *mut c_void);
+        let data = Box::from_raw(data);
+        if !data.picture.is_null() {
+            g_object_unref(data.picture as *mut c_void);
+        }
+        g_free(data.url as *mut c_void);
+        chat_assets_unref(data.assets);
     }
-    g_free(data.url as *mut c_void);
-    chat_assets_unref(data.assets);
 }
 
 unsafe extern "C" fn on_image_loaded(
@@ -228,81 +236,85 @@ unsafe extern "C" fn on_image_loaded(
     result: *mut GAsyncResult,
     user_data: *mut c_void,
 ) {
-    let data = user_data as *mut ImageLoadData;
-    let mut error: *mut GError = ptr::null_mut();
-    let mut contents: *mut c_char = ptr::null_mut();
-    let mut length: usize = 0;
+    unsafe {
+        let data = user_data as *mut ImageLoadData;
+        let mut error: *mut GError = ptr::null_mut();
+        let mut contents: *mut c_char = ptr::null_mut();
+        let mut length: usize = 0;
 
-    if g_file_load_contents_finish(
-        source as *mut GFile,
-        result,
-        &mut contents,
-        &mut length,
-        ptr::null_mut(),
-        &mut error,
-    ) == 0
-    {
-        g_clear_error(&mut error);
+        if g_file_load_contents_finish(
+            source as *mut GFile,
+            result,
+            &mut contents,
+            &mut length,
+            ptr::null_mut(),
+            &mut error,
+        ) == 0
+        {
+            g_clear_error(&mut error);
+            image_load_data_free(data);
+            return;
+        }
+
+        let bytes = g_bytes_new_take(contents as *mut c_void, length);
+        let texture = gdk_texture_new_from_bytes(bytes, &mut error);
+        g_bytes_unref(bytes);
+        if texture.is_null() {
+            g_clear_error(&mut error);
+            image_load_data_free(data);
+            return;
+        }
+
+        if !(*data).assets.is_null()
+            && !(*(*data).assets).closing.load(Ordering::Acquire)
+            && !(*(*data).assets).image_cache.is_null()
+        {
+            g_hash_table_insert(
+                (*(*data).assets).image_cache,
+                g_strdup((*data).url) as *mut c_void,
+                g_object_ref(texture as *mut c_void),
+            );
+            gtk_picture_set_paintable((*data).picture, texture as *mut GdkPaintable);
+        }
+        g_object_unref(texture as *mut c_void);
         image_load_data_free(data);
-        return;
     }
-
-    let bytes = g_bytes_new_take(contents as *mut c_void, length);
-    let texture = gdk_texture_new_from_bytes(bytes, &mut error);
-    g_bytes_unref(bytes);
-    if texture.is_null() {
-        g_clear_error(&mut error);
-        image_load_data_free(data);
-        return;
-    }
-
-    if !(*data).assets.is_null()
-        && !(*(*data).assets).closing.load(Ordering::Acquire)
-        && !(*(*data).assets).image_cache.is_null()
-    {
-        g_hash_table_insert(
-            (*(*data).assets).image_cache,
-            g_strdup((*data).url) as *mut c_void,
-            g_object_ref(texture as *mut c_void),
-        );
-        gtk_picture_set_paintable((*data).picture, texture as *mut GdkPaintable);
-    }
-    g_object_unref(texture as *mut c_void);
-    image_load_data_free(data);
 }
 
 unsafe fn create_inline_image(assets: *mut ChatAssets, url: *const c_char) -> *mut GtkWidget {
-    let picture = gtk_picture_new();
-    gtk_widget_add_css_class(picture, b"chat-emote\0".as_ptr() as *const c_char);
-    gtk_widget_set_focusable(picture, 0);
-    gtk_widget_set_size_request(picture, CHAT_EMOTE_SIZE, CHAT_EMOTE_SIZE);
-    gtk_picture_set_content_fit(picture as *mut GtkPicture, GTK_CONTENT_FIT_CONTAIN);
-    gtk_picture_set_can_shrink(picture as *mut GtkPicture, 1);
+    unsafe {
+        let picture = gtk_picture_new();
+        gtk_widget_add_css_class(picture, c"chat-emote".as_ptr());
+        gtk_widget_set_focusable(picture, 0);
+        gtk_widget_set_size_request(picture, CHAT_EMOTE_SIZE, CHAT_EMOTE_SIZE);
+        gtk_picture_set_content_fit(picture as *mut GtkPicture, GTK_CONTENT_FIT_CONTAIN);
+        gtk_picture_set_can_shrink(picture as *mut GtkPicture, 1);
 
-    let cached =
-        g_hash_table_lookup((*assets).image_cache, url as *const c_void) as *mut GdkPaintable;
-    if !cached.is_null() {
-        gtk_picture_set_paintable(picture as *mut GtkPicture, cached);
-        return picture;
+        let cached =
+            g_hash_table_lookup((*assets).image_cache, url as *const c_void) as *mut GdkPaintable;
+        if !cached.is_null() {
+            gtk_picture_set_paintable(picture as *mut GtkPicture, cached);
+            return picture;
+        }
+
+        let data = Box::new(ImageLoadData {
+            picture: g_object_ref(picture as *mut c_void) as *mut GtkPicture,
+            assets: chat_assets_ref(assets),
+            url: g_strdup(url),
+        });
+        let data = Box::into_raw(data);
+
+        let file = g_file_new_for_uri(url);
+        g_file_load_contents_async(
+            file,
+            ptr::null_mut(),
+            Some(on_image_loaded),
+            data as *mut c_void,
+        );
+        g_object_unref(file as *mut c_void);
+
+        picture
     }
-
-    let data = Box::new(ImageLoadData {
-        picture: g_object_ref(picture as *mut c_void) as *mut GtkPicture,
-        assets: chat_assets_ref(assets),
-        url: g_strdup(url),
-    });
-    let data = Box::into_raw(data);
-
-    let file = g_file_new_for_uri(url);
-    g_file_load_contents_async(
-        file,
-        ptr::null_mut(),
-        Some(on_image_loaded),
-        data as *mut c_void,
-    );
-    g_object_unref(file as *mut c_void);
-
-    picture
 }
 
 unsafe fn insert_emote(
@@ -312,137 +324,153 @@ unsafe fn insert_emote(
     iter: *mut GtkTextIter,
     url: *const c_char,
 ) {
-    let anchor = gtk_text_child_anchor_new();
+    unsafe {
+        let anchor = gtk_text_child_anchor_new();
 
-    gtk_text_buffer_insert_child_anchor(buffer, iter, anchor);
-    gtk_text_view_add_child_at_anchor(view, create_inline_image(assets, url), anchor);
-    g_object_unref(anchor as *mut c_void);
+        gtk_text_buffer_insert_child_anchor(buffer, iter, anchor);
+        gtk_text_view_add_child_at_anchor(view, create_inline_image(assets, url), anchor);
+        g_object_unref(anchor as *mut c_void);
+    }
 }
 
 unsafe extern "C" fn emote_range_clear(data: *mut c_void) {
-    let range = data as *mut EmoteRange;
+    unsafe {
+        let range = data as *mut EmoteRange;
 
-    g_free((*range).id as *mut c_void);
+        g_free((*range).id as *mut c_void);
+    }
 }
 
 unsafe extern "C" fn compare_emote_ranges(a: *const c_void, b: *const c_void) -> c_int {
-    let range_a = a as *const EmoteRange;
-    let range_b = b as *const EmoteRange;
+    unsafe {
+        let range_a = a as *const EmoteRange;
+        let range_b = b as *const EmoteRange;
 
-    if (*range_a).start == (*range_b).start {
-        return 0;
-    }
+        if (*range_a).start == (*range_b).start {
+            return 0;
+        }
 
-    if (*range_a).start < (*range_b).start {
-        -1
-    } else {
-        1
+        if (*range_a).start < (*range_b).start {
+            -1
+        } else {
+            1
+        }
     }
 }
 
 unsafe fn parse_uint(bytes: &[u8]) -> Option<c_ulonglong> {
-    let mut value = Vec::with_capacity(bytes.len() + 1);
-    value.extend_from_slice(bytes);
-    value.push(0);
+    unsafe {
+        let mut value = Vec::with_capacity(bytes.len() + 1);
+        value.extend_from_slice(bytes);
+        value.push(0);
 
-    let mut end_ptr: *mut c_char = ptr::null_mut();
-    let parsed = g_ascii_strtoull(value.as_ptr() as *const c_char, &mut end_ptr, 10);
-    if end_ptr == value.as_mut_ptr() as *mut c_char || *end_ptr != 0 {
-        return None;
+        let mut end_ptr: *mut c_char = ptr::null_mut();
+        let parsed = g_ascii_strtoull(value.as_ptr() as *const c_char, &mut end_ptr, 10);
+        if end_ptr == value.as_mut_ptr() as *mut c_char || *end_ptr != 0 {
+            return None;
+        }
+
+        Some(parsed)
     }
-
-    Some(parsed)
 }
 
 unsafe fn parse_emote_ranges(emotes: *const c_char) -> *mut GArray {
-    if emotes.is_null() || *emotes == 0 {
-        return ptr::null_mut();
-    }
-
-    let ranges = g_array_new(0, 0, mem::size_of::<EmoteRange>() as c_uint);
-    g_array_set_clear_func(ranges, Some(emote_range_clear));
-
-    let emote_bytes = CStr::from_ptr(emotes).to_bytes();
-    for emote_spec in emote_bytes.split(|byte| *byte == b'/') {
-        let Some(colon) = emote_spec.iter().position(|byte| *byte == b':') else {
-            continue;
-        };
-        if colon == 0 || colon + 1 == emote_spec.len() {
-            continue;
+    unsafe {
+        if emotes.is_null() || *emotes == 0 {
+            return ptr::null_mut();
         }
 
-        let id = &emote_spec[..colon];
-        for position in emote_spec[colon + 1..].split(|byte| *byte == b',') {
-            let Some(dash) = position.iter().position(|byte| *byte == b'-') else {
+        let ranges = g_array_new(0, 0, mem::size_of::<EmoteRange>() as c_uint);
+        g_array_set_clear_func(ranges, Some(emote_range_clear));
+
+        let emote_bytes = CStr::from_ptr(emotes).to_bytes();
+        for emote_spec in emote_bytes.split(|byte| *byte == b'/') {
+            let Some(colon) = emote_spec.iter().position(|byte| *byte == b':') else {
                 continue;
             };
-            if dash == 0 || dash + 1 == position.len() {
+            if colon == 0 || colon + 1 == emote_spec.len() {
                 continue;
             }
 
-            let Some(start) = parse_uint(&position[..dash]) else {
-                continue;
-            };
-            let Some(end) = parse_uint(&position[dash + 1..]) else {
-                continue;
-            };
-            if end < start || end > c_uint::MAX as c_ulonglong {
-                continue;
+            let id = &emote_spec[..colon];
+            for position in emote_spec[colon + 1..].split(|byte| *byte == b',') {
+                let Some(dash) = position.iter().position(|byte| *byte == b'-') else {
+                    continue;
+                };
+                if dash == 0 || dash + 1 == position.len() {
+                    continue;
+                }
+
+                let Some(start) = parse_uint(&position[..dash]) else {
+                    continue;
+                };
+                let Some(end) = parse_uint(&position[dash + 1..]) else {
+                    continue;
+                };
+                if end < start || end > c_uint::MAX as c_ulonglong {
+                    continue;
+                }
+
+                let range = EmoteRange {
+                    start: start as c_uint,
+                    end: end as c_uint,
+                    id: dup_bytes(id),
+                };
+                g_array_append_vals(ranges, &range as *const EmoteRange as *const c_void, 1);
             }
-
-            let range = EmoteRange {
-                start: start as c_uint,
-                end: end as c_uint,
-                id: dup_bytes(id),
-            };
-            g_array_append_vals(ranges, &range as *const EmoteRange as *const c_void, 1);
         }
-    }
 
-    if (*ranges).len == 0 {
-        g_array_unref(ranges);
-        return ptr::null_mut();
-    }
+        if (*ranges).len == 0 {
+            g_array_unref(ranges);
+            return ptr::null_mut();
+        }
 
-    g_array_sort(ranges, Some(compare_emote_ranges));
-    ranges
+        g_array_sort(ranges, Some(compare_emote_ranges));
+        ranges
+    }
 }
 
 unsafe fn utf8_offset_to_pointer_safe(text: *const c_char, offset: c_uint) -> *const c_char {
-    let mut p = text;
+    unsafe {
+        let mut p = text;
 
-    for _ in 0..offset {
-        if *p == 0 {
-            return ptr::null();
+        for _ in 0..offset {
+            if *p == 0 {
+                return ptr::null();
+            }
+
+            let skip = *g_utf8_skip.add(*(p as *const u8) as usize) as isize;
+            p = p.offset(skip);
         }
 
-        let skip = *g_utf8_skip.add(*(p as *const u8) as usize) as isize;
-        p = p.offset(skip);
+        p
     }
-
-    p
 }
 
 pub unsafe fn chat_assets_new() -> *mut ChatAssets {
-    Box::into_raw(Box::new(ChatAssets {
-        image_cache: g_hash_table_new_full(
-            Some(g_str_hash),
-            Some(g_str_equal),
-            Some(g_free),
-            Some(g_object_unref),
-        ),
-        ref_count: AtomicUsize::new(1),
-        closing: AtomicBool::new(false),
-    }))
+    unsafe {
+        Box::into_raw(Box::new(ChatAssets {
+            image_cache: g_hash_table_new_full(
+                Some(g_str_hash),
+                Some(g_str_equal),
+                Some(g_free),
+                Some(g_object_unref),
+            ),
+            ref_count: AtomicUsize::new(1),
+            closing: AtomicBool::new(false),
+        }))
+    }
 }
 
 pub unsafe fn chat_assets_free(assets: *mut ChatAssets) {
-    if assets.is_null() {
-        return;
-    }
+    unsafe {
+        if assets.is_null() {
+            return;
+        }
 
-    (*assets).closing.store(true, Ordering::Release);
-    chat_assets_unref(assets);
+        (*assets).closing.store(true, Ordering::Release);
+        chat_assets_unref(assets);
+    }
 }
 
 pub unsafe fn chat_assets_insert_message_text<B, V, I>(
@@ -453,66 +481,68 @@ pub unsafe fn chat_assets_insert_message_text<B, V, I>(
     message: *const c_char,
     emotes: *const c_char,
 ) {
-    let buffer = buffer as *mut GtkTextBuffer;
-    let view = view as *mut GtkTextView;
-    let iter = iter as *mut GtkTextIter;
-    let ranges = parse_emote_ranges(emotes);
+    unsafe {
+        let buffer = buffer as *mut GtkTextBuffer;
+        let view = view as *mut GtkTextView;
+        let iter = iter as *mut GtkTextIter;
+        let ranges = parse_emote_ranges(emotes);
 
-    if message.is_null() {
-        if !ranges.is_null() {
-            g_array_unref(ranges);
-        }
-        return;
-    }
-
-    if ranges.is_null() {
-        gtk_text_buffer_insert(buffer, iter, message, -1);
-        return;
-    }
-
-    let mut cursor = message;
-    for i in 0..(*ranges).len {
-        let range = ((*ranges).data as *mut EmoteRange).add(i as usize);
-        let start = utf8_offset_to_pointer_safe(message, (*range).start);
-        let end = utf8_offset_to_pointer_safe(message, (*range).end + 1);
-
-        if start.is_null()
-            || end.is_null()
-            || (start as usize) < (cursor as usize)
-            || (end as usize) < (start as usize)
-        {
-            continue;
+        if message.is_null() {
+            if !ranges.is_null() {
+                g_array_unref(ranges);
+            }
+            return;
         }
 
-        if (start as usize) > (cursor as usize) {
-            gtk_text_buffer_insert(buffer, iter, cursor, start.offset_from(cursor) as c_int);
+        if ranges.is_null() {
+            gtk_text_buffer_insert(buffer, iter, message, -1);
+            return;
         }
 
-        let id = CStr::from_ptr((*range).id).to_bytes();
-        let mut url = Vec::with_capacity(id.len() + 57);
-        url.extend_from_slice(b"https://static-cdn.jtvnw.net/emoticons/v2/");
-        url.extend_from_slice(id);
-        url.extend_from_slice(b"/default/dark/1.0\0");
-        insert_emote(assets, buffer, view, iter, url.as_ptr() as *const c_char);
-        cursor = end;
-    }
+        let mut cursor = message;
+        for i in 0..(*ranges).len {
+            let range = ((*ranges).data as *mut EmoteRange).add(i as usize);
+            let start = utf8_offset_to_pointer_safe(message, (*range).start);
+            let end = utf8_offset_to_pointer_safe(message, (*range).end + 1);
 
-    if *cursor != 0 {
-        gtk_text_buffer_insert(buffer, iter, cursor, -1);
-    }
+            if start.is_null()
+                || end.is_null()
+                || (start as usize) < (cursor as usize)
+                || (end as usize) < (start as usize)
+            {
+                continue;
+            }
 
-    g_array_unref(ranges);
+            if (start as usize) > (cursor as usize) {
+                gtk_text_buffer_insert(buffer, iter, cursor, start.offset_from(cursor) as c_int);
+            }
+
+            let id = CStr::from_ptr((*range).id).to_bytes();
+            let mut url = Vec::with_capacity(id.len() + 57);
+            url.extend_from_slice(b"https://static-cdn.jtvnw.net/emoticons/v2/");
+            url.extend_from_slice(id);
+            url.extend_from_slice(b"/default/dark/1.0\0");
+            insert_emote(assets, buffer, view, iter, url.as_ptr() as *const c_char);
+            cursor = end;
+        }
+
+        if *cursor != 0 {
+            gtk_text_buffer_insert(buffer, iter, cursor, -1);
+        }
+
+        g_array_unref(ranges);
+    }
 }
 
 pub unsafe fn chat_assets_test_parse_emote_ranges(emotes: *const c_char) -> *mut GArray {
-    parse_emote_ranges(emotes)
+    unsafe { parse_emote_ranges(emotes) }
 }
 
 pub unsafe fn chat_assets_test_utf8_offset_to_pointer_safe(
     text: *const c_char,
     offset: c_uint,
 ) -> *const c_char {
-    utf8_offset_to_pointer_safe(text, offset)
+    unsafe { utf8_offset_to_pointer_safe(text, offset) }
 }
 
 #[cfg(test)]

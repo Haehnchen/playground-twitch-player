@@ -1,7 +1,7 @@
 #![allow(clashing_extern_declarations)]
 
 use std::env;
-use std::ffi::{c_char, c_double, c_int, c_uint, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_double, c_int, c_uint, c_void};
 use std::os::unix::ffi::OsStringExt;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -11,31 +11,25 @@ use crate::player_icons::{
     player_window_icon_new,
 };
 use crate::player_layout::{
-    PLAYER_LAYOUTS, PLAYER_LAYOUT_2X2_INDEX, PLAYER_LAYOUT_MAX_TILES, PLAYER_LAYOUT_SINGLE_INDEX,
+    PLAYER_LAYOUT_2X2_INDEX, PLAYER_LAYOUT_MAX_TILES, PLAYER_LAYOUT_SINGLE_INDEX, PLAYER_LAYOUTS,
 };
-use crate::player_motion::{player_motion_tracker_ignore_stationary, PlayerMotionTracker};
+use crate::player_motion::{PlayerMotionTracker, player_motion_tracker_ignore_stationary};
 use crate::player_overlay_controls::player_overlay_button_new;
 use crate::player_session::{
-    player_session_free, player_session_new, player_session_set_hwdec_enabled, PlayerSession,
+    PlayerSession, player_session_free, player_session_new, player_session_set_hwdec_enabled,
 };
 use crate::player_style::{player_style_install_footer_css, player_style_install_overlay_css};
 use crate::player_surface::{
-    player_surface_apply_layout, player_surface_free, player_surface_get_layout_index,
-    player_surface_get_widget, player_surface_handle_key, player_surface_is_single_template,
-    player_surface_new, player_surface_set_fullscreen, player_surface_set_settings,
-    player_surface_show_overlay, player_surface_start, PlayerSurface,
+    PlayerSurface, player_surface_apply_layout, player_surface_free,
+    player_surface_get_layout_index, player_surface_get_widget, player_surface_handle_key,
+    player_surface_is_single_template, player_surface_new, player_surface_set_fullscreen,
+    player_surface_set_settings, player_surface_show_overlay, player_surface_start,
 };
 use crate::settings::{
-    app_settings_free, app_settings_get_hwdec_enabled, app_settings_load, AppSettings, GError,
+    AppSettings, GError, app_settings_free, app_settings_get_hwdec_enabled, app_settings_load,
 };
 use crate::settings_window::settings_window_show;
 use crate::twitch_channel::normalize_twitch_channel;
-macro_rules! cstr {
-    ($value:literal) => {
-        concat!($value, "\0").as_ptr() as *const c_char
-    };
-}
-
 const OVERLAY_HIDE_DELAY_MS: c_uint = 1800;
 const G_PRIORITY_DEFAULT: c_int = 0;
 const MAXIMIZE_RESTORE_ATTEMPTS: c_uint = 12;
@@ -403,66 +397,82 @@ unsafe extern "C" {
 }
 
 unsafe fn is_nonempty(value: *const c_char) -> bool {
-    !value.is_null() && *value != 0
+    unsafe { !value.is_null() && *value != 0 }
 }
 
 unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    let mut value = Vec::with_capacity(bytes.len() + 1);
-    value.extend_from_slice(bytes);
-    value.push(0);
-    g_strdup(value.as_ptr() as *const c_char)
+    unsafe {
+        let mut value = Vec::with_capacity(bytes.len() + 1);
+        value.extend_from_slice(bytes);
+        value.push(0);
+        g_strdup(value.as_ptr() as *const c_char)
+    }
 }
 
 unsafe fn c_app_id() -> *const c_char {
-    cstr!("local.twitchplayer")
+    c"local.twitchplayer".as_ptr()
 }
 
 unsafe fn dup_twitch_channel_name(value: *const c_char) -> *mut c_char {
-    if !is_nonempty(value) {
-        return ptr::null_mut();
-    }
+    unsafe {
+        if !is_nonempty(value) {
+            return ptr::null_mut();
+        }
 
-    normalize_twitch_channel(CStr::from_ptr(value).to_bytes())
-        .map_or(ptr::null_mut(), |channel| dup_bytes(&channel))
+        normalize_twitch_channel(CStr::from_ptr(value).to_bytes())
+            .map_or(ptr::null_mut(), |channel| dup_bytes(&channel))
+    }
 }
 
 unsafe fn configure_rendering_defaults() {
-    g_setenv(cstr!("GSK_RENDERER"), cstr!("gl"), FALSE);
+    unsafe {
+        g_setenv(c"GSK_RENDERER".as_ptr(), c"gl".as_ptr(), FALSE);
+    }
 }
 
 unsafe fn remove_source_if_active(source_id: *mut c_uint) {
-    if source_id.is_null() || *source_id == 0 {
-        return;
-    }
+    unsafe {
+        if source_id.is_null() || *source_id == 0 {
+            return;
+        }
 
-    let source = g_main_context_find_source_by_id(ptr::null_mut(), *source_id);
-    if !source.is_null() {
-        g_source_destroy(source);
+        let source = g_main_context_find_source_by_id(ptr::null_mut(), *source_id);
+        if !source.is_null() {
+            g_source_destroy(source);
+        }
+        *source_id = 0;
     }
-    *source_id = 0;
 }
 
 unsafe fn app_state_ref(state: *mut AppState) -> *mut AppState {
-    if !state.is_null() {
-        (*state).ref_count.fetch_add(1, Ordering::Relaxed);
+    unsafe {
+        if !state.is_null() {
+            (*state).ref_count.fetch_add(1, Ordering::Relaxed);
+        }
+        state
     }
-    state
 }
 
 unsafe fn app_state_unref(state: *mut AppState) {
-    if state.is_null() || (*state).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
-        return;
-    }
+    unsafe {
+        if state.is_null() || (*state).ref_count.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
 
-    drop(Box::from_raw(state));
+        drop(Box::from_raw(state));
+    }
 }
 
 unsafe extern "C" fn app_state_source_data_free(data: *mut c_void) {
-    app_state_unref(data as *mut AppState);
+    unsafe {
+        app_state_unref(data as *mut AppState);
+    }
 }
 
 unsafe extern "C" fn app_state_signal_data_free(data: *mut c_void, _closure: *mut c_void) {
-    app_state_unref(data as *mut AppState);
+    unsafe {
+        app_state_unref(data as *mut AppState);
+    }
 }
 
 unsafe fn connect_app_state_signal(
@@ -471,14 +481,16 @@ unsafe fn connect_app_state_signal(
     handler: *const c_void,
     state: *mut AppState,
 ) {
-    g_signal_connect_data(
-        instance,
-        detailed_signal,
-        handler,
-        app_state_ref(state) as *mut c_void,
-        Some(app_state_signal_data_free),
-        0,
-    );
+    unsafe {
+        g_signal_connect_data(
+            instance,
+            detailed_signal,
+            handler,
+            app_state_ref(state) as *mut c_void,
+            Some(app_state_signal_data_free),
+            0,
+        );
+    }
 }
 
 unsafe fn add_app_state_timeout(
@@ -486,57 +498,68 @@ unsafe fn add_app_state_timeout(
     function: Option<GSourceFunc>,
     state: *mut AppState,
 ) -> c_uint {
-    g_timeout_add_full(
-        G_PRIORITY_DEFAULT,
-        interval,
-        function,
-        app_state_ref(state) as *mut c_void,
-        Some(app_state_source_data_free),
-    )
+    unsafe {
+        g_timeout_add_full(
+            G_PRIORITY_DEFAULT,
+            interval,
+            function,
+            app_state_ref(state) as *mut c_void,
+            Some(app_state_source_data_free),
+        )
+    }
 }
 
 unsafe fn app_state_is_closing(state: *mut AppState) -> bool {
-    state.is_null() || (*state).closing.load(Ordering::Acquire)
+    unsafe { state.is_null() || (*state).closing.load(Ordering::Acquire) }
 }
 
 unsafe extern "C" fn hide_window_overlay(user_data: *mut c_void) -> c_int {
-    let state = user_data as *mut AppState;
-    (*state).overlay_hide_source = 0;
+    unsafe {
+        let state = user_data as *mut AppState;
+        (*state).overlay_hide_source = 0;
 
-    if !(*state).closing.load(Ordering::Acquire) {
-        gtk_widget_set_visible((*state).top_left_controls, FALSE);
-        gtk_widget_set_visible((*state).top_controls, FALSE);
+        if !(*state).closing.load(Ordering::Acquire) {
+            gtk_widget_set_visible((*state).top_left_controls, FALSE);
+            gtk_widget_set_visible((*state).top_controls, FALSE);
+        }
+
+        G_SOURCE_REMOVE
     }
-
-    G_SOURCE_REMOVE
 }
 
 unsafe fn schedule_window_overlay_hide(state: *mut AppState) {
-    remove_source_if_active(&mut (*state).overlay_hide_source);
-    if app_state_is_closing(state) {
-        return;
+    unsafe {
+        remove_source_if_active(&mut (*state).overlay_hide_source);
+        if app_state_is_closing(state) {
+            return;
+        }
+        (*state).overlay_hide_source =
+            add_app_state_timeout(OVERLAY_HIDE_DELAY_MS, Some(hide_window_overlay), state);
     }
-    (*state).overlay_hide_source =
-        add_app_state_timeout(OVERLAY_HIDE_DELAY_MS, Some(hide_window_overlay), state);
 }
 
 unsafe fn show_window_overlay(state: *mut AppState) {
-    if (*state).closing.load(Ordering::Acquire) {
-        return;
-    }
+    unsafe {
+        if (*state).closing.load(Ordering::Acquire) {
+            return;
+        }
 
-    gtk_widget_set_visible((*state).top_left_controls, TRUE);
-    gtk_widget_set_visible((*state).top_controls, TRUE);
-    if !(*state).player_surface.is_null() {
-        if player_surface_is_single_template((*state).player_surface) != 0 {
+        gtk_widget_set_visible((*state).top_left_controls, TRUE);
+        gtk_widget_set_visible((*state).top_controls, TRUE);
+        if !(*state).player_surface.is_null()
+            && player_surface_is_single_template((*state).player_surface) != 0
+        {
             player_surface_show_overlay((*state).player_surface);
         }
+        schedule_window_overlay_hide(state);
     }
-    schedule_window_overlay_hide(state);
 }
 
 unsafe fn is_instance<T>(instance: *mut T, type_: GType) -> bool {
-    !instance.is_null() && g_type_check_instance_is_a(instance as *mut GTypeInstance, type_) != 0
+    unsafe {
+        !instance.is_null()
+            && g_type_check_instance_is_a(instance as *mut GTypeInstance, type_) != 0
+    }
 }
 
 unsafe fn get_toplevel_event_data(
@@ -548,52 +571,56 @@ unsafe fn get_toplevel_event_data(
     y_out: *mut c_double,
     timestamp_out: *mut c_uint,
 ) -> c_int {
-    let native = gtk_widget_get_native(window);
-    let surface = if native.is_null() {
-        ptr::null_mut()
-    } else {
-        gtk_native_get_surface(native)
-    };
-    let sequence = gtk_gesture_get_last_updated_sequence(gesture);
-    let event = gtk_gesture_get_last_event(gesture, sequence);
+    unsafe {
+        let native = gtk_widget_get_native(window);
+        let surface = if native.is_null() {
+            ptr::null_mut()
+        } else {
+            gtk_native_get_surface(native)
+        };
+        let sequence = gtk_gesture_get_last_updated_sequence(gesture);
+        let event = gtk_gesture_get_last_event(gesture, sequence);
 
-    if surface.is_null() || !is_instance(surface, gdk_toplevel_get_type()) || event.is_null() {
-        return FALSE;
+        if surface.is_null() || !is_instance(surface, gdk_toplevel_get_type()) || event.is_null() {
+            return FALSE;
+        }
+
+        *device_out = gdk_event_get_device(event);
+        *timestamp_out = gdk_event_get_time(event);
+
+        if (*device_out).is_null() || gdk_event_get_position(event, x_out, y_out) == 0 {
+            return FALSE;
+        }
+
+        *toplevel_out = surface as *mut GdkToplevel;
+        TRUE
     }
-
-    *device_out = gdk_event_get_device(event);
-    *timestamp_out = gdk_event_get_time(event);
-
-    if (*device_out).is_null() || gdk_event_get_position(event, x_out, y_out) == 0 {
-        return FALSE;
-    }
-
-    *toplevel_out = surface as *mut GdkToplevel;
-    TRUE
 }
 
 unsafe fn begin_window_resize(state: *mut AppState, gesture: *mut GtkGesture, edge: c_int) {
-    if (*state).fullscreen != 0 {
-        return;
-    }
+    unsafe {
+        if (*state).fullscreen != 0 {
+            return;
+        }
 
-    let mut toplevel: *mut GdkToplevel = ptr::null_mut();
-    let mut device: *mut GdkDevice = ptr::null_mut();
-    let mut x = 0.0;
-    let mut y = 0.0;
-    let mut timestamp = 0;
+        let mut toplevel: *mut GdkToplevel = ptr::null_mut();
+        let mut device: *mut GdkDevice = ptr::null_mut();
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut timestamp = 0;
 
-    if get_toplevel_event_data(
-        (*state).window,
-        gesture,
-        &mut toplevel,
-        &mut device,
-        &mut x,
-        &mut y,
-        &mut timestamp,
-    ) != 0
-    {
-        gdk_toplevel_begin_resize(toplevel, edge, device, GDK_BUTTON_PRIMARY, x, y, timestamp);
+        if get_toplevel_event_data(
+            (*state).window,
+            gesture,
+            &mut toplevel,
+            &mut device,
+            &mut x,
+            &mut y,
+            &mut timestamp,
+        ) != 0
+        {
+            gdk_toplevel_begin_resize(toplevel, edge, device, GDK_BUTTON_PRIMARY, x, y, timestamp);
+        }
     }
 }
 
@@ -604,17 +631,20 @@ unsafe extern "C" fn on_resize_pressed(
     _y: c_double,
     user_data: *mut c_void,
 ) {
-    let state = user_data as *mut AppState;
-    if app_state_is_closing(state) {
-        return;
-    }
+    unsafe {
+        let state = user_data as *mut AppState;
+        if app_state_is_closing(state) {
+            return;
+        }
 
-    if n_press != 1 {
-        return;
-    }
+        if n_press != 1 {
+            return;
+        }
 
-    let edge = g_object_get_data(gesture as *mut GObject, cstr!("resize-edge")) as isize as c_int;
-    begin_window_resize(state, gesture as *mut GtkGesture, edge);
+        let edge =
+            g_object_get_data(gesture as *mut GObject, c"resize-edge".as_ptr()) as isize as c_int;
+        begin_window_resize(state, gesture as *mut GtkGesture, edge);
+    }
 }
 
 unsafe fn create_resize_handle(
@@ -626,222 +656,232 @@ unsafe fn create_resize_handle(
     height: c_int,
     cursor: *const c_char,
 ) -> *mut GtkWidget {
-    let handle = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_add_css_class(handle, cstr!("resize-handle"));
-    gtk_widget_set_halign(handle, halign);
-    gtk_widget_set_valign(handle, valign);
-    gtk_widget_set_size_request(handle, width, height);
-    gtk_widget_set_cursor_from_name(handle, cursor);
+    unsafe {
+        let handle = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_widget_add_css_class(handle, c"resize-handle".as_ptr());
+        gtk_widget_set_halign(handle, halign);
+        gtk_widget_set_valign(handle, valign);
+        gtk_widget_set_size_request(handle, width, height);
+        gtk_widget_set_cursor_from_name(handle, cursor);
 
-    if halign == GTK_ALIGN_FILL {
-        gtk_widget_set_hexpand(handle, TRUE);
+        if halign == GTK_ALIGN_FILL {
+            gtk_widget_set_hexpand(handle, TRUE);
+        }
+        if valign == GTK_ALIGN_FILL {
+            gtk_widget_set_vexpand(handle, TRUE);
+        }
+
+        let click = gtk_gesture_click_new();
+        gtk_gesture_single_set_button(click as *mut GtkGestureSingle, GDK_BUTTON_PRIMARY as c_uint);
+        g_object_set_data(
+            click as *mut GObject,
+            c"resize-edge".as_ptr(),
+            edge as isize as *mut c_void,
+        );
+        connect_app_state_signal(
+            click as *mut c_void,
+            c"pressed".as_ptr(),
+            on_resize_pressed as *const c_void,
+            state,
+        );
+        gtk_widget_add_controller(handle, click as *mut c_void);
+
+        handle
     }
-    if valign == GTK_ALIGN_FILL {
-        gtk_widget_set_vexpand(handle, TRUE);
-    }
-
-    let click = gtk_gesture_click_new();
-    gtk_gesture_single_set_button(click as *mut GtkGestureSingle, GDK_BUTTON_PRIMARY as c_uint);
-    g_object_set_data(
-        click as *mut GObject,
-        cstr!("resize-edge"),
-        edge as isize as *mut c_void,
-    );
-    connect_app_state_signal(
-        click as *mut c_void,
-        cstr!("pressed"),
-        on_resize_pressed as *const c_void,
-        state,
-    );
-    gtk_widget_add_controller(handle, click as *mut c_void);
-
-    handle
 }
 
 unsafe fn add_resize_handles(overlay: *mut GtkOverlay, state: *mut AppState) {
-    gtk_overlay_add_overlay(
-        overlay,
-        create_resize_handle(
-            state,
-            GDK_SURFACE_EDGE_NORTH,
-            GTK_ALIGN_FILL,
-            GTK_ALIGN_START,
-            -1,
-            6,
-            cstr!("n-resize"),
-        ),
-    );
-    gtk_overlay_add_overlay(
-        overlay,
-        create_resize_handle(
-            state,
-            GDK_SURFACE_EDGE_SOUTH,
-            GTK_ALIGN_FILL,
-            GTK_ALIGN_END,
-            -1,
-            6,
-            cstr!("s-resize"),
-        ),
-    );
-    gtk_overlay_add_overlay(
-        overlay,
-        create_resize_handle(
-            state,
-            GDK_SURFACE_EDGE_WEST,
-            GTK_ALIGN_START,
-            GTK_ALIGN_FILL,
-            6,
-            -1,
-            cstr!("w-resize"),
-        ),
-    );
-    gtk_overlay_add_overlay(
-        overlay,
-        create_resize_handle(
-            state,
-            GDK_SURFACE_EDGE_EAST,
-            GTK_ALIGN_END,
-            GTK_ALIGN_FILL,
-            6,
-            -1,
-            cstr!("e-resize"),
-        ),
-    );
-    gtk_overlay_add_overlay(
-        overlay,
-        create_resize_handle(
-            state,
-            GDK_SURFACE_EDGE_NORTH_WEST,
-            GTK_ALIGN_START,
-            GTK_ALIGN_START,
-            12,
-            12,
-            cstr!("nw-resize"),
-        ),
-    );
-    gtk_overlay_add_overlay(
-        overlay,
-        create_resize_handle(
-            state,
-            GDK_SURFACE_EDGE_NORTH_EAST,
-            GTK_ALIGN_END,
-            GTK_ALIGN_START,
-            12,
-            12,
-            cstr!("ne-resize"),
-        ),
-    );
-    gtk_overlay_add_overlay(
-        overlay,
-        create_resize_handle(
-            state,
-            GDK_SURFACE_EDGE_SOUTH_WEST,
-            GTK_ALIGN_START,
-            GTK_ALIGN_END,
-            12,
-            12,
-            cstr!("sw-resize"),
-        ),
-    );
-    gtk_overlay_add_overlay(
-        overlay,
-        create_resize_handle(
-            state,
-            GDK_SURFACE_EDGE_SOUTH_EAST,
-            GTK_ALIGN_END,
-            GTK_ALIGN_END,
-            12,
-            12,
-            cstr!("se-resize"),
-        ),
-    );
+    unsafe {
+        gtk_overlay_add_overlay(
+            overlay,
+            create_resize_handle(
+                state,
+                GDK_SURFACE_EDGE_NORTH,
+                GTK_ALIGN_FILL,
+                GTK_ALIGN_START,
+                -1,
+                6,
+                c"n-resize".as_ptr(),
+            ),
+        );
+        gtk_overlay_add_overlay(
+            overlay,
+            create_resize_handle(
+                state,
+                GDK_SURFACE_EDGE_SOUTH,
+                GTK_ALIGN_FILL,
+                GTK_ALIGN_END,
+                -1,
+                6,
+                c"s-resize".as_ptr(),
+            ),
+        );
+        gtk_overlay_add_overlay(
+            overlay,
+            create_resize_handle(
+                state,
+                GDK_SURFACE_EDGE_WEST,
+                GTK_ALIGN_START,
+                GTK_ALIGN_FILL,
+                6,
+                -1,
+                c"w-resize".as_ptr(),
+            ),
+        );
+        gtk_overlay_add_overlay(
+            overlay,
+            create_resize_handle(
+                state,
+                GDK_SURFACE_EDGE_EAST,
+                GTK_ALIGN_END,
+                GTK_ALIGN_FILL,
+                6,
+                -1,
+                c"e-resize".as_ptr(),
+            ),
+        );
+        gtk_overlay_add_overlay(
+            overlay,
+            create_resize_handle(
+                state,
+                GDK_SURFACE_EDGE_NORTH_WEST,
+                GTK_ALIGN_START,
+                GTK_ALIGN_START,
+                12,
+                12,
+                c"nw-resize".as_ptr(),
+            ),
+        );
+        gtk_overlay_add_overlay(
+            overlay,
+            create_resize_handle(
+                state,
+                GDK_SURFACE_EDGE_NORTH_EAST,
+                GTK_ALIGN_END,
+                GTK_ALIGN_START,
+                12,
+                12,
+                c"ne-resize".as_ptr(),
+            ),
+        );
+        gtk_overlay_add_overlay(
+            overlay,
+            create_resize_handle(
+                state,
+                GDK_SURFACE_EDGE_SOUTH_WEST,
+                GTK_ALIGN_START,
+                GTK_ALIGN_END,
+                12,
+                12,
+                c"sw-resize".as_ptr(),
+            ),
+        );
+        gtk_overlay_add_overlay(
+            overlay,
+            create_resize_handle(
+                state,
+                GDK_SURFACE_EDGE_SOUTH_EAST,
+                GTK_ALIGN_END,
+                GTK_ALIGN_END,
+                12,
+                12,
+                c"se-resize".as_ptr(),
+            ),
+        );
+    }
 }
 
 unsafe extern "C" fn restore_maximized_after_fullscreen(user_data: *mut c_void) -> c_int {
-    let state = user_data as *mut AppState;
-    let window = if is_instance((*state).window, gtk_window_get_type()) {
-        (*state).window as *mut GtkWindow
-    } else {
-        ptr::null_mut()
-    };
+    unsafe {
+        let state = user_data as *mut AppState;
+        let window = if is_instance((*state).window, gtk_window_get_type()) {
+            (*state).window as *mut GtkWindow
+        } else {
+            ptr::null_mut()
+        };
 
-    if (*state).closing.load(Ordering::Acquire)
-        || window.is_null()
-        || (*state).restore_maximized_after_fullscreen == 0
-    {
-        (*state).maximize_restore_source = 0;
-        return G_SOURCE_REMOVE;
+        if (*state).closing.load(Ordering::Acquire)
+            || window.is_null()
+            || (*state).restore_maximized_after_fullscreen == 0
+        {
+            (*state).maximize_restore_source = 0;
+            return G_SOURCE_REMOVE;
+        }
+
+        if gtk_window_is_fullscreen(window) != 0 {
+            return G_SOURCE_CONTINUE;
+        }
+
+        if (*state).restore_window_width > 0 && (*state).restore_window_height > 0 {
+            gtk_window_set_default_size(
+                window,
+                (*state).restore_window_width,
+                (*state).restore_window_height,
+            );
+        }
+
+        gtk_window_maximize(window);
+        if gtk_window_is_maximized(window) != 0 {
+            (*state).window_maximized = TRUE;
+            (*state).restore_maximized_after_fullscreen = FALSE;
+            (*state).maximize_restore_source = 0;
+            return G_SOURCE_REMOVE;
+        }
+
+        (*state).maximize_restore_attempts += 1;
+        if (*state).maximize_restore_attempts >= MAXIMIZE_RESTORE_ATTEMPTS {
+            (*state).restore_maximized_after_fullscreen = FALSE;
+            (*state).maximize_restore_source = 0;
+            return G_SOURCE_REMOVE;
+        }
+
+        G_SOURCE_CONTINUE
     }
-
-    if gtk_window_is_fullscreen(window) != 0 {
-        return G_SOURCE_CONTINUE;
-    }
-
-    if (*state).restore_window_width > 0 && (*state).restore_window_height > 0 {
-        gtk_window_set_default_size(
-            window,
-            (*state).restore_window_width,
-            (*state).restore_window_height,
-        );
-    }
-
-    gtk_window_maximize(window);
-    if gtk_window_is_maximized(window) != 0 {
-        (*state).window_maximized = TRUE;
-        (*state).restore_maximized_after_fullscreen = FALSE;
-        (*state).maximize_restore_source = 0;
-        return G_SOURCE_REMOVE;
-    }
-
-    (*state).maximize_restore_attempts += 1;
-    if (*state).maximize_restore_attempts >= MAXIMIZE_RESTORE_ATTEMPTS {
-        (*state).restore_maximized_after_fullscreen = FALSE;
-        (*state).maximize_restore_source = 0;
-        return G_SOURCE_REMOVE;
-    }
-
-    G_SOURCE_CONTINUE
 }
 
 unsafe fn schedule_maximized_restore_after_fullscreen(state: *mut AppState) {
-    remove_source_if_active(&mut (*state).maximize_restore_source);
+    unsafe {
+        remove_source_if_active(&mut (*state).maximize_restore_source);
 
-    if app_state_is_closing(state) || (*state).restore_maximized_after_fullscreen == 0 {
-        return;
+        if app_state_is_closing(state) || (*state).restore_maximized_after_fullscreen == 0 {
+            return;
+        }
+
+        (*state).maximize_restore_attempts = 0;
+        (*state).maximize_restore_source =
+            add_app_state_timeout(50, Some(restore_maximized_after_fullscreen), state);
     }
-
-    (*state).maximize_restore_attempts = 0;
-    (*state).maximize_restore_source =
-        add_app_state_timeout(50, Some(restore_maximized_after_fullscreen), state);
 }
 
 unsafe fn set_fullscreen(state: *mut AppState, fullscreen: c_int) {
-    if app_state_is_closing(state) || (*state).fullscreen == fullscreen {
-        return;
-    }
+    unsafe {
+        if app_state_is_closing(state) || (*state).fullscreen == fullscreen {
+            return;
+        }
 
-    (*state).fullscreen = fullscreen;
-    if fullscreen != 0 {
-        (*state).was_maximized_before_fullscreen = ((*state).window_maximized != 0
-            || gtk_window_is_maximized((*state).window as *mut GtkWindow) != 0)
-            as c_int;
-        (*state).restore_window_width = gtk_widget_get_width((*state).window);
-        (*state).restore_window_height = gtk_widget_get_height((*state).window);
-        (*state).restore_maximized_after_fullscreen = FALSE;
-        remove_source_if_active(&mut (*state).maximize_restore_source);
-        gtk_window_fullscreen((*state).window as *mut GtkWindow);
-    } else {
-        (*state).restore_maximized_after_fullscreen = (*state).was_maximized_before_fullscreen;
-        gtk_window_unfullscreen((*state).window as *mut GtkWindow);
-        schedule_maximized_restore_after_fullscreen(state);
-        (*state).was_maximized_before_fullscreen = FALSE;
-    }
+        (*state).fullscreen = fullscreen;
+        if fullscreen != 0 {
+            (*state).was_maximized_before_fullscreen = ((*state).window_maximized != 0
+                || gtk_window_is_maximized((*state).window as *mut GtkWindow) != 0)
+                as c_int;
+            (*state).restore_window_width = gtk_widget_get_width((*state).window);
+            (*state).restore_window_height = gtk_widget_get_height((*state).window);
+            (*state).restore_maximized_after_fullscreen = FALSE;
+            remove_source_if_active(&mut (*state).maximize_restore_source);
+            gtk_window_fullscreen((*state).window as *mut GtkWindow);
+        } else {
+            (*state).restore_maximized_after_fullscreen = (*state).was_maximized_before_fullscreen;
+            gtk_window_unfullscreen((*state).window as *mut GtkWindow);
+            schedule_maximized_restore_after_fullscreen(state);
+            (*state).was_maximized_before_fullscreen = FALSE;
+        }
 
-    if !(*state).player_surface.is_null() {
-        player_surface_set_fullscreen((*state).player_surface, fullscreen);
-    }
+        if !(*state).player_surface.is_null() {
+            player_surface_set_fullscreen((*state).player_surface, fullscreen);
+        }
 
-    show_window_overlay(state);
+        show_window_overlay(state);
+    }
 }
 
 unsafe extern "C" fn on_window_fullscreen_changed(
@@ -849,9 +889,11 @@ unsafe extern "C" fn on_window_fullscreen_changed(
     _pspec: *mut GParamSpec,
     user_data: *mut c_void,
 ) {
-    let state = user_data as *mut AppState;
-    if !app_state_is_closing(state) {
-        schedule_maximized_restore_after_fullscreen(state);
+    unsafe {
+        let state = user_data as *mut AppState;
+        if !app_state_is_closing(state) {
+            schedule_maximized_restore_after_fullscreen(state);
+        }
     }
 }
 
@@ -860,191 +902,216 @@ unsafe extern "C" fn on_window_maximized_changed(
     _pspec: *mut GParamSpec,
     user_data: *mut c_void,
 ) {
-    let state = user_data as *mut AppState;
+    unsafe {
+        let state = user_data as *mut AppState;
 
-    if app_state_is_closing(state)
-        || (*state).fullscreen != 0
-        || (*state).window.is_null()
-        || gtk_window_is_fullscreen((*state).window as *mut GtkWindow) != 0
-    {
-        return;
+        if app_state_is_closing(state)
+            || (*state).fullscreen != 0
+            || (*state).window.is_null()
+            || gtk_window_is_fullscreen((*state).window as *mut GtkWindow) != 0
+        {
+            return;
+        }
+
+        (*state).window_maximized = gtk_window_is_maximized((*state).window as *mut GtkWindow);
     }
-
-    (*state).window_maximized = gtk_window_is_maximized((*state).window as *mut GtkWindow);
 }
 
 unsafe extern "C" fn on_window_close_request(
     _window: *mut GtkWindow,
     user_data: *mut c_void,
 ) -> c_int {
-    shutdown_state(user_data as *mut AppState);
-    GDK_EVENT_PROPAGATE
+    unsafe {
+        shutdown_state(user_data as *mut AppState);
+        GDK_EVENT_PROPAGATE
+    }
 }
 
 unsafe fn toggle_fullscreen(state: *mut AppState) {
-    set_fullscreen(state, ((*state).fullscreen == 0) as c_int);
+    unsafe {
+        set_fullscreen(state, ((*state).fullscreen == 0) as c_int);
+    }
 }
 
 unsafe extern "C" fn on_content_fullscreen_requested(user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if !app_state_is_closing(state) {
-        toggle_fullscreen(state);
+    unsafe {
+        let state = user_data as *mut AppState;
+        if !app_state_is_closing(state) {
+            toggle_fullscreen(state);
+        }
     }
 }
 
 unsafe extern "C" fn on_content_settings_requested(user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if !app_state_is_closing(state) {
-        show_settings_window(state, SETTINGS_WINDOW_PAGE_CHANNELS);
+    unsafe {
+        let state = user_data as *mut AppState;
+        if !app_state_is_closing(state) {
+            show_settings_window(state, SETTINGS_WINDOW_PAGE_CHANNELS);
+        }
     }
 }
 
 unsafe fn destroy_active_content(state: *mut AppState) {
-    if !(*state).player_surface.is_null() {
-        player_surface_free((*state).player_surface);
-        (*state).player_surface = ptr::null_mut();
-    }
+    unsafe {
+        if !(*state).player_surface.is_null() {
+            player_surface_free((*state).player_surface);
+            (*state).player_surface = ptr::null_mut();
+        }
 
-    if is_instance((*state).root_overlay, gtk_overlay_get_type()) {
-        gtk_overlay_set_child((*state).root_overlay as *mut GtkOverlay, ptr::null_mut());
+        if is_instance((*state).root_overlay, gtk_overlay_get_type()) {
+            gtk_overlay_set_child((*state).root_overlay as *mut GtkOverlay, ptr::null_mut());
+        }
     }
 }
 
 unsafe fn create_player_surface(state: *mut AppState) {
-    let mut targets: [*const c_char; PLAYER_SURFACE_MAX_TILES] =
-        [ptr::null(); PLAYER_SURFACE_MAX_TILES];
-    let mut target_storage: [*mut c_char; PLAYER_SURFACE_MAX_TILES] =
-        [ptr::null_mut(); PLAYER_SURFACE_MAX_TILES];
-    let mut target_count: usize = 0;
+    unsafe {
+        let mut targets: [*const c_char; PLAYER_SURFACE_MAX_TILES] =
+            [ptr::null(); PLAYER_SURFACE_MAX_TILES];
+        let mut target_storage: [*mut c_char; PLAYER_SURFACE_MAX_TILES] =
+            [ptr::null_mut(); PLAYER_SURFACE_MAX_TILES];
+        let mut target_count: usize = 0;
 
-    // Keep the startup channel in slot 0 so the primary mpv session remains the stable player.
-    let first_target = (*state).startup_target;
+        // Keep the startup channel in slot 0 so the primary mpv session remains the stable player.
+        let first_target = (*state).startup_target;
 
-    if is_nonempty(first_target) {
-        target_storage[target_count] = dup_twitch_channel_name(first_target);
-        if !target_storage[target_count].is_null() {
+        if is_nonempty(first_target) {
+            target_storage[target_count] = dup_twitch_channel_name(first_target);
+            if !target_storage[target_count].is_null() {
+                targets[target_count] = target_storage[target_count];
+                target_count += 1;
+            }
+        }
+
+        let initial_count = (*state).initial_target_count as usize;
+        for i in 0..initial_count {
+            if target_count >= PLAYER_SURFACE_MAX_TILES {
+                break;
+            }
+            let target = *(*state).initial_targets.add(i);
+            if !is_nonempty(target) {
+                continue;
+            }
+            if !first_target.is_null() && g_strcmp0(target, first_target) == 0 {
+                continue;
+            }
+
+            let channel = dup_twitch_channel_name(target);
+            if channel.is_null() {
+                continue;
+            }
+
+            // The surface may receive the same channel from startup and the 2x2 seed list.
+            let mut duplicate = false;
+            for existing in targets.iter().take(target_count) {
+                if g_ascii_strcasecmp(channel, *existing) == 0 {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if duplicate {
+                g_free(channel as *mut c_void);
+                continue;
+            }
+
+            target_storage[target_count] = channel;
             targets[target_count] = target_storage[target_count];
             target_count += 1;
         }
-    }
 
-    let initial_count = (*state).initial_target_count as usize;
-    for i in 0..initial_count {
-        if target_count >= PLAYER_SURFACE_MAX_TILES {
-            break;
+        (*state).player_surface = player_surface_new(
+            (*state).window as *mut GtkWindow,
+            (*state).settings,
+            (*state).primary_session,
+            targets.as_ptr(),
+            target_count as c_uint,
+            Some(on_content_fullscreen_requested),
+            state as *mut c_void,
+            Some(on_content_settings_requested),
+            state as *mut c_void,
+        );
+        player_surface_set_fullscreen((*state).player_surface, (*state).fullscreen);
+        gtk_overlay_set_child(
+            (*state).root_overlay as *mut GtkOverlay,
+            player_surface_get_widget((*state).player_surface),
+        );
+        for target in target_storage {
+            g_free(target as *mut c_void);
         }
-        let target = *(*state).initial_targets.add(i);
-        if !is_nonempty(target) {
-            continue;
-        }
-        if !first_target.is_null() && g_strcmp0(target, first_target) == 0 {
-            continue;
-        }
-
-        let channel = dup_twitch_channel_name(target);
-        if channel.is_null() {
-            continue;
-        }
-
-        // The surface may receive the same channel from startup and the 2x2 seed list.
-        let mut duplicate = false;
-        for existing in targets.iter().take(target_count) {
-            if g_ascii_strcasecmp(channel, *existing) == 0 {
-                duplicate = true;
-                break;
-            }
-        }
-        if duplicate {
-            g_free(channel as *mut c_void);
-            continue;
-        }
-
-        target_storage[target_count] = channel;
-        targets[target_count] = target_storage[target_count];
-        target_count += 1;
-    }
-
-    (*state).player_surface = player_surface_new(
-        (*state).window as *mut GtkWindow,
-        (*state).settings,
-        (*state).primary_session,
-        targets.as_ptr(),
-        target_count as c_uint,
-        Some(on_content_fullscreen_requested),
-        state as *mut c_void,
-        Some(on_content_settings_requested),
-        state as *mut c_void,
-    );
-    player_surface_set_fullscreen((*state).player_surface, (*state).fullscreen);
-    gtk_overlay_set_child(
-        (*state).root_overlay as *mut GtkOverlay,
-        player_surface_get_widget((*state).player_surface),
-    );
-    for target in target_storage {
-        g_free(target as *mut c_void);
     }
 }
 
 unsafe fn apply_layout_template(state: *mut AppState, layout_index: usize) {
-    if (*state).player_surface.is_null() {
-        create_player_surface(state);
-    }
+    unsafe {
+        if (*state).player_surface.is_null() {
+            create_player_surface(state);
+        }
 
-    player_surface_apply_layout((*state).player_surface, layout_index);
-    player_surface_start((*state).player_surface);
+        player_surface_apply_layout((*state).player_surface, layout_index);
+        player_surface_start((*state).player_surface);
+    }
 }
 
 unsafe fn set_layout_mode(state: *mut AppState, layout_index: usize) {
-    if layout_index >= PLAYER_LAYOUTS.len() {
-        return;
-    }
+    unsafe {
+        if layout_index >= PLAYER_LAYOUTS.len() {
+            return;
+        }
 
-    if (*state).player_surface.is_null() {
+        if (*state).player_surface.is_null() {
+            apply_layout_template(state, layout_index);
+            show_window_overlay(state);
+            return;
+        }
+
+        if player_surface_get_layout_index((*state).player_surface) == layout_index {
+            show_window_overlay(state);
+            return;
+        }
+
         apply_layout_template(state, layout_index);
         show_window_overlay(state);
-        return;
     }
-
-    if player_surface_get_layout_index((*state).player_surface) == layout_index {
-        show_window_overlay(state);
-        return;
-    }
-
-    apply_layout_template(state, layout_index);
-    show_window_overlay(state);
 }
 
 unsafe extern "C" fn on_layout_choice_clicked(button: *mut GtkButton, user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if app_state_is_closing(state) {
-        return;
-    }
+    unsafe {
+        let state = user_data as *mut AppState;
+        if app_state_is_closing(state) {
+            return;
+        }
 
-    let stored_index = g_object_get_data(button as *mut GObject, cstr!("layout-index")) as usize;
-    if stored_index == 0 {
-        return;
-    }
+        let stored_index =
+            g_object_get_data(button as *mut GObject, c"layout-index".as_ptr()) as usize;
+        if stored_index == 0 {
+            return;
+        }
 
-    set_layout_mode(state, stored_index - 1);
-    if !(*state).layout_popover.is_null() {
-        gtk_popover_popdown((*state).layout_popover as *mut GtkPopover);
+        set_layout_mode(state, stored_index - 1);
+        if !(*state).layout_popover.is_null() {
+            gtk_popover_popdown((*state).layout_popover as *mut GtkPopover);
+        }
     }
 }
 
 unsafe extern "C" fn on_layout_menu_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if app_state_is_closing(state) || (*state).layout_popover.is_null() {
-        return;
-    }
+    unsafe {
+        let state = user_data as *mut AppState;
+        if app_state_is_closing(state) || (*state).layout_popover.is_null() {
+            return;
+        }
 
-    remove_source_if_active(&mut (*state).overlay_hide_source);
-    gtk_popover_popup((*state).layout_popover as *mut GtkPopover);
+        remove_source_if_active(&mut (*state).overlay_hide_source);
+        gtk_popover_popup((*state).layout_popover as *mut GtkPopover);
+    }
 }
 
 unsafe extern "C" fn on_layout_popover_closed(_popover: *mut GtkPopover, user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if !app_state_is_closing(state) {
-        schedule_window_overlay_hide(state);
+    unsafe {
+        let state = user_data as *mut AppState;
+        if !app_state_is_closing(state) {
+            schedule_window_overlay_hide(state);
+        }
     }
 }
 
@@ -1052,117 +1119,132 @@ unsafe fn create_layout_popover(
     state: *mut AppState,
     relative_to: *mut GtkWidget,
 ) -> *mut GtkWidget {
-    let popover = gtk_popover_new();
-    gtk_widget_add_css_class(popover, cstr!("stream-settings-popover"));
-    gtk_popover_set_position(popover as *mut GtkPopover, GTK_POS_BOTTOM);
-    gtk_popover_set_has_arrow(popover as *mut GtkPopover, FALSE);
-    gtk_widget_set_parent(popover, relative_to);
+    unsafe {
+        let popover = gtk_popover_new();
+        gtk_widget_add_css_class(popover, c"stream-settings-popover".as_ptr());
+        gtk_popover_set_position(popover as *mut GtkPopover, GTK_POS_BOTTOM);
+        gtk_popover_set_has_arrow(popover as *mut GtkPopover, FALSE);
+        gtk_widget_set_parent(popover, relative_to);
 
-    let menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_widget_add_css_class(menu, cstr!("stream-settings-menu"));
-    gtk_popover_set_child(popover as *mut GtkPopover, menu);
+        let menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_add_css_class(menu, c"stream-settings-menu".as_ptr());
+        gtk_popover_set_child(popover as *mut GtkPopover, menu);
 
-    let mut three_by_two_section_started = false;
+        let mut three_by_two_section_started = false;
 
-    for (layout_index, layout) in PLAYER_LAYOUTS.iter().enumerate() {
-        if layout.is_three_by_two() && !three_by_two_section_started {
-            let divider = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
-            gtk_widget_add_css_class(divider, cstr!("stream-settings-divider"));
-            gtk_box_append(menu as *mut GtkBox, divider);
-            three_by_two_section_started = true;
+        for (layout_index, layout) in PLAYER_LAYOUTS.iter().enumerate() {
+            if layout.is_three_by_two() && !three_by_two_section_started {
+                let divider = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+                gtk_widget_add_css_class(divider, c"stream-settings-divider".as_ptr());
+                gtk_box_append(menu as *mut GtkBox, divider);
+                three_by_two_section_started = true;
+            }
+
+            let button = gtk_button_new();
+            let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+            let label_text =
+                CString::new(layout.name).expect("layout names cannot contain NUL bytes");
+            let label = gtk_label_new(label_text.as_ptr());
+
+            gtk_widget_add_css_class(button, c"stream-settings-item".as_ptr());
+            gtk_widget_set_halign(button, GTK_ALIGN_FILL);
+            gtk_widget_set_hexpand(button, TRUE);
+            gtk_label_set_xalign(label as *mut GtkLabel, 0.0);
+            gtk_widget_set_hexpand(label, TRUE);
+            gtk_box_append(content as *mut GtkBox, player_layout_icon_new(layout));
+            gtk_box_append(content as *mut GtkBox, label);
+            gtk_button_set_child(button as *mut GtkButton, content);
+            g_object_set_data(
+                button as *mut GObject,
+                c"layout-index".as_ptr(),
+                (layout_index + 1) as *mut c_void,
+            );
+            connect_app_state_signal(
+                button as *mut c_void,
+                c"clicked".as_ptr(),
+                on_layout_choice_clicked as *const c_void,
+                state,
+            );
+            gtk_box_append(menu as *mut GtkBox, button);
         }
 
-        let button = gtk_button_new();
-        let content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        let label_text = CString::new(layout.name).expect("layout names cannot contain NUL bytes");
-        let label = gtk_label_new(label_text.as_ptr());
-
-        gtk_widget_add_css_class(button, cstr!("stream-settings-item"));
-        gtk_widget_set_halign(button, GTK_ALIGN_FILL);
-        gtk_widget_set_hexpand(button, TRUE);
-        gtk_label_set_xalign(label as *mut GtkLabel, 0.0);
-        gtk_widget_set_hexpand(label, TRUE);
-        gtk_box_append(content as *mut GtkBox, player_layout_icon_new(layout));
-        gtk_box_append(content as *mut GtkBox, label);
-        gtk_button_set_child(button as *mut GtkButton, content);
-        g_object_set_data(
-            button as *mut GObject,
-            cstr!("layout-index"),
-            (layout_index + 1) as *mut c_void,
-        );
         connect_app_state_signal(
-            button as *mut c_void,
-            cstr!("clicked"),
-            on_layout_choice_clicked as *const c_void,
+            popover as *mut c_void,
+            c"closed".as_ptr(),
+            on_layout_popover_closed as *const c_void,
             state,
         );
-        gtk_box_append(menu as *mut GtkBox, button);
+
+        popover
     }
-
-    connect_app_state_signal(
-        popover as *mut c_void,
-        cstr!("closed"),
-        on_layout_popover_closed as *const c_void,
-        state,
-    );
-
-    popover
 }
 
 unsafe extern "C" fn on_settings_saved(_settings: *mut AppSettings, user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if app_state_is_closing(state) {
-        return;
-    }
+    unsafe {
+        let state = user_data as *mut AppState;
+        if app_state_is_closing(state) {
+            return;
+        }
 
-    if !(*state).player_surface.is_null() {
-        player_surface_set_settings((*state).player_surface, (*state).settings);
-    }
+        if !(*state).player_surface.is_null() {
+            player_surface_set_settings((*state).player_surface, (*state).settings);
+        }
 
-    show_window_overlay(state);
+        show_window_overlay(state);
+    }
 }
 
 unsafe fn show_settings_window(state: *mut AppState, initial_page: c_int) {
-    if app_state_is_closing(state) {
-        return;
-    }
+    unsafe {
+        if app_state_is_closing(state) {
+            return;
+        }
 
-    settings_window_show(
-        (*state).window as *mut GtkWindow,
-        (*state).settings,
-        initial_page,
-        Some(on_settings_saved),
-        app_state_ref(state) as *mut c_void,
-        Some(app_state_source_data_free),
-    );
-    show_window_overlay(state);
+        settings_window_show(
+            (*state).window as *mut GtkWindow,
+            (*state).settings,
+            initial_page,
+            Some(on_settings_saved),
+            app_state_ref(state) as *mut c_void,
+            Some(app_state_source_data_free),
+        );
+        show_window_overlay(state);
+    }
 }
 
 unsafe extern "C" fn on_settings_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if !app_state_is_closing(state) {
-        show_settings_window(state, SETTINGS_WINDOW_PAGE_GENERAL);
+    unsafe {
+        let state = user_data as *mut AppState;
+        if !app_state_is_closing(state) {
+            show_settings_window(state, SETTINGS_WINDOW_PAGE_GENERAL);
+        }
     }
 }
 
 unsafe extern "C" fn on_minimize_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if !app_state_is_closing(state) && !(*state).window.is_null() {
-        gtk_window_minimize((*state).window as *mut GtkWindow);
+    unsafe {
+        let state = user_data as *mut AppState;
+        if !app_state_is_closing(state) && !(*state).window.is_null() {
+            gtk_window_minimize((*state).window as *mut GtkWindow);
+        }
     }
 }
 
 unsafe extern "C" fn on_fullscreen_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if !app_state_is_closing(state) {
-        toggle_fullscreen(state);
+    unsafe {
+        let state = user_data as *mut AppState;
+        if !app_state_is_closing(state) {
+            toggle_fullscreen(state);
+        }
     }
 }
 
 unsafe extern "C" fn on_close_clicked(_button: *mut GtkButton, user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    if !app_state_is_closing(state) && !(*state).window.is_null() {
-        gtk_window_close((*state).window as *mut GtkWindow);
+    unsafe {
+        let state = user_data as *mut AppState;
+        if !app_state_is_closing(state) && !(*state).window.is_null() {
+            gtk_window_close((*state).window as *mut GtkWindow);
+        }
     }
 }
 
@@ -1172,22 +1254,24 @@ unsafe extern "C" fn on_root_motion(
     y: c_double,
     user_data: *mut c_void,
 ) {
-    let state = user_data as *mut AppState;
-    if app_state_is_closing(state) {
-        return;
-    }
+    unsafe {
+        let state = user_data as *mut AppState;
+        if app_state_is_closing(state) {
+            return;
+        }
 
-    if player_motion_tracker_ignore_stationary(
-        &mut (*state).motion_tracker,
-        state as *mut c_void,
-        x,
-        y,
-    ) != 0
-    {
-        return;
-    }
+        if player_motion_tracker_ignore_stationary(
+            &mut (*state).motion_tracker,
+            state as *mut c_void,
+            x,
+            y,
+        ) != 0
+        {
+            return;
+        }
 
-    show_window_overlay(state);
+        show_window_overlay(state);
+    }
 }
 
 unsafe extern "C" fn on_key_pressed(
@@ -1197,742 +1281,775 @@ unsafe extern "C" fn on_key_pressed(
     modifiers: c_uint,
     user_data: *mut c_void,
 ) -> c_int {
-    let state = user_data as *mut AppState;
-    if app_state_is_closing(state) {
-        return GDK_EVENT_PROPAGATE;
-    }
+    unsafe {
+        let state = user_data as *mut AppState;
+        if app_state_is_closing(state) {
+            return GDK_EVENT_PROPAGATE;
+        }
 
-    if !(*state).player_surface.is_null() {
-        return player_surface_handle_key((*state).player_surface, keyval, modifiers);
-    }
+        if !(*state).player_surface.is_null() {
+            return player_surface_handle_key((*state).player_surface, keyval, modifiers);
+        }
 
-    GDK_EVENT_PROPAGATE
+        GDK_EVENT_PROPAGATE
+    }
 }
 
 unsafe fn install_css() {
-    player_style_install_overlay_css();
+    unsafe {
+        player_style_install_overlay_css();
 
-    let provider = gtk_css_provider_new();
-    let css = CString::new(concat!(
-        ".video-footer {",
-        "  background: rgba(0, 0, 0, 0.58);",
-        "  padding: 4px 6px;",
-        "  border-radius: 0;",
-        "}",
-        ".main-area {",
-        "  background: #0e0e10;",
-        "}",
-        "paned.main-area > separator,",
-        "paned.main-area > separator.wide,",
-        ".main-area separator,",
-        ".main-area separator.wide,",
-        ".main-area > separator,",
-        ".main-area > separator.wide {",
-        "  background: transparent;",
-        "  background-image: none;",
-        "  border: none;",
-        "  outline: none;",
-        "  box-shadow: none;",
-        "  color: transparent;",
-        "  margin: 0;",
-        "  padding: 0;",
-        "  min-width: 1px;",
-        "}",
-        "paned.main-area > separator:hover,",
-        "paned.main-area > separator.wide:hover,",
-        ".main-area separator:hover,",
-        ".main-area separator.wide:hover {",
-        "  background: transparent;",
-        "  background-image: none;",
-        "  border: none;",
-        "  outline: none;",
-        "  box-shadow: none;",
-        "}",
-        ".chat-panel,",
-        ".chat-scroll,",
-        ".chat-scroll viewport,",
-        ".chat-view,",
-        ".chat-view text {",
-        "  background: #0e0e10;",
-        "  color: #efeff1;",
-        "}",
-        ".chat-view {",
-        "  caret-color: transparent;",
-        "  font-size: 14px;",
-        "}",
-        ".chat-emote {",
-        "  background: transparent;",
-        "}",
-        ".chat-view text selection {",
-        "  background: rgba(145, 70, 255, 0.35);",
-        "  color: #ffffff;",
-        "}",
-        ".chat-scroll scrollbar {",
-        "  background: transparent;",
-        "}",
-        ".chat-scroll scrollbar slider {",
-        "  background: rgba(255, 255, 255, 0.28);",
-        "  border-radius: 999px;",
-        "  min-width: 4px;",
-        "}",
-        ".settings-overlay-button {",
-        "  background: rgba(0, 0, 0, 0.30);",
-        "}",
-        ".settings-overlay-button:hover {",
-        "  background: rgba(38, 38, 38, 0.62);",
-        "}",
-        ".video-footer button,",
-        ".video-footer menubutton,",
-        ".video-footer menubutton > button,",
-        ".video-footer popover,",
-        ".video-footer scale {",
-        "  color: white;",
-        "}",
-        ".video-footer button,",
-        ".video-footer menubutton > button {",
-        "  background: rgba(30, 30, 30, 0.82);",
-        "  color: white;",
-        "  border-color: transparent;",
-        "  outline-color: transparent;",
-        "  box-shadow: none;",
-        "  min-height: 0;",
-        "}",
-        ".video-footer button:hover,",
-        ".video-footer menubutton > button:hover {",
-        "  background: rgba(54, 54, 54, 0.90);",
-        "}",
-        ".stream-dropdown {",
-        "  min-width: 140px;",
-        "  min-height: 24px;",
-        "}",
-        ".stream-selector {",
-        "  min-width: 140px;",
-        "}",
-        ".stream-dropdown,",
-        ".stream-dropdown > button {",
-        "  padding: 2px 8px;",
-        "  min-height: 24px;",
-        "}",
-        ".stream-button-label {",
-        "  color: white;",
-        "  font-size: 13px;",
-        "}",
-        ".stream-info-labels {",
-        "  margin-left: 2px;",
-        "  margin-right: 4px;",
-        "}",
-        ".stream-title-label {",
-        "  color: rgba(255, 255, 255, 0.92);",
-        "  font-size: 12px;",
-        "}",
-        ".stream-metadata-label {",
-        "  color: rgba(255, 255, 255, 0.78);",
-        "  font-size: 11px;",
-        "}",
-        ".stream-popover contents {",
-        "  background: rgba(28, 28, 28, 0.98);",
-        "  padding: 0;",
-        "  margin: 0;",
-        "  border: none;",
-        "  border-radius: 4px;",
-        "  box-shadow: none;",
-        "}",
-        ".stream-popover {",
-        "  padding: 0;",
-        "  margin: 0;",
-        "  border: none;",
-        "  border-radius: 4px;",
-        "  box-shadow: none;",
-        "}",
-        ".stream-menu {",
-        "  background: rgba(28, 28, 28, 0.98);",
-        "  padding: 2px 0;",
-        "  margin: 0;",
-        "}",
-        ".stream-menu-item {",
-        "  background: transparent;",
-        "  color: white;",
-        "  border-color: transparent;",
-        "  outline-color: transparent;",
-        "  box-shadow: none;",
-        "  border-radius: 0;",
-        "  margin: 0;",
-        "  min-height: 0;",
-        "  padding: 6px 10px;",
-        "}",
-        ".stream-menu-item box {",
-        "  padding: 0;",
-        "  margin: 0;",
-        "}",
-        ".stream-menu-item label {",
-        "  color: white;",
-        "  padding: 0;",
-        "  margin: 0;",
-        "}",
-        ".stream-menu-item:hover {",
-        "  background: rgba(74, 74, 74, 0.98);",
-        "  color: white;",
-        "}",
-        ".settings-window {",
-        "  background: #141417;",
-        "  color: #efeff1;",
-        "}",
-        ".settings-sidebar {",
-        "  background: #1f1f23;",
-        "  border-right: 1px solid rgba(255, 255, 255, 0.10);",
-        "  padding: 8px;",
-        "}",
-        ".settings-sidebar row {",
-        "  border-radius: 6px;",
-        "  padding: 10px 12px;",
-        "}",
-        ".settings-sidebar row:selected {",
-        "  background: #2f2f35;",
-        "}",
-        ".settings-sidebar-label,",
-        ".settings-page-title,",
-        ".settings-section-title,",
-        ".settings-about-key,",
-        ".settings-about-value,",
-        ".settings-channel-header label,",
-        ".settings-empty-label,",
-        ".settings-hint-label,",
-        ".settings-status-label {",
-        "  color: #efeff1;",
-        "}",
-        ".settings-page {",
-        "  padding: 18px;",
-        "  background: #141417;",
-        "}",
-        ".settings-page-title {",
-        "  font-size: 20px;",
-        "  font-weight: 700;",
-        "}",
-        ".settings-section-title {",
-        "  color: rgba(239, 239, 241, 0.88);",
-        "  font-size: 13px;",
-        "  font-weight: 700;",
-        "}",
-        ".settings-section-header {",
-        "  margin-top: 2px;",
-        "}",
-        ".settings-section-rule {",
-        "  background: rgba(239, 239, 241, 0.16);",
-        "  min-height: 1px;",
-        "}",
-        ".settings-about-key {",
-        "  color: rgba(239, 239, 241, 0.70);",
-        "  font-size: 13px;",
-        "  font-weight: 700;",
-        "}",
-        ".settings-about-value {",
-        "  color: rgba(239, 239, 241, 0.88);",
-        "  font-size: 13px;",
-        "}",
-        ".settings-channel-header label {",
-        "  color: rgba(239, 239, 241, 0.70);",
-        "  font-size: 12px;",
-        "  font-weight: 700;",
-        "}",
-        ".settings-check {",
-        "  color: #efeff1;",
-        "  margin-top: 8px;",
-        "  margin-bottom: 0;",
-        "}",
-        ".settings-hint-label {",
-        "  color: rgba(239, 239, 241, 0.64);",
-        "  font-size: 13px;",
-        "  margin-top: -4px;",
-        "  margin-left: 0;",
-        "}",
-        ".settings-hint-label link {",
-        "  color: #8ab4ff;",
-        "}",
-        ".settings-hint-label link:hover {",
-        "  color: #adc8ff;",
-        "}",
-        ".settings-channel-row entry,",
-        ".settings-token-entry {",
-        "  background: #222226;",
-        "  color: #ffffff;",
-        "  border-color: rgba(255, 255, 255, 0.12);",
-        "  font-size: 13px;",
-        "  min-height: 28px;",
-        "  padding: 3px 8px;",
-        "}",
-        ".settings-channel-row entry selection,",
-        ".settings-token-entry selection {",
-        "  background: rgba(145, 70, 255, 0.55);",
-        "  color: #ffffff;",
-        "}",
-        ".settings-page button,",
-        ".settings-footer button {",
-        "  background: #26262c;",
-        "  color: #efeff1;",
-        "  border-color: rgba(255, 255, 255, 0.12);",
-        "  outline-color: transparent;",
-        "  box-shadow: none;",
-        "}",
-        ".settings-page button:hover,",
-        ".settings-footer button:hover {",
-        "  background: #34343b;",
-        "}",
-        ".settings-page .settings-primary-button,",
-        ".settings-footer .settings-primary-button {",
-        "  background: #3a2b52;",
-        "  color: #ffffff;",
-        "}",
-        ".settings-page .settings-primary-button:hover,",
-        ".settings-footer .settings-primary-button:hover {",
-        "  background: #4b3670;",
-        "}",
-        ".settings-page .settings-remove-button {",
-        "  background: transparent;",
-        "  border-color: transparent;",
-        "  min-width: 24px;",
-        "  min-height: 24px;",
-        "  padding: 2px 4px;",
-        "}",
-        ".settings-page .settings-remove-button:hover {",
-        "  background: rgba(255, 255, 255, 0.08);",
-        "}",
-        ".settings-footer {",
-        "  background: #141417;",
-        "  border-top: 1px solid rgba(255, 255, 255, 0.12);",
-        "  padding: 12px 18px 18px 18px;",
-        "}",
-        ".settings-empty-label {",
-        "  color: rgba(239, 239, 241, 0.62);",
-        "  margin-top: 8px;",
-        "  margin-bottom: 8px;",
-        "}",
-        ".settings-status-label {",
-        "  color: #ffb4ab;",
-        "}",
-    ))
-    .expect("static CSS has no NUL bytes");
+        let provider = gtk_css_provider_new();
+        let css = CString::new(concat!(
+            ".video-footer {",
+            "  background: rgba(0, 0, 0, 0.58);",
+            "  padding: 4px 6px;",
+            "  border-radius: 0;",
+            "}",
+            ".main-area {",
+            "  background: #0e0e10;",
+            "}",
+            "paned.main-area > separator,",
+            "paned.main-area > separator.wide,",
+            ".main-area separator,",
+            ".main-area separator.wide,",
+            ".main-area > separator,",
+            ".main-area > separator.wide {",
+            "  background: transparent;",
+            "  background-image: none;",
+            "  border: none;",
+            "  outline: none;",
+            "  box-shadow: none;",
+            "  color: transparent;",
+            "  margin: 0;",
+            "  padding: 0;",
+            "  min-width: 1px;",
+            "}",
+            "paned.main-area > separator:hover,",
+            "paned.main-area > separator.wide:hover,",
+            ".main-area separator:hover,",
+            ".main-area separator.wide:hover {",
+            "  background: transparent;",
+            "  background-image: none;",
+            "  border: none;",
+            "  outline: none;",
+            "  box-shadow: none;",
+            "}",
+            ".chat-panel,",
+            ".chat-scroll,",
+            ".chat-scroll viewport,",
+            ".chat-view,",
+            ".chat-view text {",
+            "  background: #0e0e10;",
+            "  color: #efeff1;",
+            "}",
+            ".chat-view {",
+            "  caret-color: transparent;",
+            "  font-size: 14px;",
+            "}",
+            ".chat-emote {",
+            "  background: transparent;",
+            "}",
+            ".chat-view text selection {",
+            "  background: rgba(145, 70, 255, 0.35);",
+            "  color: #ffffff;",
+            "}",
+            ".chat-scroll scrollbar {",
+            "  background: transparent;",
+            "}",
+            ".chat-scroll scrollbar slider {",
+            "  background: rgba(255, 255, 255, 0.28);",
+            "  border-radius: 999px;",
+            "  min-width: 4px;",
+            "}",
+            ".settings-overlay-button {",
+            "  background: rgba(0, 0, 0, 0.30);",
+            "}",
+            ".settings-overlay-button:hover {",
+            "  background: rgba(38, 38, 38, 0.62);",
+            "}",
+            ".video-footer button,",
+            ".video-footer menubutton,",
+            ".video-footer menubutton > button,",
+            ".video-footer popover,",
+            ".video-footer scale {",
+            "  color: white;",
+            "}",
+            ".video-footer button,",
+            ".video-footer menubutton > button {",
+            "  background: rgba(30, 30, 30, 0.82);",
+            "  color: white;",
+            "  border-color: transparent;",
+            "  outline-color: transparent;",
+            "  box-shadow: none;",
+            "  min-height: 0;",
+            "}",
+            ".video-footer button:hover,",
+            ".video-footer menubutton > button:hover {",
+            "  background: rgba(54, 54, 54, 0.90);",
+            "}",
+            ".stream-dropdown {",
+            "  min-width: 140px;",
+            "  min-height: 24px;",
+            "}",
+            ".stream-selector {",
+            "  min-width: 140px;",
+            "}",
+            ".stream-dropdown,",
+            ".stream-dropdown > button {",
+            "  padding: 2px 8px;",
+            "  min-height: 24px;",
+            "}",
+            ".stream-button-label {",
+            "  color: white;",
+            "  font-size: 13px;",
+            "}",
+            ".stream-info-labels {",
+            "  margin-left: 2px;",
+            "  margin-right: 4px;",
+            "}",
+            ".stream-title-label {",
+            "  color: rgba(255, 255, 255, 0.92);",
+            "  font-size: 12px;",
+            "}",
+            ".stream-metadata-label {",
+            "  color: rgba(255, 255, 255, 0.78);",
+            "  font-size: 11px;",
+            "}",
+            ".stream-popover contents {",
+            "  background: rgba(28, 28, 28, 0.98);",
+            "  padding: 0;",
+            "  margin: 0;",
+            "  border: none;",
+            "  border-radius: 4px;",
+            "  box-shadow: none;",
+            "}",
+            ".stream-popover {",
+            "  padding: 0;",
+            "  margin: 0;",
+            "  border: none;",
+            "  border-radius: 4px;",
+            "  box-shadow: none;",
+            "}",
+            ".stream-menu {",
+            "  background: rgba(28, 28, 28, 0.98);",
+            "  padding: 2px 0;",
+            "  margin: 0;",
+            "}",
+            ".stream-menu-item {",
+            "  background: transparent;",
+            "  color: white;",
+            "  border-color: transparent;",
+            "  outline-color: transparent;",
+            "  box-shadow: none;",
+            "  border-radius: 0;",
+            "  margin: 0;",
+            "  min-height: 0;",
+            "  padding: 6px 10px;",
+            "}",
+            ".stream-menu-item box {",
+            "  padding: 0;",
+            "  margin: 0;",
+            "}",
+            ".stream-menu-item label {",
+            "  color: white;",
+            "  padding: 0;",
+            "  margin: 0;",
+            "}",
+            ".stream-menu-item:hover {",
+            "  background: rgba(74, 74, 74, 0.98);",
+            "  color: white;",
+            "}",
+            ".settings-window {",
+            "  background: #141417;",
+            "  color: #efeff1;",
+            "}",
+            ".settings-sidebar {",
+            "  background: #1f1f23;",
+            "  border-right: 1px solid rgba(255, 255, 255, 0.10);",
+            "  padding: 8px;",
+            "}",
+            ".settings-sidebar row {",
+            "  border-radius: 6px;",
+            "  padding: 10px 12px;",
+            "}",
+            ".settings-sidebar row:selected {",
+            "  background: #2f2f35;",
+            "}",
+            ".settings-sidebar-label,",
+            ".settings-page-title,",
+            ".settings-section-title,",
+            ".settings-about-key,",
+            ".settings-about-value,",
+            ".settings-channel-header label,",
+            ".settings-empty-label,",
+            ".settings-hint-label,",
+            ".settings-status-label {",
+            "  color: #efeff1;",
+            "}",
+            ".settings-page {",
+            "  padding: 18px;",
+            "  background: #141417;",
+            "}",
+            ".settings-page-title {",
+            "  font-size: 20px;",
+            "  font-weight: 700;",
+            "}",
+            ".settings-section-title {",
+            "  color: rgba(239, 239, 241, 0.88);",
+            "  font-size: 13px;",
+            "  font-weight: 700;",
+            "}",
+            ".settings-section-header {",
+            "  margin-top: 2px;",
+            "}",
+            ".settings-section-rule {",
+            "  background: rgba(239, 239, 241, 0.16);",
+            "  min-height: 1px;",
+            "}",
+            ".settings-about-key {",
+            "  color: rgba(239, 239, 241, 0.70);",
+            "  font-size: 13px;",
+            "  font-weight: 700;",
+            "}",
+            ".settings-about-value {",
+            "  color: rgba(239, 239, 241, 0.88);",
+            "  font-size: 13px;",
+            "}",
+            ".settings-channel-header label {",
+            "  color: rgba(239, 239, 241, 0.70);",
+            "  font-size: 12px;",
+            "  font-weight: 700;",
+            "}",
+            ".settings-check {",
+            "  color: #efeff1;",
+            "  margin-top: 8px;",
+            "  margin-bottom: 0;",
+            "}",
+            ".settings-hint-label {",
+            "  color: rgba(239, 239, 241, 0.64);",
+            "  font-size: 13px;",
+            "  margin-top: -4px;",
+            "  margin-left: 0;",
+            "}",
+            ".settings-hint-label link {",
+            "  color: #8ab4ff;",
+            "}",
+            ".settings-hint-label link:hover {",
+            "  color: #adc8ff;",
+            "}",
+            ".settings-channel-row entry,",
+            ".settings-token-entry {",
+            "  background: #222226;",
+            "  color: #ffffff;",
+            "  border-color: rgba(255, 255, 255, 0.12);",
+            "  font-size: 13px;",
+            "  min-height: 28px;",
+            "  padding: 3px 8px;",
+            "}",
+            ".settings-channel-row entry selection,",
+            ".settings-token-entry selection {",
+            "  background: rgba(145, 70, 255, 0.55);",
+            "  color: #ffffff;",
+            "}",
+            ".settings-page button,",
+            ".settings-footer button {",
+            "  background: #26262c;",
+            "  color: #efeff1;",
+            "  border-color: rgba(255, 255, 255, 0.12);",
+            "  outline-color: transparent;",
+            "  box-shadow: none;",
+            "}",
+            ".settings-page button:hover,",
+            ".settings-footer button:hover {",
+            "  background: #34343b;",
+            "}",
+            ".settings-page .settings-primary-button,",
+            ".settings-footer .settings-primary-button {",
+            "  background: #3a2b52;",
+            "  color: #ffffff;",
+            "}",
+            ".settings-page .settings-primary-button:hover,",
+            ".settings-footer .settings-primary-button:hover {",
+            "  background: #4b3670;",
+            "}",
+            ".settings-page .settings-remove-button {",
+            "  background: transparent;",
+            "  border-color: transparent;",
+            "  min-width: 24px;",
+            "  min-height: 24px;",
+            "  padding: 2px 4px;",
+            "}",
+            ".settings-page .settings-remove-button:hover {",
+            "  background: rgba(255, 255, 255, 0.08);",
+            "}",
+            ".settings-footer {",
+            "  background: #141417;",
+            "  border-top: 1px solid rgba(255, 255, 255, 0.12);",
+            "  padding: 12px 18px 18px 18px;",
+            "}",
+            ".settings-empty-label {",
+            "  color: rgba(239, 239, 241, 0.62);",
+            "  margin-top: 8px;",
+            "  margin-bottom: 8px;",
+            "}",
+            ".settings-status-label {",
+            "  color: #ffb4ab;",
+            "}",
+        ))
+        .expect("static CSS has no NUL bytes");
 
-    gtk_css_provider_load_from_string(provider, css.as_ptr());
-    gtk_style_context_add_provider_for_display(
-        gdk_display_get_default(),
-        provider as *mut GtkStyleProvider,
-        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
-    g_object_unref(provider as *mut c_void);
-    player_style_install_footer_css();
+        gtk_css_provider_load_from_string(provider, css.as_ptr());
+        gtk_style_context_add_provider_for_display(
+            gdk_display_get_default(),
+            provider as *mut GtkStyleProvider,
+            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        g_object_unref(provider as *mut c_void);
+        player_style_install_footer_css();
+    }
 }
 
 unsafe fn install_app_icon() {
-    let theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
-    let icons_dir = g_build_filename(g_get_user_data_dir(), cstr!("icons"), ptr::null::<c_char>());
-    gtk_icon_theme_add_search_path(theme, icons_dir);
-    g_free(icons_dir as *mut c_void);
-    gtk_window_set_default_icon_name(c_app_id());
+    unsafe {
+        let theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
+        let icons_dir = g_build_filename(
+            g_get_user_data_dir(),
+            c"icons".as_ptr(),
+            ptr::null::<c_char>(),
+        );
+        gtk_icon_theme_add_search_path(theme, icons_dir);
+        g_free(icons_dir as *mut c_void);
+        gtk_window_set_default_icon_name(c_app_id());
+    }
 }
 
 unsafe fn get_executable_path(argv0: *const c_char) -> *mut c_char {
-    let link_path = g_file_read_link(cstr!("/proc/self/exe"), ptr::null_mut());
-    if !link_path.is_null() {
-        return link_path;
-    }
+    unsafe {
+        let link_path = g_file_read_link(c"/proc/self/exe".as_ptr(), ptr::null_mut());
+        if !link_path.is_null() {
+            return link_path;
+        }
 
-    if g_path_is_absolute(argv0) != 0 {
-        return g_strdup(argv0);
-    }
+        if g_path_is_absolute(argv0) != 0 {
+            return g_strdup(argv0);
+        }
 
-    let cwd = g_get_current_dir();
-    let result = g_canonicalize_filename(argv0, cwd);
-    g_free(cwd as *mut c_void);
-    result
+        let cwd = g_get_current_dir();
+        let result = g_canonicalize_filename(argv0, cwd);
+        g_free(cwd as *mut c_void);
+        result
+    }
 }
 
 unsafe fn quote_desktop_exec_path(path: *const c_char) -> *mut c_char {
-    let bytes = if path.is_null() {
-        &[][..]
-    } else {
-        CStr::from_ptr(path).to_bytes()
-    };
-    let mut quoted = Vec::with_capacity(bytes.len() + 2);
-    quoted.push(b'"');
-    for byte in bytes {
-        if matches!(*byte, b'"' | b'\\' | b'`' | b'$') {
-            quoted.push(b'\\');
+    unsafe {
+        let bytes = if path.is_null() {
+            &[][..]
+        } else {
+            CStr::from_ptr(path).to_bytes()
+        };
+        let mut quoted = Vec::with_capacity(bytes.len() + 2);
+        quoted.push(b'"');
+        for byte in bytes {
+            if matches!(*byte, b'"' | b'\\' | b'`' | b'$') {
+                quoted.push(b'\\');
+            }
+            quoted.push(*byte);
         }
-        quoted.push(*byte);
+        quoted.push(b'"');
+        dup_bytes(&quoted)
     }
-    quoted.push(b'"');
-    dup_bytes(&quoted)
 }
 
 unsafe fn error_message(error: *mut GError) -> *const c_char {
-    if error.is_null() || (*error).message.is_null() {
-        cstr!("unknown error")
-    } else {
-        (*error).message
+    unsafe {
+        if error.is_null() || (*error).message.is_null() {
+            c"unknown error".as_ptr()
+        } else {
+            (*error).message
+        }
     }
 }
 
 unsafe fn log_debug_static(message: *const c_char) {
-    g_log(
-        G_LOG_DOMAIN.as_ptr() as *const c_char,
-        G_LOG_LEVEL_DEBUG,
-        cstr!("%s"),
-        message,
-    );
+    unsafe {
+        g_log(
+            G_LOG_DOMAIN.as_ptr() as *const c_char,
+            G_LOG_LEVEL_DEBUG,
+            c"%s".as_ptr(),
+            message,
+        );
+    }
 }
 
 unsafe fn log_debug_error(format: *const c_char, message: *const c_char) {
-    g_log(
-        G_LOG_DOMAIN.as_ptr() as *const c_char,
-        G_LOG_LEVEL_DEBUG,
-        format,
-        message,
-    );
+    unsafe {
+        g_log(
+            G_LOG_DOMAIN.as_ptr() as *const c_char,
+            G_LOG_LEVEL_DEBUG,
+            format,
+            message,
+        );
+    }
 }
 
 unsafe fn write_user_desktop_identity(argv0: *const c_char) {
-    let applications_dir = g_build_filename(
-        g_get_user_data_dir(),
-        cstr!("applications"),
-        ptr::null::<c_char>(),
-    );
-    let icons_dir = g_build_filename(
-        g_get_user_data_dir(),
-        cstr!("icons"),
-        cstr!("hicolor"),
-        cstr!("scalable"),
-        cstr!("apps"),
-        ptr::null::<c_char>(),
-    );
-    let desktop_path = g_build_filename(
-        applications_dir,
-        cstr!("local.twitchplayer.desktop"),
-        ptr::null::<c_char>(),
-    );
-    let icon_path = g_build_filename(
-        icons_dir,
-        cstr!("local.twitchplayer.svg"),
-        ptr::null::<c_char>(),
-    );
-    let exec_path = get_executable_path(argv0);
-    let quoted_exec = quote_desktop_exec_path(exec_path);
-    let mut error: *mut GError = ptr::null_mut();
+    unsafe {
+        let applications_dir = g_build_filename(
+            g_get_user_data_dir(),
+            c"applications".as_ptr(),
+            ptr::null::<c_char>(),
+        );
+        let icons_dir = g_build_filename(
+            g_get_user_data_dir(),
+            c"icons".as_ptr(),
+            c"hicolor".as_ptr(),
+            c"scalable".as_ptr(),
+            c"apps".as_ptr(),
+            ptr::null::<c_char>(),
+        );
+        let desktop_path = g_build_filename(
+            applications_dir,
+            c"local.twitchplayer.desktop".as_ptr(),
+            ptr::null::<c_char>(),
+        );
+        let icon_path = g_build_filename(
+            icons_dir,
+            c"local.twitchplayer.svg".as_ptr(),
+            ptr::null::<c_char>(),
+        );
+        let exec_path = get_executable_path(argv0);
+        let quoted_exec = quote_desktop_exec_path(exec_path);
+        let mut error: *mut GError = ptr::null_mut();
 
-    if g_mkdir_with_parents(applications_dir, 0o700) < 0
-        || g_mkdir_with_parents(icons_dir, 0o700) < 0
-    {
-        log_debug_static(cstr!("could not create user desktop/icon directories"));
+        if g_mkdir_with_parents(applications_dir, 0o700) < 0
+            || g_mkdir_with_parents(icons_dir, 0o700) < 0
+        {
+            log_debug_static(c"could not create user desktop/icon directories".as_ptr());
+            g_free(applications_dir as *mut c_void);
+            g_free(icons_dir as *mut c_void);
+            g_free(desktop_path as *mut c_void);
+            g_free(icon_path as *mut c_void);
+            g_free(exec_path as *mut c_void);
+            g_free(quoted_exec as *mut c_void);
+            return;
+        }
+
+        if g_file_set_contents(
+            icon_path,
+            APP_ICON_SVG.as_ptr() as *const c_char,
+            APP_ICON_SVG.len() as isize,
+            &mut error,
+        ) == 0
+        {
+            log_debug_error(
+                c"could not write user app icon: %s".as_ptr(),
+                error_message(error),
+            );
+            g_clear_error(&mut error);
+            g_free(applications_dir as *mut c_void);
+            g_free(icons_dir as *mut c_void);
+            g_free(desktop_path as *mut c_void);
+            g_free(icon_path as *mut c_void);
+            g_free(exec_path as *mut c_void);
+            g_free(quoted_exec as *mut c_void);
+            return;
+        }
+
+        let desktop = g_strdup_printf(
+            c"[Desktop Entry]\nType=Application\nName=Twitch Player\nExec=%s %%u\nIcon=%s\nTerminal=false\nCategories=AudioVideo;Player;Network;\nStartupNotify=true\nStartupWMClass=%s\n".as_ptr(),
+            quoted_exec,
+            icon_path,
+            c_app_id(),
+        );
+
+        if g_file_set_contents(desktop_path, desktop, -1, &mut error) == 0 {
+            log_debug_error(
+                c"could not write desktop entry: %s".as_ptr(),
+                error_message(error),
+            );
+            g_clear_error(&mut error);
+        }
+
+        g_free(desktop as *mut c_void);
         g_free(applications_dir as *mut c_void);
         g_free(icons_dir as *mut c_void);
         g_free(desktop_path as *mut c_void);
         g_free(icon_path as *mut c_void);
         g_free(exec_path as *mut c_void);
         g_free(quoted_exec as *mut c_void);
-        return;
     }
-
-    if g_file_set_contents(
-        icon_path,
-        APP_ICON_SVG.as_ptr() as *const c_char,
-        APP_ICON_SVG.len() as isize,
-        &mut error,
-    ) == 0
-    {
-        log_debug_error(
-            cstr!("could not write user app icon: %s"),
-            error_message(error),
-        );
-        g_clear_error(&mut error);
-        g_free(applications_dir as *mut c_void);
-        g_free(icons_dir as *mut c_void);
-        g_free(desktop_path as *mut c_void);
-        g_free(icon_path as *mut c_void);
-        g_free(exec_path as *mut c_void);
-        g_free(quoted_exec as *mut c_void);
-        return;
-    }
-
-    let desktop = g_strdup_printf(
-        cstr!(
-            "[Desktop Entry]\nType=Application\nName=Twitch Player\nExec=%s %%u\nIcon=%s\nTerminal=false\nCategories=AudioVideo;Player;Network;\nStartupNotify=true\nStartupWMClass=%s\n"
-        ),
-        quoted_exec,
-        icon_path,
-        c_app_id(),
-    );
-
-    if g_file_set_contents(desktop_path, desktop, -1, &mut error) == 0 {
-        log_debug_error(
-            cstr!("could not write desktop entry: %s"),
-            error_message(error),
-        );
-        g_clear_error(&mut error);
-    }
-
-    g_free(desktop as *mut c_void);
-    g_free(applications_dir as *mut c_void);
-    g_free(icons_dir as *mut c_void);
-    g_free(desktop_path as *mut c_void);
-    g_free(icon_path as *mut c_void);
-    g_free(exec_path as *mut c_void);
-    g_free(quoted_exec as *mut c_void);
 }
 
 unsafe fn shutdown_state(state: *mut AppState) {
-    if (*state).closing.swap(true, Ordering::AcqRel) {
-        return;
-    }
+    unsafe {
+        if (*state).closing.swap(true, Ordering::AcqRel) {
+            return;
+        }
 
-    remove_source_if_active(&mut (*state).overlay_hide_source);
-    remove_source_if_active(&mut (*state).maximize_restore_source);
+        remove_source_if_active(&mut (*state).overlay_hide_source);
+        remove_source_if_active(&mut (*state).maximize_restore_source);
 
-    if !(*state).layout_popover.is_null() {
-        gtk_widget_unparent((*state).layout_popover);
+        if !(*state).layout_popover.is_null() {
+            gtk_widget_unparent((*state).layout_popover);
+        }
+        destroy_active_content(state);
+        if !(*state).primary_session.is_null() {
+            player_session_free((*state).primary_session);
+            (*state).primary_session = ptr::null_mut();
+        }
+        app_settings_free((*state).settings);
+        (*state).settings = ptr::null_mut();
     }
-    destroy_active_content(state);
-    if !(*state).primary_session.is_null() {
-        player_session_free((*state).primary_session);
-        (*state).primary_session = ptr::null_mut();
-    }
-    app_settings_free((*state).settings);
-    (*state).settings = ptr::null_mut();
 }
 
 unsafe extern "C" fn destroy_state(user_data: *mut c_void) {
-    let state = user_data as *mut AppState;
-    shutdown_state(state);
+    unsafe {
+        let state = user_data as *mut AppState;
+        shutdown_state(state);
 
-    remove_weak_pointer(&mut (*state).layout_popover);
-    remove_weak_pointer(&mut (*state).top_controls);
-    remove_weak_pointer(&mut (*state).top_left_controls);
-    remove_weak_pointer(&mut (*state).root_overlay);
-    (*state).settings_button = ptr::null_mut();
-    (*state).window = ptr::null_mut();
+        remove_weak_pointer(&mut (*state).layout_popover);
+        remove_weak_pointer(&mut (*state).top_controls);
+        remove_weak_pointer(&mut (*state).top_left_controls);
+        remove_weak_pointer(&mut (*state).root_overlay);
+        (*state).settings_button = ptr::null_mut();
+        (*state).window = ptr::null_mut();
 
-    app_state_unref(state);
+        app_state_unref(state);
+    }
 }
 
 unsafe fn add_weak_pointer<T>(object: *mut T, slot: *mut *mut T) {
-    g_object_add_weak_pointer(object as *mut GObject, slot as *mut *mut c_void);
+    unsafe {
+        g_object_add_weak_pointer(object as *mut GObject, slot as *mut *mut c_void);
+    }
 }
 
 unsafe fn remove_weak_pointer<T>(slot: *mut *mut T) {
-    if (*slot).is_null() {
-        return;
-    }
+    unsafe {
+        if (*slot).is_null() {
+            return;
+        }
 
-    g_object_remove_weak_pointer((*slot) as *mut GObject, slot as *mut *mut c_void);
-    *slot = ptr::null_mut();
+        g_object_remove_weak_pointer((*slot) as *mut GObject, slot as *mut *mut c_void);
+        *slot = ptr::null_mut();
+    }
 }
 
 unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *mut c_void) {
-    let config = user_data as *mut StartupConfig;
+    unsafe {
+        let config = user_data as *mut StartupConfig;
 
-    install_css();
-    install_app_icon();
+        install_css();
+        install_app_icon();
 
-    let state = Box::into_raw(Box::new(AppState {
-        window: ptr::null_mut(),
-        root_overlay: ptr::null_mut(),
-        top_left_controls: ptr::null_mut(),
-        top_controls: ptr::null_mut(),
-        settings_button: ptr::null_mut(),
-        layout_popover: ptr::null_mut(),
-        settings: app_settings_load(),
-        primary_session: player_session_new(),
-        player_surface: ptr::null_mut(),
-        startup_target: if config.is_null() {
-            ptr::null()
-        } else {
-            (*config).startup_target
-        },
-        initial_targets: if config.is_null() {
-            ptr::null()
-        } else {
-            (*config).initial_targets
-        },
-        initial_target_count: if config.is_null() {
-            0
-        } else {
-            (*config).initial_target_count
-        },
-        overlay_hide_source: 0,
-        maximize_restore_source: 0,
-        maximize_restore_attempts: 0,
-        motion_tracker: PlayerMotionTracker::new(),
-        closing: AtomicBool::new(false),
-        fullscreen: FALSE,
-        window_maximized: FALSE,
-        was_maximized_before_fullscreen: FALSE,
-        restore_maximized_after_fullscreen: FALSE,
-        restore_window_width: 0,
-        restore_window_height: 0,
-        ref_count: AtomicUsize::new(1),
-    }));
-    player_session_set_hwdec_enabled(
-        (*state).primary_session,
-        app_settings_get_hwdec_enabled((*state).settings),
-    );
+        let state = Box::into_raw(Box::new(AppState {
+            window: ptr::null_mut(),
+            root_overlay: ptr::null_mut(),
+            top_left_controls: ptr::null_mut(),
+            top_controls: ptr::null_mut(),
+            settings_button: ptr::null_mut(),
+            layout_popover: ptr::null_mut(),
+            settings: app_settings_load(),
+            primary_session: player_session_new(),
+            player_surface: ptr::null_mut(),
+            startup_target: if config.is_null() {
+                ptr::null()
+            } else {
+                (*config).startup_target
+            },
+            initial_targets: if config.is_null() {
+                ptr::null()
+            } else {
+                (*config).initial_targets
+            },
+            initial_target_count: if config.is_null() {
+                0
+            } else {
+                (*config).initial_target_count
+            },
+            overlay_hide_source: 0,
+            maximize_restore_source: 0,
+            maximize_restore_attempts: 0,
+            motion_tracker: PlayerMotionTracker::new(),
+            closing: AtomicBool::new(false),
+            fullscreen: FALSE,
+            window_maximized: FALSE,
+            was_maximized_before_fullscreen: FALSE,
+            restore_maximized_after_fullscreen: FALSE,
+            restore_window_width: 0,
+            restore_window_height: 0,
+            ref_count: AtomicUsize::new(1),
+        }));
+        player_session_set_hwdec_enabled(
+            (*state).primary_session,
+            app_settings_get_hwdec_enabled((*state).settings),
+        );
 
-    (*state).window = gtk_application_window_new(application);
-    gtk_window_set_title((*state).window as *mut GtkWindow, cstr!("Twitch Player"));
-    gtk_window_set_default_size(
-        (*state).window as *mut GtkWindow,
-        DEFAULT_WINDOW_WIDTH,
-        DEFAULT_WINDOW_HEIGHT,
-    );
-    gtk_window_set_decorated((*state).window as *mut GtkWindow, FALSE);
-    gtk_window_set_icon_name((*state).window as *mut GtkWindow, c_app_id());
-    connect_app_state_signal(
-        (*state).window as *mut c_void,
-        cstr!("notify::fullscreened"),
-        on_window_fullscreen_changed as *const c_void,
-        state,
-    );
-    connect_app_state_signal(
-        (*state).window as *mut c_void,
-        cstr!("notify::maximized"),
-        on_window_maximized_changed as *const c_void,
-        state,
-    );
-    connect_app_state_signal(
-        (*state).window as *mut c_void,
-        cstr!("close-request"),
-        on_window_close_request as *const c_void,
-        state,
-    );
+        (*state).window = gtk_application_window_new(application);
+        gtk_window_set_title((*state).window as *mut GtkWindow, c"Twitch Player".as_ptr());
+        gtk_window_set_default_size(
+            (*state).window as *mut GtkWindow,
+            DEFAULT_WINDOW_WIDTH,
+            DEFAULT_WINDOW_HEIGHT,
+        );
+        gtk_window_set_decorated((*state).window as *mut GtkWindow, FALSE);
+        gtk_window_set_icon_name((*state).window as *mut GtkWindow, c_app_id());
+        connect_app_state_signal(
+            (*state).window as *mut c_void,
+            c"notify::fullscreened".as_ptr(),
+            on_window_fullscreen_changed as *const c_void,
+            state,
+        );
+        connect_app_state_signal(
+            (*state).window as *mut c_void,
+            c"notify::maximized".as_ptr(),
+            on_window_maximized_changed as *const c_void,
+            state,
+        );
+        connect_app_state_signal(
+            (*state).window as *mut c_void,
+            c"close-request".as_ptr(),
+            on_window_close_request as *const c_void,
+            state,
+        );
 
-    (*state).root_overlay = gtk_overlay_new();
-    add_weak_pointer((*state).root_overlay, &mut (*state).root_overlay);
-    gtk_window_set_child((*state).window as *mut GtkWindow, (*state).root_overlay);
-    add_resize_handles((*state).root_overlay as *mut GtkOverlay, state);
+        (*state).root_overlay = gtk_overlay_new();
+        add_weak_pointer((*state).root_overlay, &mut (*state).root_overlay);
+        gtk_window_set_child((*state).window as *mut GtkWindow, (*state).root_overlay);
+        add_resize_handles((*state).root_overlay as *mut GtkOverlay, state);
 
-    (*state).top_left_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    add_weak_pointer((*state).top_left_controls, &mut (*state).top_left_controls);
-    gtk_widget_add_css_class((*state).top_left_controls, cstr!("top-overlay-controls"));
-    gtk_widget_set_halign((*state).top_left_controls, GTK_ALIGN_START);
-    gtk_widget_set_valign((*state).top_left_controls, GTK_ALIGN_START);
-    gtk_overlay_add_overlay(
-        (*state).root_overlay as *mut GtkOverlay,
-        (*state).top_left_controls,
-    );
+        (*state).top_left_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        add_weak_pointer((*state).top_left_controls, &mut (*state).top_left_controls);
+        gtk_widget_add_css_class((*state).top_left_controls, c"top-overlay-controls".as_ptr());
+        gtk_widget_set_halign((*state).top_left_controls, GTK_ALIGN_START);
+        gtk_widget_set_valign((*state).top_left_controls, GTK_ALIGN_START);
+        gtk_overlay_add_overlay(
+            (*state).root_overlay as *mut GtkOverlay,
+            (*state).top_left_controls,
+        );
 
-    (*state).settings_button =
-        player_overlay_button_new(player_settings_icon_new(), cstr!("Settings"));
-    gtk_widget_add_css_class((*state).settings_button, cstr!("settings-overlay-button"));
-    gtk_box_append(
-        (*state).top_left_controls as *mut GtkBox,
-        (*state).settings_button,
-    );
-    connect_app_state_signal(
-        (*state).settings_button as *mut c_void,
-        cstr!("clicked"),
-        on_settings_clicked as *const c_void,
-        state,
-    );
+        (*state).settings_button =
+            player_overlay_button_new(player_settings_icon_new(), c"Settings".as_ptr());
+        gtk_widget_add_css_class(
+            (*state).settings_button,
+            c"settings-overlay-button".as_ptr(),
+        );
+        gtk_box_append(
+            (*state).top_left_controls as *mut GtkBox,
+            (*state).settings_button,
+        );
+        connect_app_state_signal(
+            (*state).settings_button as *mut c_void,
+            c"clicked".as_ptr(),
+            on_settings_clicked as *const c_void,
+            state,
+        );
 
-    let layout_menu_button =
-        player_overlay_button_new(player_layout_menu_icon_new(), cstr!("Select layout"));
-    gtk_widget_add_css_class(layout_menu_button, cstr!("settings-overlay-button"));
-    gtk_box_append(
-        (*state).top_left_controls as *mut GtkBox,
-        layout_menu_button,
-    );
-    connect_app_state_signal(
-        layout_menu_button as *mut c_void,
-        cstr!("clicked"),
-        on_layout_menu_clicked as *const c_void,
-        state,
-    );
+        let layout_menu_button =
+            player_overlay_button_new(player_layout_menu_icon_new(), c"Select layout".as_ptr());
+        gtk_widget_add_css_class(layout_menu_button, c"settings-overlay-button".as_ptr());
+        gtk_box_append(
+            (*state).top_left_controls as *mut GtkBox,
+            layout_menu_button,
+        );
+        connect_app_state_signal(
+            layout_menu_button as *mut c_void,
+            c"clicked".as_ptr(),
+            on_layout_menu_clicked as *const c_void,
+            state,
+        );
 
-    (*state).layout_popover = create_layout_popover(state, layout_menu_button);
-    add_weak_pointer((*state).layout_popover, &mut (*state).layout_popover);
+        (*state).layout_popover = create_layout_popover(state, layout_menu_button);
+        add_weak_pointer((*state).layout_popover, &mut (*state).layout_popover);
 
-    (*state).top_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    add_weak_pointer((*state).top_controls, &mut (*state).top_controls);
-    gtk_widget_add_css_class((*state).top_controls, cstr!("top-overlay-controls"));
-    gtk_widget_set_halign((*state).top_controls, GTK_ALIGN_END);
-    gtk_widget_set_valign((*state).top_controls, GTK_ALIGN_START);
-    gtk_overlay_add_overlay(
-        (*state).root_overlay as *mut GtkOverlay,
-        (*state).top_controls,
-    );
+        (*state).top_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        add_weak_pointer((*state).top_controls, &mut (*state).top_controls);
+        gtk_widget_add_css_class((*state).top_controls, c"top-overlay-controls".as_ptr());
+        gtk_widget_set_halign((*state).top_controls, GTK_ALIGN_END);
+        gtk_widget_set_valign((*state).top_controls, GTK_ALIGN_START);
+        gtk_overlay_add_overlay(
+            (*state).root_overlay as *mut GtkOverlay,
+            (*state).top_controls,
+        );
 
-    let minimize_button = player_overlay_button_new(
-        player_window_icon_new(PLAYER_WINDOW_ICON_MINIMIZE),
-        cstr!("Minimize"),
-    );
-    gtk_box_append((*state).top_controls as *mut GtkBox, minimize_button);
-    connect_app_state_signal(
-        minimize_button as *mut c_void,
-        cstr!("clicked"),
-        on_minimize_clicked as *const c_void,
-        state,
-    );
+        let minimize_button = player_overlay_button_new(
+            player_window_icon_new(PLAYER_WINDOW_ICON_MINIMIZE),
+            c"Minimize".as_ptr(),
+        );
+        gtk_box_append((*state).top_controls as *mut GtkBox, minimize_button);
+        connect_app_state_signal(
+            minimize_button as *mut c_void,
+            c"clicked".as_ptr(),
+            on_minimize_clicked as *const c_void,
+            state,
+        );
 
-    let fullscreen_button = player_overlay_button_new(
-        player_window_icon_new(PLAYER_WINDOW_ICON_FULLSCREEN),
-        cstr!("Fullscreen"),
-    );
-    gtk_box_append((*state).top_controls as *mut GtkBox, fullscreen_button);
-    connect_app_state_signal(
-        fullscreen_button as *mut c_void,
-        cstr!("clicked"),
-        on_fullscreen_clicked as *const c_void,
-        state,
-    );
+        let fullscreen_button = player_overlay_button_new(
+            player_window_icon_new(PLAYER_WINDOW_ICON_FULLSCREEN),
+            c"Fullscreen".as_ptr(),
+        );
+        gtk_box_append((*state).top_controls as *mut GtkBox, fullscreen_button);
+        connect_app_state_signal(
+            fullscreen_button as *mut c_void,
+            c"clicked".as_ptr(),
+            on_fullscreen_clicked as *const c_void,
+            state,
+        );
 
-    let close_button = player_overlay_button_new(
-        player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE),
-        cstr!("Close"),
-    );
-    gtk_widget_add_css_class(close_button, cstr!("close-button"));
-    gtk_box_append((*state).top_controls as *mut GtkBox, close_button);
-    connect_app_state_signal(
-        close_button as *mut c_void,
-        cstr!("clicked"),
-        on_close_clicked as *const c_void,
-        state,
-    );
+        let close_button = player_overlay_button_new(
+            player_window_icon_new(PLAYER_WINDOW_ICON_CLOSE),
+            c"Close".as_ptr(),
+        );
+        gtk_widget_add_css_class(close_button, c"close-button".as_ptr());
+        gtk_box_append((*state).top_controls as *mut GtkBox, close_button);
+        connect_app_state_signal(
+            close_button as *mut c_void,
+            c"clicked".as_ptr(),
+            on_close_clicked as *const c_void,
+            state,
+        );
 
-    let motion = gtk_event_controller_motion_new();
-    gtk_event_controller_set_propagation_phase(motion, GTK_PHASE_CAPTURE);
-    connect_app_state_signal(
-        motion as *mut c_void,
-        cstr!("motion"),
-        on_root_motion as *const c_void,
-        state,
-    );
-    gtk_widget_add_controller((*state).root_overlay, motion as *mut c_void);
+        let motion = gtk_event_controller_motion_new();
+        gtk_event_controller_set_propagation_phase(motion, GTK_PHASE_CAPTURE);
+        connect_app_state_signal(
+            motion as *mut c_void,
+            c"motion".as_ptr(),
+            on_root_motion as *const c_void,
+            state,
+        );
+        gtk_widget_add_controller((*state).root_overlay, motion as *mut c_void);
 
-    let key_controller = gtk_event_controller_key_new();
-    gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
-    connect_app_state_signal(
-        key_controller as *mut c_void,
-        cstr!("key-pressed"),
-        on_key_pressed as *const c_void,
-        state,
-    );
-    gtk_widget_add_controller((*state).window, key_controller as *mut c_void);
+        let key_controller = gtk_event_controller_key_new();
+        gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
+        connect_app_state_signal(
+            key_controller as *mut c_void,
+            c"key-pressed".as_ptr(),
+            on_key_pressed as *const c_void,
+            state,
+        );
+        gtk_widget_add_controller((*state).window, key_controller as *mut c_void);
 
-    g_object_set_data_full(
-        (*state).window as *mut GObject,
-        cstr!("app-state"),
-        state as *mut c_void,
-        Some(destroy_state),
-    );
+        g_object_set_data_full(
+            (*state).window as *mut GObject,
+            c"app-state".as_ptr(),
+            state as *mut c_void,
+            Some(destroy_state),
+        );
 
-    let start_2x2 = !config.is_null() && (*config).start_in_2x2 != 0;
-    set_layout_mode(
-        state,
-        if start_2x2 {
-            PLAYER_LAYOUT_2X2_INDEX
-        } else {
-            PLAYER_LAYOUT_SINGLE_INDEX
-        },
-    );
-    gtk_window_present((*state).window as *mut GtkWindow);
-    schedule_window_overlay_hide(state);
+        let start_2x2 = !config.is_null() && (*config).start_in_2x2 != 0;
+        set_layout_mode(
+            state,
+            if start_2x2 {
+                PLAYER_LAYOUT_2X2_INDEX
+            } else {
+                PLAYER_LAYOUT_SINGLE_INDEX
+            },
+        );
+        gtk_window_present((*state).window as *mut GtkWindow);
+        schedule_window_overlay_hide(state);
+    }
 }
 
 pub fn run_from_env() -> i32 {
@@ -1949,55 +2066,58 @@ pub fn run_from_env() -> i32 {
 }
 
 unsafe fn run_with_args(args: &[CString]) -> c_int {
-    let mut initial_targets: [*const c_char; PLAYER_SURFACE_MAX_TILES] =
-        [ptr::null(); PLAYER_SURFACE_MAX_TILES];
-    let mut initial_target_count: c_uint = 0;
-    let mut start_in_2x2 = FALSE;
-    let mut startup_target: *const c_char = ptr::null();
-    let mut argv: Vec<*mut c_char> = args.iter().map(|arg| arg.as_ptr() as *mut c_char).collect();
-    argv.push(ptr::null_mut());
+    unsafe {
+        let mut initial_targets: [*const c_char; PLAYER_SURFACE_MAX_TILES] =
+            [ptr::null(); PLAYER_SURFACE_MAX_TILES];
+        let mut initial_target_count: c_uint = 0;
+        let mut start_in_2x2 = FALSE;
+        let mut startup_target: *const c_char = ptr::null();
+        let mut argv: Vec<*mut c_char> =
+            args.iter().map(|arg| arg.as_ptr() as *mut c_char).collect();
+        argv.push(ptr::null_mut());
 
-    for arg in args.iter().skip(1) {
-        let arg = arg.as_ptr();
-        if CStr::from_ptr(arg).to_bytes() == b"--grid" {
-            start_in_2x2 = TRUE;
-            continue;
+        for arg in args.iter().skip(1) {
+            let arg = arg.as_ptr();
+            if CStr::from_ptr(arg).to_bytes() == b"--grid" {
+                start_in_2x2 = TRUE;
+                continue;
+            }
+
+            if startup_target.is_null() {
+                startup_target = arg;
+            }
+            if (initial_target_count as usize) < PLAYER_SURFACE_MAX_TILES {
+                initial_targets[initial_target_count as usize] = arg;
+                initial_target_count += 1;
+            }
         }
 
-        if startup_target.is_null() {
-            startup_target = arg;
-        }
-        if (initial_target_count as usize) < PLAYER_SURFACE_MAX_TILES {
-            initial_targets[initial_target_count as usize] = arg;
-            initial_target_count += 1;
-        }
+        let mut config = StartupConfig {
+            startup_target,
+            initial_targets: initial_targets.as_ptr(),
+            initial_target_count,
+            start_in_2x2,
+        };
+
+        configure_rendering_defaults();
+        g_set_prgname(c_app_id());
+        g_set_application_name(c"Twitch Player".as_ptr());
+        write_user_desktop_identity(argv[0]);
+
+        let application = gtk_application_new(c_app_id(), G_APPLICATION_NON_UNIQUE);
+        g_signal_connect_data(
+            application as *mut c_void,
+            c"activate".as_ptr(),
+            on_activate as *const c_void,
+            &mut config as *mut StartupConfig as *mut c_void,
+            None,
+            0,
+        );
+
+        let status = g_application_run(application as *mut c_void, 1, argv.as_mut_ptr());
+        g_object_unref(application as *mut c_void);
+        status
     }
-
-    let mut config = StartupConfig {
-        startup_target,
-        initial_targets: initial_targets.as_ptr(),
-        initial_target_count,
-        start_in_2x2,
-    };
-
-    configure_rendering_defaults();
-    g_set_prgname(c_app_id());
-    g_set_application_name(cstr!("Twitch Player"));
-    write_user_desktop_identity(argv[0]);
-
-    let application = gtk_application_new(c_app_id(), G_APPLICATION_NON_UNIQUE);
-    g_signal_connect_data(
-        application as *mut c_void,
-        cstr!("activate"),
-        on_activate as *const c_void,
-        &mut config as *mut StartupConfig as *mut c_void,
-        None,
-        0,
-    );
-
-    let status = g_application_run(application as *mut c_void, 1, argv.as_mut_ptr());
-    g_object_unref(application as *mut c_void);
-    status
 }
 
 #[cfg(test)]

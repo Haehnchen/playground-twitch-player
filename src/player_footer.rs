@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_float, c_int, c_void, CStr};
+use std::ffi::{CStr, c_char, c_float, c_int, c_void};
 use std::ptr;
 
 const GTK_ORIENTATION_VERTICAL: c_int = 1;
@@ -52,69 +52,71 @@ unsafe extern "C" {
 }
 
 unsafe fn add_weak_pointer(widget: *mut GtkWidget, field: *mut *mut GtkWidget) {
-    g_object_add_weak_pointer(widget as *mut GObject, field as *mut *mut c_void);
+    unsafe {
+        g_object_add_weak_pointer(widget as *mut GObject, field as *mut *mut c_void);
+    }
 }
 
 unsafe fn remove_weak_pointer(widget: *mut GtkWidget, field: *mut *mut GtkWidget) {
-    g_object_remove_weak_pointer(widget as *mut GObject, field as *mut *mut c_void);
+    unsafe {
+        g_object_remove_weak_pointer(widget as *mut GObject, field as *mut *mut c_void);
+    }
 }
 
 unsafe fn create_stream_info_label(css_class: *const c_char, valign: c_int) -> *mut GtkWidget {
-    let label = gtk_label_new(b"\0".as_ptr() as *const c_char);
-    gtk_widget_add_css_class(label, css_class);
-    gtk_widget_set_halign(label, GTK_ALIGN_FILL);
-    gtk_widget_set_valign(label, valign);
-    gtk_widget_set_hexpand(label, 1);
-    gtk_label_set_xalign(label as *mut GtkLabel, 0.0);
-    gtk_label_set_ellipsize(label as *mut GtkLabel, PANGO_ELLIPSIZE_END);
-    gtk_label_set_single_line_mode(label as *mut GtkLabel, 1);
-    label
+    unsafe {
+        let label = gtk_label_new(c"".as_ptr());
+        gtk_widget_add_css_class(label, css_class);
+        gtk_widget_set_halign(label, GTK_ALIGN_FILL);
+        gtk_widget_set_valign(label, valign);
+        gtk_widget_set_hexpand(label, 1);
+        gtk_label_set_xalign(label as *mut GtkLabel, 0.0);
+        gtk_label_set_ellipsize(label as *mut GtkLabel, PANGO_ELLIPSIZE_END);
+        gtk_label_set_single_line_mode(label as *mut GtkLabel, 1);
+        label
+    }
 }
 
 unsafe fn is_nonempty(text: *const c_char) -> bool {
-    !text.is_null() && *text != 0
+    unsafe { !text.is_null() && *text != 0 }
 }
 
 pub unsafe fn player_footer_stream_info_new() -> *mut PlayerFooterStreamInfo {
-    let mut info = Box::new(PlayerFooterStreamInfo {
-        widget: ptr::null_mut(),
-        title_label: ptr::null_mut(),
-        metadata_label: ptr::null_mut(),
-    });
+    unsafe {
+        let mut info = Box::new(PlayerFooterStreamInfo {
+            widget: ptr::null_mut(),
+            title_label: ptr::null_mut(),
+            metadata_label: ptr::null_mut(),
+        });
 
-    info.widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_add_css_class(
-        info.widget,
-        b"stream-info-labels\0".as_ptr() as *const c_char,
-    );
-    gtk_widget_set_halign(info.widget, GTK_ALIGN_FILL);
-    gtk_widget_set_valign(info.widget, GTK_ALIGN_CENTER);
-    gtk_widget_set_hexpand(info.widget, 1);
-    add_weak_pointer(info.widget, &mut info.widget);
+        info.widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_widget_add_css_class(info.widget, c"stream-info-labels".as_ptr());
+        gtk_widget_set_halign(info.widget, GTK_ALIGN_FILL);
+        gtk_widget_set_valign(info.widget, GTK_ALIGN_CENTER);
+        gtk_widget_set_hexpand(info.widget, 1);
+        add_weak_pointer(info.widget, &mut info.widget);
 
-    info.title_label = create_stream_info_label(
-        b"stream-title-label\0".as_ptr() as *const c_char,
-        GTK_ALIGN_END,
-    );
-    info.metadata_label = create_stream_info_label(
-        b"stream-metadata-label\0".as_ptr() as *const c_char,
-        GTK_ALIGN_START,
-    );
-    add_weak_pointer(info.title_label, &mut info.title_label);
-    add_weak_pointer(info.metadata_label, &mut info.metadata_label);
+        info.title_label = create_stream_info_label(c"stream-title-label".as_ptr(), GTK_ALIGN_END);
+        info.metadata_label =
+            create_stream_info_label(c"stream-metadata-label".as_ptr(), GTK_ALIGN_START);
+        add_weak_pointer(info.title_label, &mut info.title_label);
+        add_weak_pointer(info.metadata_label, &mut info.metadata_label);
 
-    gtk_box_append(info.widget as *mut GtkBox, info.title_label);
-    gtk_box_append(info.widget as *mut GtkBox, info.metadata_label);
+        gtk_box_append(info.widget as *mut GtkBox, info.title_label);
+        gtk_box_append(info.widget as *mut GtkBox, info.metadata_label);
 
-    Box::into_raw(info)
+        Box::into_raw(info)
+    }
 }
 
 pub unsafe fn player_footer_stream_info_get_widget<W>(info: *mut PlayerFooterStreamInfo) -> *mut W {
-    if info.is_null() {
-        return ptr::null_mut();
-    }
+    unsafe {
+        if info.is_null() {
+            return ptr::null_mut();
+        }
 
-    (*info).widget as *mut W
+        (*info).widget as *mut W
+    }
 }
 
 pub unsafe fn player_footer_stream_info_set(
@@ -122,65 +124,67 @@ pub unsafe fn player_footer_stream_info_set(
     title: *const c_char,
     metadata: *const c_char,
 ) {
-    if info.is_null() || (*info).title_label.is_null() {
-        return;
-    }
+    unsafe {
+        if info.is_null() || (*info).title_label.is_null() {
+            return;
+        }
 
-    let empty = b"\0".as_ptr() as *const c_char;
-    gtk_label_set_text(
-        (*info).title_label as *mut GtkLabel,
-        if title.is_null() { empty } else { title },
-    );
-    if !(*info).metadata_label.is_null() {
+        let empty = c"".as_ptr();
         gtk_label_set_text(
-            (*info).metadata_label as *mut GtkLabel,
-            if metadata.is_null() { empty } else { metadata },
+            (*info).title_label as *mut GtkLabel,
+            if title.is_null() { empty } else { title },
         );
-    }
+        if !(*info).metadata_label.is_null() {
+            gtk_label_set_text(
+                (*info).metadata_label as *mut GtkLabel,
+                if metadata.is_null() { empty } else { metadata },
+            );
+        }
 
-    let mut tooltip_storage = Vec::new();
-    let tooltip = if is_nonempty(title) && is_nonempty(metadata) {
-        tooltip_storage.extend_from_slice(CStr::from_ptr(title).to_bytes());
-        tooltip_storage.extend_from_slice(b" \xE2\x80\xA2 ");
-        tooltip_storage.extend_from_slice(CStr::from_ptr(metadata).to_bytes());
-        tooltip_storage.push(0);
-        tooltip_storage.as_ptr() as *const c_char
-    } else if is_nonempty(title) {
-        title
-    } else if is_nonempty(metadata) {
-        metadata
-    } else {
-        ptr::null()
-    };
+        let mut tooltip_storage = Vec::new();
+        let tooltip = if is_nonempty(title) && is_nonempty(metadata) {
+            tooltip_storage.extend_from_slice(CStr::from_ptr(title).to_bytes());
+            tooltip_storage.extend_from_slice(b" \xE2\x80\xA2 ");
+            tooltip_storage.extend_from_slice(CStr::from_ptr(metadata).to_bytes());
+            tooltip_storage.push(0);
+            tooltip_storage.as_ptr() as *const c_char
+        } else if is_nonempty(title) {
+            title
+        } else if is_nonempty(metadata) {
+            metadata
+        } else {
+            ptr::null()
+        };
 
-    gtk_widget_set_tooltip_text((*info).title_label, tooltip);
-    if !(*info).metadata_label.is_null() {
-        gtk_widget_set_tooltip_text((*info).metadata_label, tooltip);
+        gtk_widget_set_tooltip_text((*info).title_label, tooltip);
+        if !(*info).metadata_label.is_null() {
+            gtk_widget_set_tooltip_text((*info).metadata_label, tooltip);
+        }
     }
 }
 
 pub unsafe fn player_footer_stream_info_clear(info: *mut PlayerFooterStreamInfo) {
-    player_footer_stream_info_set(
-        info,
-        b"\0".as_ptr() as *const c_char,
-        b"\0".as_ptr() as *const c_char,
-    );
+    unsafe {
+        player_footer_stream_info_set(info, c"".as_ptr(), c"".as_ptr());
+    }
 }
 
 pub unsafe fn player_footer_stream_info_free(info: *mut PlayerFooterStreamInfo) {
-    if info.is_null() {
-        return;
-    }
+    unsafe {
+        if info.is_null() {
+            return;
+        }
 
-    if !(*info).widget.is_null() {
-        remove_weak_pointer((*info).widget, &mut (*info).widget);
-    }
-    if !(*info).title_label.is_null() {
-        remove_weak_pointer((*info).title_label, &mut (*info).title_label);
-    }
-    if !(*info).metadata_label.is_null() {
-        remove_weak_pointer((*info).metadata_label, &mut (*info).metadata_label);
-    }
+        if !(*info).widget.is_null() {
+            remove_weak_pointer((*info).widget, &mut (*info).widget);
+        }
+        if !(*info).title_label.is_null() {
+            remove_weak_pointer((*info).title_label, &mut (*info).title_label);
+        }
+        if !(*info).metadata_label.is_null() {
+            remove_weak_pointer((*info).metadata_label, &mut (*info).metadata_label);
+        }
 
-    drop(Box::from_raw(info));
+        drop(Box::from_raw(info));
+    }
 }

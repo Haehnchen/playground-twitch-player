@@ -217,12 +217,16 @@ mod tests {
             .position(PlayerLayout::is_three_by_two)
             .expect("at least one 3:2 layout");
 
-        assert!(PLAYER_LAYOUTS[..first_three_by_two]
-            .iter()
-            .all(|layout| !layout.is_three_by_two()));
-        assert!(PLAYER_LAYOUTS[first_three_by_two..]
-            .iter()
-            .all(PlayerLayout::is_three_by_two));
+        assert!(
+            PLAYER_LAYOUTS[..first_three_by_two]
+                .iter()
+                .all(|layout| !layout.is_three_by_two())
+        );
+        assert!(
+            PLAYER_LAYOUTS[first_three_by_two..]
+                .iter()
+                .all(PlayerLayout::is_three_by_two)
+        );
     }
 
     #[test]

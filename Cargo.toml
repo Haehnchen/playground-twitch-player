@@ -1,7 +1,8 @@
 [package]
 name = "twitch-player"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.99.1"
 build = "build.rs"
 
 [lib]
@@ -44,3 +45,6 @@ harness = false
 
 [profile.release]
 strip = "symbols"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

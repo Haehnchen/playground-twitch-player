@@ -1,5 +1,5 @@
 pub fn normalize_twitch_channel(value: &[u8]) -> Option<Vec<u8>> {
-    let value = trim_ascii(value);
+    let value = value.trim_ascii();
     if value.is_empty() {
         return None;
     }
@@ -40,16 +40,6 @@ pub fn normalize_twitch_channel(value: &[u8]) -> Option<Vec<u8>> {
     }
 
     Some(candidate[..channel_len].to_vec())
-}
-
-fn trim_ascii(mut value: &[u8]) -> &[u8] {
-    while value.first().is_some_and(u8::is_ascii_whitespace) {
-        value = &value[1..];
-    }
-    while value.last().is_some_and(u8::is_ascii_whitespace) {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 #[cfg(test)]

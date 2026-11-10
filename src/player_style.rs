@@ -1,8 +1,9 @@
-use std::ffi::{c_char, c_void};
+use std::ffi::{CStr, c_char, c_void};
+use std::sync::Once;
 
 const GTK_STYLE_PROVIDER_PRIORITY_APPLICATION: u32 = 600;
 
-const OVERLAY_CSS: &str = r#"
+const OVERLAY_CSS: &CStr = cr#"
 .top-overlay-controls {
   margin: 6px;
 }
@@ -45,7 +46,7 @@ button.close-button:hover,
 }
 "#;
 
-const FOOTER_CSS: &str = r#"
+const FOOTER_CSS: &CStr = cr#"
 .player-footer .overlay-icon-button,
 .player-footer button.overlay-icon-button {
   background: transparent;
@@ -357,9 +358,7 @@ pub struct GtkCssProvider {
 }
 
 unsafe extern "C" {
-    fn g_free(mem: *mut c_void);
     fn g_object_unref(object: *mut c_void);
-    fn g_strdup(str: *const c_char) -> *mut c_char;
     fn gdk_display_get_default() -> *mut GdkDisplay;
     fn gtk_css_provider_load_from_string(provider: *mut GtkCssProvider, string: *const c_char);
     fn gtk_css_provider_new() -> *mut GtkCssProvider;
@@ -370,66 +369,39 @@ unsafe extern "C" {
     );
 }
 
-unsafe fn duplicate_css(css: &str) -> *mut c_char {
-    let mut bytes = Vec::with_capacity(css.len() + 1);
-    bytes.extend_from_slice(css.as_bytes());
-    bytes.push(0);
-    g_strdup(bytes.as_ptr() as *const c_char)
+/// # Safety
+/// Must run on the GTK main thread with an initialized default display.
+unsafe fn install_css(css: &CStr, priority: u32) {
+    // SAFETY: The caller guarantees GTK thread affinity and a live display.
+    // GTK copies the CSS string and retains the provider before we unref it.
+    unsafe {
+        let provider = gtk_css_provider_new();
+        gtk_css_provider_load_from_string(provider, css.as_ptr());
+        gtk_style_context_add_provider_for_display(
+            gdk_display_get_default(),
+            provider as *mut c_void,
+            priority,
+        );
+        g_object_unref(provider as *mut c_void);
+    }
 }
 
-unsafe fn install_css(css: &str, priority: u32) {
-    let mut bytes = Vec::with_capacity(css.len() + 1);
-    bytes.extend_from_slice(css.as_bytes());
-    bytes.push(0);
-
-    let provider = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(provider, bytes.as_ptr() as *const c_char);
-    gtk_style_context_add_provider_for_display(
-        gdk_display_get_default(),
-        provider as *mut c_void,
-        priority,
-    );
-    g_object_unref(provider as *mut c_void);
-}
-
-unsafe fn player_style_build_overlay_css() -> *mut c_char {
-    duplicate_css(OVERLAY_CSS)
-}
-
-unsafe fn player_style_build_footer_css() -> *mut c_char {
-    duplicate_css(FOOTER_CSS)
-}
-
+/// # Safety
+/// Must run on the GTK main thread with an initialized default display.
 pub unsafe fn player_style_install_footer_css() {
-    static mut INSTALLED: bool = false;
-
-    if INSTALLED {
-        return;
-    }
-
-    let css = player_style_build_footer_css();
-    if css.is_null() {
-        return;
-    }
-    g_free(css as *mut c_void);
-
-    install_css(FOOTER_CSS, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
-    INSTALLED = true;
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        // SAFETY: This closure runs synchronously on the caller's GTK thread.
+        unsafe { install_css(FOOTER_CSS, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1) };
+    });
 }
 
+/// # Safety
+/// Must run on the GTK main thread with an initialized default display.
 pub unsafe fn player_style_install_overlay_css() {
-    static mut INSTALLED: bool = false;
-
-    if INSTALLED {
-        return;
-    }
-
-    let css = player_style_build_overlay_css();
-    if css.is_null() {
-        return;
-    }
-    g_free(css as *mut c_void);
-
-    install_css(OVERLAY_CSS, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    INSTALLED = true;
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        // SAFETY: This closure runs synchronously on the caller's GTK thread.
+        unsafe { install_css(OVERLAY_CSS, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION) };
+    });
 }
