@@ -7,7 +7,7 @@ use super::{
 };
 use crate::settings::AppSettingsChannel;
 use crate::twitch::stream_info::TwitchStreamPreview;
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
 
@@ -33,20 +33,20 @@ fn empty_switcher() -> *mut ChannelSwitcherOverlay {
 
 fn sample_preview() -> TwitchStreamPreview {
     TwitchStreamPreview {
-        channel: c"test_channel".as_ptr() as *mut c_char,
-        display_name: c"Test Channel".as_ptr() as *mut c_char,
-        title: c"Grüße aus Köln".as_ptr() as *mut c_char,
-        avatar_url: ptr::null_mut(),
-        preview_url: ptr::null_mut(),
-        started_at: ptr::null_mut(),
-        category_name: c"Games + Demos".as_ptr() as *mut c_char,
+        channel: c"test_channel".into(),
+        display_name: c"Test Channel".into(),
+        title: c"Grüße aus Köln".into(),
+        avatar_url: Default::default(),
+        preview_url: Default::default(),
+        started_at: Default::default(),
+        category_name: c"Games + Demos".into(),
         viewer_count: 1,
     }
 }
 
 #[test]
 fn search_matches_all_preview_fields_case_insensitively() {
-    let mut preview = sample_preview();
+    let preview = sample_preview();
     for filter in [
         c"",
         c"TEST_CHANNEL",
@@ -56,13 +56,13 @@ fn search_matches_all_preview_fields_case_insensitively() {
         c"demos",
     ] {
         assert!(
-            unsafe { preview_matches_filter(&mut preview, filter.as_ptr()) },
+            unsafe { preview_matches_filter(&preview, filter.as_ptr()) },
             "{filter:?}"
         );
     }
     for filter in [c"missing", c"offline", c"demos tv"] {
         assert!(
-            !unsafe { preview_matches_filter(&mut preview, filter.as_ptr()) },
+            !unsafe { preview_matches_filter(&preview, filter.as_ptr()) },
             "{filter:?}"
         );
     }
@@ -125,8 +125,12 @@ fn search_activation_works_before_cards_are_built() {
         unsafe {
             let selected = &mut *(data as *mut Option<(Vec<u8>, Vec<u8>)>);
             *selected = Some((
-                CStr::from_ptr((*channel).channel).to_bytes().to_vec(),
-                CStr::from_ptr((*channel).label).to_bytes().to_vec(),
+                CStr::from_ptr((*channel).channel.as_ptr())
+                    .to_bytes()
+                    .to_vec(),
+                CStr::from_ptr((*channel).label.as_ptr())
+                    .to_bytes()
+                    .to_vec(),
             ));
         }
     }
@@ -134,12 +138,7 @@ fn search_activation_works_before_cards_are_built() {
     unsafe {
         let switcher = empty_switcher();
         let mut selected: Option<(Vec<u8>, Vec<u8>)> = None;
-        let mut preview = sample_preview();
-        (*switcher).previews = gtk4::glib::ffi::g_ptr_array_new_with_free_func(None).cast();
-        gtk4::glib::ffi::g_ptr_array_add(
-            (*switcher).previews.cast(),
-            &mut preview as *mut _ as *mut c_void,
-        );
+        (*switcher).previews = Some(vec![sample_preview()]);
         (*switcher).activate_callback = Some(activated);
         (*switcher).user_data = &mut selected as *mut _ as *mut c_void;
         assert_eq!((*switcher).preview_cards.len(), 0);

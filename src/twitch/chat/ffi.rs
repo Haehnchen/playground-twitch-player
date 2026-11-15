@@ -3,69 +3,14 @@ use std::ffi::{c_char, c_int, c_uint, c_void};
 pub(super) const G_IO_ERROR_CANCELLED: c_int = 19;
 pub(super) const G_SOURCE_REMOVE: c_int = 0;
 
-#[repr(C)]
-pub struct GCancellable {
-    _private: [u8; 0],
-}
+pub use gtk4::gio::ffi::{
+    GCancellable, GDataInputStream, GIOStream, GInputStream, GOutputStream, GSocket, GSocketClient,
+    GSocketConnection,
+};
 
-#[repr(C)]
-pub struct GDataInputStream {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GError {
-    pub(super) domain: c_uint,
-    pub(super) code: c_int,
-    pub(super) message: *mut c_char,
-}
-
-#[repr(C)]
-pub struct GInputStream {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GIOStream {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub union GMutex {
-    pub(super) p: *mut c_void,
-    pub(super) i: [c_uint; 2],
-}
-
-#[repr(C)]
-pub struct GOutputStream {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GSocket {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GSocketClient {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GSocketConnection {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GThread {
-    _private: [u8; 0],
-}
+pub use gtk4::glib::ffi::{GError, GThread};
 
 unsafe extern "C" {
-    pub(super) fn g_ascii_strdown(str: *const c_char, len: isize) -> *mut c_char;
-    pub(super) fn g_atomic_int_add(atomic: *mut c_int, val: c_int) -> c_int;
-    pub(super) fn g_atomic_int_dec_and_test(atomic: *mut c_int) -> c_int;
-    pub(super) fn g_atomic_int_inc(atomic: *mut c_int);
     pub(super) fn g_cancellable_cancel(cancellable: *mut GCancellable);
     pub(super) fn g_cancellable_is_cancelled(cancellable: *mut GCancellable) -> c_int;
     pub(super) fn g_cancellable_new() -> *mut GCancellable;
@@ -77,7 +22,7 @@ unsafe extern "C" {
         cancellable: *mut GCancellable,
         error: *mut *mut GError,
     ) -> *mut c_char;
-    pub(super) fn g_error_matches(error: *mut GError, domain: c_uint, code: c_int) -> c_int;
+    pub(super) fn g_error_matches(error: *const GError, domain: c_uint, code: c_int) -> c_int;
     pub(super) fn g_free(mem: *mut c_void);
     pub(super) fn g_io_error_quark() -> c_uint;
     pub(super) fn g_io_stream_get_input_stream(stream: *mut GIOStream) -> *mut GInputStream;
@@ -89,10 +34,6 @@ unsafe extern "C" {
         data: *mut c_void,
         notify: Option<GDestroyNotify>,
     );
-    pub(super) fn g_mutex_clear(mutex: *mut GMutex);
-    pub(super) fn g_mutex_init(mutex: *mut GMutex);
-    pub(super) fn g_mutex_lock(mutex: *mut GMutex);
-    pub(super) fn g_mutex_unlock(mutex: *mut GMutex);
     pub(super) fn g_object_ref(object: *mut c_void) -> *mut c_void;
     pub(super) fn g_object_unref(object: *mut c_void);
     pub(super) fn g_output_stream_write_all(
@@ -118,7 +59,6 @@ unsafe extern "C" {
         connection: *mut GSocketConnection,
     ) -> *mut GSocket;
     pub(super) fn g_socket_set_timeout(socket: *mut GSocket, timeout: c_uint);
-    pub(super) fn g_strdup(str: *const c_char) -> *mut c_char;
     pub(super) fn g_thread_new(
         name: *const c_char,
         func: Option<GThreadFunc>,

@@ -1,59 +1,23 @@
 mod ffi;
 mod messages;
-#[cfg(test)]
-mod tests {
-    use super::messages::fallback_username_color;
-    use super::messages::{adjustment_is_at_bottom, scroll_is_at_bottom};
-    use std::ffi::CStr;
-    use std::ptr;
-
-    #[test]
-    fn fallback_colors_are_deterministic() {
-        unsafe {
-            let first = CStr::from_ptr(fallback_username_color(c"alice".as_ptr()));
-            let second = CStr::from_ptr(fallback_username_color(c"alice".as_ptr()));
-            let empty = CStr::from_ptr(fallback_username_color(ptr::null()));
-            assert_eq!(first, second);
-            for color in [first, empty] {
-                assert_eq!(color.to_bytes().len(), 7);
-                assert!(color.to_bytes().starts_with(b"#"));
-            }
-        }
-    }
-
-    #[test]
-    fn scroll_bottom_allows_two_pixels_of_tolerance() {
-        assert!(scroll_is_at_bottom(90.0, 100.0, 10.0));
-        assert!(scroll_is_at_bottom(88.0, 100.0, 10.0));
-        assert!(!scroll_is_at_bottom(87.0, 100.0, 10.0));
-        assert!(scroll_is_at_bottom(0.0, 0.0, 10.0));
-    }
-
-    #[test]
-    fn missing_adjustment_counts_as_bottom() {
-        unsafe { assert!(adjustment_is_at_bottom(ptr::null_mut())) };
-    }
-}
 
 pub use self::ffi::{
-    GHashTable, GSource, GdkRGBA, GtkAdjustment, GtkBox, GtkEventController,
-    GtkEventControllerScroll, GtkScrolledWindow, GtkTextBuffer, GtkTextIter, GtkTextTag,
-    GtkTextView, GtkWidget,
+    GSource, GdkRGBA, GtkAdjustment, GtkBox, GtkEventController, GtkEventControllerScroll,
+    GtkScrolledWindow, GtkTextBuffer, GtkTextIter, GtkTextTag, GtkTextView, GtkWidget,
 };
 
 use self::ffi::{
     GTK_EVENT_CONTROLLER_SCROLL_VERTICAL, GTK_ORIENTATION_VERTICAL, GTK_POLICY_AUTOMATIC,
-    GTK_POLICY_NEVER, GTK_WRAP_WORD_CHAR, g_free, g_hash_table_destroy, g_hash_table_new_full,
-    g_main_context_find_source_by_id, g_object_ref_sink, g_object_unref, g_signal_connect_data,
-    g_signal_handler_disconnect, g_source_destroy, g_str_equal, g_str_hash, gtk_box_append,
-    gtk_box_new, gtk_event_controller_scroll_new, gtk_scrolled_window_get_vadjustment,
-    gtk_scrolled_window_new, gtk_scrolled_window_set_child, gtk_scrolled_window_set_policy,
-    gtk_text_buffer_create_tag, gtk_text_buffer_set_text, gtk_text_view_get_buffer,
-    gtk_text_view_new, gtk_text_view_set_bottom_margin, gtk_text_view_set_cursor_visible,
-    gtk_text_view_set_editable, gtk_text_view_set_left_margin, gtk_text_view_set_right_margin,
-    gtk_text_view_set_top_margin, gtk_text_view_set_wrap_mode, gtk_widget_add_controller,
-    gtk_widget_add_css_class, gtk_widget_set_focusable, gtk_widget_set_hexpand,
-    gtk_widget_set_size_request, gtk_widget_set_vexpand,
+    GTK_POLICY_NEVER, GTK_WRAP_WORD_CHAR, g_main_context_find_source_by_id, g_object_ref_sink,
+    g_object_unref, g_signal_connect_data, g_signal_handler_disconnect, g_source_destroy,
+    gtk_box_append, gtk_box_new, gtk_event_controller_scroll_new,
+    gtk_scrolled_window_get_vadjustment, gtk_scrolled_window_new, gtk_scrolled_window_set_child,
+    gtk_scrolled_window_set_policy, gtk_text_buffer_create_tag, gtk_text_buffer_set_text,
+    gtk_text_view_get_buffer, gtk_text_view_new, gtk_text_view_set_bottom_margin,
+    gtk_text_view_set_cursor_visible, gtk_text_view_set_editable, gtk_text_view_set_left_margin,
+    gtk_text_view_set_right_margin, gtk_text_view_set_top_margin, gtk_text_view_set_wrap_mode,
+    gtk_widget_add_controller, gtk_widget_add_css_class, gtk_widget_set_focusable,
+    gtk_widget_set_hexpand, gtk_widget_set_size_request, gtk_widget_set_vexpand,
 };
 use self::messages::{clear_chat, on_chat_line};
 use self::messages::{on_chat_adjustment_changed, on_chat_scroll};
@@ -61,6 +25,7 @@ use crate::chat::assets::{ChatAssets, chat_assets_free, chat_assets_new};
 use crate::twitch::chat::{
     TwitchChatClient, twitch_chat_client_free, twitch_chat_client_new, twitch_chat_client_start,
 };
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 
@@ -77,7 +42,7 @@ pub struct ChatPanelPrivate {
     buffer: *mut GtkTextBuffer,
     adjustment: *mut GtkAdjustment,
 
-    username_tags: *mut GHashTable,
+    username_tags: HashMap<Vec<u8>, *mut GtkTextTag>,
     assets: *mut ChatAssets,
     reply_tag: *mut GtkTextTag,
 
@@ -131,7 +96,7 @@ pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
             buffer: ptr::null_mut(),
             adjustment: ptr::null_mut(),
 
-            username_tags: ptr::null_mut(),
+            username_tags: HashMap::new(),
             assets: ptr::null_mut(),
             reply_tag: ptr::null_mut(),
 
@@ -175,7 +140,7 @@ pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
             c"scroll".as_ptr(),
             on_chat_scroll as *const c_void,
             panel as *mut c_void,
-            ptr::null_mut(),
+            None,
             0,
         );
         gtk_widget_add_controller((*priv_).scroller, scroll_controller);
@@ -193,8 +158,6 @@ pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
         gtk_scrolled_window_set_child((*priv_).scroller as *mut GtkScrolledWindow, (*priv_).view);
 
         (*priv_).buffer = gtk_text_view_get_buffer((*priv_).view as *mut GtkTextView);
-        (*priv_).username_tags =
-            g_hash_table_new_full(Some(g_str_hash), Some(g_str_equal), Some(g_free), None);
         (*priv_).assets = chat_assets_new();
         (*priv_).follow_tail = 1;
         (*priv_).reply_tag = gtk_text_buffer_create_tag(
@@ -217,7 +180,7 @@ pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
                 c"changed".as_ptr(),
                 on_chat_adjustment_changed as *const c_void,
                 panel as *mut c_void,
-                ptr::null_mut(),
+                None,
                 0,
             );
         }
@@ -288,9 +251,6 @@ pub unsafe fn chat_panel_free(panel: *mut ChatPanel) {
             remove_source_if_active(&mut (*priv_).scroll_source);
             remove_source_if_active(&mut (*priv_).scroll_state_source);
 
-            if !(*priv_).username_tags.is_null() {
-                g_hash_table_destroy((*priv_).username_tags);
-            }
             if !(*priv_).assets.is_null() {
                 chat_assets_free((*priv_).assets);
             }
@@ -305,5 +265,40 @@ pub unsafe fn chat_panel_free(panel: *mut ChatPanel) {
         }
 
         drop(Box::from_raw(panel));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::messages::fallback_username_color;
+    use super::messages::{adjustment_is_at_bottom, scroll_is_at_bottom};
+    use std::ffi::CStr;
+    use std::ptr;
+
+    #[test]
+    fn fallback_colors_are_deterministic() {
+        unsafe {
+            let first = CStr::from_ptr(fallback_username_color(c"alice".as_ptr()));
+            let second = CStr::from_ptr(fallback_username_color(c"alice".as_ptr()));
+            let empty = CStr::from_ptr(fallback_username_color(ptr::null()));
+            assert_eq!(first, second);
+            for color in [first, empty] {
+                assert_eq!(color.to_bytes().len(), 7);
+                assert!(color.to_bytes().starts_with(b"#"));
+            }
+        }
+    }
+
+    #[test]
+    fn scroll_bottom_allows_two_pixels_of_tolerance() {
+        assert!(scroll_is_at_bottom(90.0, 100.0, 10.0));
+        assert!(scroll_is_at_bottom(88.0, 100.0, 10.0));
+        assert!(!scroll_is_at_bottom(87.0, 100.0, 10.0));
+        assert!(scroll_is_at_bottom(0.0, 0.0, 10.0));
+    }
+
+    #[test]
+    fn missing_adjustment_counts_as_bottom() {
+        unsafe { assert!(adjustment_is_at_bottom(ptr::null_mut())) };
     }
 }

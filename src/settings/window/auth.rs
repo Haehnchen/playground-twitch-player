@@ -183,8 +183,8 @@ pub(super) unsafe extern "C" fn on_twitch_token_ready(
         };
         app_settings_set_twitch_auth_tokens(
             (*view).settings,
-            (*token).access_token,
-            (*token).refresh_token,
+            (*token).access_token.as_ptr(),
+            (*token).refresh_token.as_ptr(),
             expires_at,
         );
 
@@ -243,7 +243,7 @@ pub(super) unsafe extern "C" fn on_twitch_device_code_ready(
             return;
         }
 
-        let launcher = gtk_uri_launcher_new((*code).verification_uri);
+        let launcher = gtk_uri_launcher_new((*code).verification_uri.as_ptr());
         gtk_uri_launcher_launch(
             launcher,
             (*view).window as *mut GtkWindow,
@@ -253,8 +253,8 @@ pub(super) unsafe extern "C" fn on_twitch_device_code_ready(
         );
         g_object_unref(launcher as *mut c_void);
 
-        let escaped_uri = g_markup_escape_text((*code).verification_uri, -1);
-        let escaped_code = g_markup_escape_text((*code).user_code, -1);
+        let escaped_uri = g_markup_escape_text((*code).verification_uri.as_ptr(), -1);
+        let escaped_code = g_markup_escape_text((*code).user_code.as_ptr(), -1);
         let mut message = Vec::new();
         message.extend_from_slice(b"Open Twitch activation and enter code <a href=\"");
         message.extend_from_slice(CStr::from_ptr(escaped_uri).to_bytes());

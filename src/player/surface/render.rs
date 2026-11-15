@@ -262,17 +262,16 @@ pub(super) unsafe fn create_mpv_render_context(tile: *mut StreamTile) -> c_int {
             return FALSE;
         }
 
+        if (*tile).mpv_gl.is_some() {
+            return TRUE;
+        }
+
         gtk_gl_area_make_current((*tile).gl_area as *mut GtkGLArea);
 
         let gl_error = gtk_gl_area_get_error((*tile).gl_area as *mut GtkGLArea);
         if !gl_error.is_null() {
             log_warning(c"GTK GL area error: %s".as_ptr(), (*gl_error).message);
             return FALSE;
-        }
-
-        if (*tile).mpv_gl.is_some() {
-            disable_tile_render_callback(tile);
-            (*tile).mpv_gl.take();
         }
 
         let mut gl_init_params = MpvOpenGLInitParams {
@@ -327,7 +326,7 @@ pub(super) unsafe extern "C" fn on_gl_realize(_area: *mut GtkGLArea, user_data: 
         }
 
         if tile_mpv(tile).is_some() && create_mpv_render_context(tile) == 0 {
-            set_tile_status(tile, c"Render error".as_ptr());
+            set_tile_status(tile, Some("Render error"));
         }
     }
 }

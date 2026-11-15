@@ -1,8 +1,6 @@
 use super::ffi::{
-    G_IO_ERROR_FAILED, GCancellable, GError, GPtrArray, GTask, g_free, g_io_error_quark,
-    g_ptr_array_add, g_ptr_array_new_with_free_func, g_ptr_array_set_free_func, g_ptr_array_sort,
-    g_ptr_array_unref, g_random_int_range, g_set_error, g_task_return_error, g_task_return_pointer,
-    g_uri_escape_string,
+    G_IO_ERROR_FAILED, GCancellable, GError, GTask, g_free, g_io_error_quark, g_random_int_range,
+    g_set_error, g_task_return_error, g_task_return_pointer, g_uri_escape_string,
 };
 use super::playlist::parse_stream_qualities_playlist;
 use super::requests::{
@@ -15,12 +13,12 @@ use super::responses::{
     twitch_stream_info_fetch_followed_channels,
 };
 use super::utils::{
-    g_ptr_array_unref_destroy, twitch_current_stream_free_destroy,
-    twitch_stream_preview_free_destroy, twitch_stream_qualities_result_free,
+    drop_box, twitch_current_stream_free_destroy, twitch_stream_qualities_result_free,
 };
 use super::{
     FetchCurrentStreamData, FetchFollowedChannelsData, FetchLiveChannelsData,
-    FetchStreamQualitiesData, TwitchCurrentStream, TwitchStreamQualitiesResult,
+    FetchStreamQualitiesData, TwitchCurrentStream, TwitchFollowedChannel, TwitchStreamPreview,
+    TwitchStreamQualitiesResult,
 };
 use crate::glib_strings::dup_bytes;
 use gtk4::glib::{self, translate::IntoGlibPtr};
@@ -114,11 +112,15 @@ pub(super) unsafe fn fetch_stream_qualities(
         if playlist.is_null() {
             return ptr::null_mut();
         }
-        let qualities = parse_stream_qualities_playlist(playlist, error);
+        let qualities = parse_stream_qualities_playlist(CStr::from_ptr(playlist).to_bytes());
         g_free(playlist as *mut c_void);
-        if qualities.is_null() {
-            return ptr::null_mut();
-        }
+        let qualities = match qualities {
+            Ok(qualities) => qualities,
+            Err(err) => {
+                glib::ffi::g_propagate_error(error, err.into_glib_ptr());
+                return ptr::null_mut();
+            }
+        };
 
         Box::into_raw(Box::new(TwitchStreamQualitiesResult {
             qualities,
@@ -132,22 +134,17 @@ pub(super) unsafe fn fetch_live_channels(
     data: *mut FetchLiveChannelsData,
     cancel: *mut GCancellable,
     error: *mut *mut GError,
-) -> *mut GPtrArray {
+) -> Option<Vec<TwitchStreamPreview>> {
     unsafe {
-        let all_previews = g_ptr_array_new_with_free_func(Some(twitch_stream_preview_free_destroy));
-        let mut offset = 0;
-
-        while offset < (*data).channel_count {
-            let chunk_count = std::cmp::min(TWITCH_GQL_MAX_LOGINS, (*data).channel_count - offset);
-            let body = build_live_channels_request_body(
-                (*data).channels.add(offset as usize) as *const *const c_char,
-                chunk_count,
-            );
+        let mut all_previews = Vec::new();
+        for channels in (*data).channels.chunks(TWITCH_GQL_MAX_LOGINS as usize) {
+            let pointers: Vec<_> = channels.iter().map(|channel| channel.as_ptr()).collect();
+            let body =
+                build_live_channels_request_body(pointers.as_ptr(), pointers.len() as c_uint);
             let response = post_twitch_gql_request(body, ptr::null(), cancel, error);
             g_free(body as *mut c_void);
             if response.is_null() {
-                g_ptr_array_unref(all_previews);
-                return ptr::null_mut();
+                return None;
             }
 
             let chunk_previews = parse_live_channels_response(CStr::from_ptr(response).to_bytes());
@@ -156,72 +153,39 @@ pub(super) unsafe fn fetch_live_channels(
                 Ok(previews) => previews,
                 Err(err) => {
                     glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
-                    g_ptr_array_unref(all_previews);
-                    return ptr::null_mut();
+                    return None;
                 }
             };
 
-            for i in 0..(*chunk_previews).len {
-                g_ptr_array_add(all_previews, *(*chunk_previews).pdata.add(i as usize));
-            }
-            g_ptr_array_set_free_func(chunk_previews, None);
-            g_ptr_array_unref(chunk_previews);
-            offset += TWITCH_GQL_MAX_LOGINS;
+            all_previews.extend(chunk_previews);
         }
 
-        g_ptr_array_sort(all_previews, Some(compare_stream_previews_by_viewers));
-        all_previews
+        all_previews.sort_by(compare_stream_previews_by_viewers);
+        Some(all_previews)
     }
 }
 
 pub(super) unsafe extern "C" fn fetch_current_stream_data_free(data: *mut c_void) {
     unsafe {
-        let data = data as *mut FetchCurrentStreamData;
-        if data.is_null() {
-            return;
-        }
-        g_free((*data).channel as *mut c_void);
-        drop(Box::from_raw(data));
+        drop_box::<FetchCurrentStreamData>(data);
     }
 }
 
 pub(super) unsafe extern "C" fn fetch_stream_qualities_data_free(data: *mut c_void) {
     unsafe {
-        let data = data as *mut FetchStreamQualitiesData;
-        if data.is_null() {
-            return;
-        }
-        g_free((*data).channel as *mut c_void);
-        g_free((*data).oauth_token as *mut c_void);
-        drop(Box::from_raw(data));
+        drop_box::<FetchStreamQualitiesData>(data);
     }
 }
 
 pub(super) unsafe extern "C" fn fetch_live_channels_data_free(data: *mut c_void) {
     unsafe {
-        let data = data as *mut FetchLiveChannelsData;
-        if data.is_null() {
-            return;
-        }
-        if !(*data).channels.is_null() {
-            for i in 0..(*data).channel_count {
-                g_free(*(*data).channels.add(i as usize) as *mut c_void);
-            }
-            g_free((*data).channels as *mut c_void);
-        }
-        drop(Box::from_raw(data));
+        drop_box::<FetchLiveChannelsData>(data);
     }
 }
 
 pub(super) unsafe extern "C" fn fetch_followed_channels_data_free(data: *mut c_void) {
     unsafe {
-        let data = data as *mut FetchFollowedChannelsData;
-        if data.is_null() {
-            return;
-        }
-        g_free((*data).client_id as *mut c_void);
-        g_free((*data).oauth_token as *mut c_void);
-        drop(Box::from_raw(data));
+        drop_box::<FetchFollowedChannelsData>(data);
     }
 }
 
@@ -234,7 +198,7 @@ pub(super) unsafe extern "C" fn fetch_current_stream_worker(
     unsafe {
         let data = task_data as *mut FetchCurrentStreamData;
         let mut error: *mut GError = ptr::null_mut();
-        let stream = fetch_current_stream((*data).channel, cancel, &mut error);
+        let stream = fetch_current_stream((*data).channel.as_ptr(), cancel, &mut error);
         if !error.is_null() {
             g_task_return_error(task, error);
             return;
@@ -256,8 +220,12 @@ pub(super) unsafe extern "C" fn fetch_stream_qualities_worker(
     unsafe {
         let data = task_data as *mut FetchStreamQualitiesData;
         let mut error: *mut GError = ptr::null_mut();
-        let result =
-            fetch_stream_qualities((*data).channel, (*data).oauth_token, cancel, &mut error);
+        let result = fetch_stream_qualities(
+            (*data).channel.as_ptr(),
+            (*data).oauth_token.as_ptr(),
+            cancel,
+            &mut error,
+        );
         if !error.is_null() {
             if !result.is_null() {
                 twitch_stream_qualities_result_free(result as *mut c_void);
@@ -289,8 +257,8 @@ pub(super) unsafe extern "C" fn fetch_live_channels_worker(
         }
         g_task_return_pointer(
             task,
-            previews as *mut c_void,
-            Some(g_ptr_array_unref_destroy),
+            Box::into_raw(Box::new(previews.unwrap_or_default())).cast(),
+            Some(drop_box::<Vec<TwitchStreamPreview>>),
         );
     }
 }
@@ -305,8 +273,8 @@ pub(super) unsafe extern "C" fn fetch_followed_channels_worker(
         let data = task_data as *mut FetchFollowedChannelsData;
         let mut error: *mut GError = ptr::null_mut();
         let channels = twitch_stream_info_fetch_followed_channels(
-            (*data).client_id,
-            (*data).oauth_token,
+            (*data).client_id.as_ptr(),
+            (*data).oauth_token.as_ptr(),
             cancel,
             &mut error,
         );
@@ -316,8 +284,8 @@ pub(super) unsafe extern "C" fn fetch_followed_channels_worker(
         }
         g_task_return_pointer(
             task,
-            channels as *mut c_void,
-            Some(g_ptr_array_unref_destroy),
+            Box::into_raw(Box::new(channels.unwrap_or_default())).cast(),
+            Some(drop_box::<Vec<TwitchFollowedChannel>>),
         );
     }
 }

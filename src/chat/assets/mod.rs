@@ -4,14 +4,18 @@ use gtk4::ffi::{
 };
 use gtk4::{gdk, gio, glib, prelude::*};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     ffi::{CStr, c_char, c_int, c_uint},
     ptr,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+const EMOTE_CACHE_LIMIT: usize = 256;
+
 pub struct ChatAssets {
     image_cache: HashMap<String, gdk::Texture>,
+    cache_order: VecDeque<String>,
+    image_waiters: HashMap<String, Vec<glib::WeakRef<gtk4::Picture>>>,
     ref_count: AtomicUsize,
     closing: AtomicBool,
 }
@@ -57,6 +61,8 @@ unsafe fn chat_assets_unref(assets: *mut ChatAssets) {
 pub fn chat_assets_new() -> *mut ChatAssets {
     Box::into_raw(Box::new(ChatAssets {
         image_cache: HashMap::new(),
+        cache_order: VecDeque::new(),
+        image_waiters: HashMap::new(),
         ref_count: AtomicUsize::new(1),
         closing: AtomicBool::new(false),
     }))
@@ -88,19 +94,46 @@ unsafe fn create_inline_image(assets: *mut ChatAssets, url: &str) -> gtk4::Pictu
             picture.set_paintable(Some(texture));
             return picture;
         }
+        if let Some(waiters) = (*assets).image_waiters.get_mut(url) {
+            waiters.push(picture.downgrade());
+            return picture;
+        }
+        (*assets)
+            .image_waiters
+            .insert(url.to_owned(), vec![picture.downgrade()]);
         let owner = AssetsRef(chat_assets_ref(assets));
         let url = url.to_owned();
-        let pending_picture = picture.clone();
         glib::MainContext::default().spawn_local(async move {
-            let Ok((contents, _)) = gio::File::for_uri(&url).load_contents_future().await else {
-                return;
+            let contents = gio::File::for_uri(&url).load_contents_future().await;
+            // Decode outside the GTK main loop, including the first use of a codec.
+            let texture = match contents {
+                Ok((contents, _)) if !(*owner.get()).closing.load(Ordering::Acquire) => {
+                    gio::spawn_blocking(move || {
+                        gdk::Texture::from_bytes(&glib::Bytes::from_owned(contents))
+                    })
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                }
+                _ => None,
             };
-            if (*owner.get()).closing.load(Ordering::Acquire) {
+            let assets = &mut *owner.get();
+            let waiters = assets.image_waiters.remove(&url).unwrap_or_default();
+            if assets.closing.load(Ordering::Acquire) {
                 return;
             }
-            if let Ok(texture) = gdk::Texture::from_bytes(&glib::Bytes::from_owned(contents)) {
-                (*owner.get()).image_cache.insert(url, texture.clone());
-                pending_picture.set_paintable(Some(&texture));
+            if let Some(texture) = texture {
+                // Eviction releases cached textures; visible messages keep their own references.
+                if assets.image_cache.len() == EMOTE_CACHE_LIMIT
+                    && let Some(oldest) = assets.cache_order.pop_front()
+                {
+                    assets.image_cache.remove(&oldest);
+                }
+                assets.cache_order.push_back(url.clone());
+                assets.image_cache.insert(url, texture.clone());
+                for picture in waiters.into_iter().filter_map(|weak| weak.upgrade()) {
+                    picture.set_paintable(Some(&texture));
+                }
             }
         });
         picture

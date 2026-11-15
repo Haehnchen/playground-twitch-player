@@ -3,8 +3,8 @@ use super::controls::show_tile_overlay;
 use super::ffi::{
     G_IO_ERROR_CANCELLED, G_LOG_LEVEL_DEBUG, G_SOURCE_CONTINUE, G_SOURCE_REMOVE, GObject,
     GtkButton, GtkLabel, GtkPopover, g_cancellable_cancel, g_cancellable_new, g_clear_error,
-    g_error_matches, g_free, g_io_error_quark, g_log, g_object_get_data, g_ptr_array_unref,
-    gtk_label_set_text, gtk_popover_popdown, gtk_popover_popup, gtk_widget_set_tooltip_text,
+    g_error_matches, g_free, g_io_error_quark, g_log, g_object_get_data, gtk_label_set_text,
+    gtk_popover_popdown, gtk_popover_popup, gtk_widget_set_tooltip_text,
 };
 use super::playback::{load_tile_stream, set_tile_status, update_tile_empty_state};
 use super::runtime::{
@@ -41,6 +41,7 @@ use crate::twitch::stream_info::{
     twitch_stream_info_format_current_stream_metadata,
     twitch_stream_info_format_current_stream_title,
 };
+use gtk4::prelude::*;
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
@@ -248,7 +249,10 @@ pub(super) unsafe fn reload_tile_stream_with_quality(
     quality: *const TwitchStreamQuality,
 ) {
     unsafe {
-        if quality.is_null() || !is_nonempty((*quality).url) || !is_nonempty((*tile).channel) {
+        if quality.is_null()
+            || !is_nonempty((*quality).url.as_ptr())
+            || !is_nonempty((*tile).channel)
+        {
             return;
         }
 
@@ -257,7 +261,7 @@ pub(super) unsafe fn reload_tile_stream_with_quality(
         set_tile_status(tile, PLAYER_STARTING_STREAM_STATUS);
         player_session_load_stream(
             (*tile).session,
-            (*quality).url,
+            (*quality).url.as_ptr(),
             (*tile).label,
             (*tile).channel,
         );
@@ -330,9 +334,6 @@ pub(super) unsafe extern "C" fn on_tile_stream_qualities_fetched(
         );
 
         if (*data).generation != (*tile).stream_quality.generation {
-            if !qualities.is_null() {
-                g_ptr_array_unref(qualities);
-            }
             g_clear_error(&mut error);
             stream_quality_callback_data_free(data);
             return;
@@ -397,7 +398,11 @@ pub(super) unsafe fn request_tile_qualities_update(tile: *mut StreamTile, force:
         twitch_stream_info_fetch_stream_qualities_async(
             (*tile).channel,
             app_settings_get_twitch_playback_auth_token((*(*tile).app).settings),
-            (*tile).stream_quality.cancel,
+            (*tile)
+                .stream_quality
+                .cancel
+                .as_ref()
+                .map_or(ptr::null_mut(), |cancel| cancel.as_ptr()),
             Some(on_tile_stream_qualities_fetched),
             data as *mut c_void,
         );
@@ -409,9 +414,21 @@ pub(super) unsafe fn populate_tile_quality_buttons(tile: *mut StreamTile) {
         player_stream_settings_quality_list_populate(
             (*tile).quality_list_box,
             (*tile).quality_status_label,
-            (*tile).stream_quality.qualities,
-            (*tile).stream_quality.selected_url,
-            (*tile).stream_quality.selected_label,
+            (*tile)
+                .stream_quality
+                .qualities
+                .as_deref()
+                .unwrap_or_default(),
+            (*tile)
+                .stream_quality
+                .selected_url
+                .as_ref()
+                .map_or(ptr::null(), |url| url.as_ptr()),
+            (*tile)
+                .stream_quality
+                .selected_label
+                .as_ref()
+                .map_or(ptr::null(), |label| label.as_ptr()),
             QualitySelectionCallbacks {
                 quality_clicked: on_tile_quality_button_clicked as *const c_void,
                 auto_clicked: on_tile_quality_auto_clicked as *const c_void,

@@ -6,45 +6,45 @@ pub use self::ffi::GTask;
 pub use self::requests::twitch_auth_refresh_token;
 
 use self::ffi::{
-    g_free, g_object_unref, g_strdup, g_task_is_valid, g_task_new, g_task_propagate_pointer,
-    g_task_run_in_thread, g_task_set_task_data,
+    g_object_unref, g_task_is_valid, g_task_new, g_task_propagate_pointer, g_task_run_in_thread,
+    g_task_set_task_data,
 };
 use self::requests::{
     device_code_data_free, poll_device_token_worker, poll_token_data_free,
     request_device_code_worker,
 };
 use crate::twitch::stream_info::{GAsyncResult, GCancellable, GError};
-use std::ffi::{c_char, c_uint, c_void};
+use std::ffi::{CStr, CString, c_char, c_uint, c_void};
 use std::ptr;
 
 pub struct TwitchAuthDeviceCode {
-    pub device_code: *mut c_char,
-    pub user_code: *mut c_char,
-    pub verification_uri: *mut c_char,
+    pub device_code: CString,
+    pub user_code: CString,
+    pub verification_uri: CString,
     pub expires_in: c_uint,
     pub interval: c_uint,
 }
 
 pub struct TwitchAuthToken {
-    pub access_token: *mut c_char,
-    pub refresh_token: *mut c_char,
+    pub access_token: CString,
+    pub refresh_token: CString,
     pub expires_in: c_uint,
 }
 
 struct DeviceCodeData {
-    client_id: *mut c_char,
+    client_id: CString,
 }
 
 struct PollTokenData {
-    client_id: *mut c_char,
-    device_code: *mut c_char,
+    client_id: CString,
+    device_code: CString,
     expires_in: c_uint,
     interval: c_uint,
 }
 
 struct AuthResponse {
     status: c_uint,
-    body: *mut c_char,
+    body: gtk4::glib::Bytes,
 }
 
 pub type GAsyncReadyCallback =
@@ -56,7 +56,7 @@ type GTaskThreadFunc =
     unsafe extern "C" fn(*mut GTask, *mut c_void, *mut c_void, *mut GCancellable);
 
 /// # Safety
-/// - Null or owned module result; original GLib-allocated string fields.
+/// - Null or owned module result.
 /// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
 pub unsafe fn twitch_auth_device_code_free(code: *mut TwitchAuthDeviceCode) {
     unsafe {
@@ -64,15 +64,12 @@ pub unsafe fn twitch_auth_device_code_free(code: *mut TwitchAuthDeviceCode) {
             return;
         }
 
-        let code = Box::from_raw(code);
-        g_free(code.device_code as *mut c_void);
-        g_free(code.user_code as *mut c_void);
-        g_free(code.verification_uri as *mut c_void);
+        drop(Box::from_raw(code));
     }
 }
 
 /// # Safety
-/// - Null or owned module result; original GLib-allocated string fields.
+/// - Null or owned module result.
 /// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
 pub unsafe fn twitch_auth_token_free(token: *mut TwitchAuthToken) {
     unsafe {
@@ -80,9 +77,7 @@ pub unsafe fn twitch_auth_token_free(token: *mut TwitchAuthToken) {
             return;
         }
 
-        let token = Box::from_raw(token);
-        g_free(token.access_token as *mut c_void);
-        g_free(token.refresh_token as *mut c_void);
+        drop(Box::from_raw(token));
     }
 }
 
@@ -102,7 +97,7 @@ pub unsafe fn twitch_auth_request_device_code_async(
         }
 
         let data = Box::new(DeviceCodeData {
-            client_id: g_strdup(client_id),
+            client_id: CStr::from_ptr(client_id).to_owned(),
         });
         let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
         g_task_set_task_data(
@@ -148,15 +143,14 @@ pub unsafe fn twitch_auth_poll_device_token_async(
         if client_id.is_null()
             || *client_id == 0
             || code.is_null()
-            || (*code).device_code.is_null()
-            || *(*code).device_code == 0
+            || (*code).device_code.is_empty()
         {
             return;
         }
 
         let data = Box::new(PollTokenData {
-            client_id: g_strdup(client_id),
-            device_code: g_strdup((*code).device_code),
+            client_id: CStr::from_ptr(client_id).to_owned(),
+            device_code: (*code).device_code.clone(),
             expires_in: (*code).expires_in,
             interval: (*code).interval,
         });

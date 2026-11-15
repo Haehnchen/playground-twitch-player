@@ -1,34 +1,13 @@
-use super::ffi::{g_free, g_ptr_array_add, g_ptr_array_set_size, g_strdup};
 use super::{AppSettings, AppSettingsChannel};
 use crate::twitch::channel::normalize_twitch_channel;
-use std::ffi::{CStr, CString, c_char, c_uint, c_void};
+use std::ffi::{CStr, CString, c_char, c_uint};
 use std::ptr;
-
-pub(super) unsafe extern "C" fn app_settings_channel_free(data: *mut c_void) {
-    unsafe {
-        if data.is_null() {
-            return;
-        }
-
-        let channel = Box::from_raw(data as *mut AppSettingsChannel);
-        g_free(channel.label as *mut c_void);
-        g_free(channel.channel as *mut c_void);
-        g_free(channel.url as *mut c_void);
-    }
-}
 
 pub(super) unsafe fn trimmed_bytes(value: *const c_char) -> Vec<u8> {
     if value.is_null() {
         return Vec::new();
     }
     unsafe { CStr::from_ptr(value).to_bytes().trim_ascii().to_vec() }
-}
-
-pub(super) unsafe fn dup_bytes(bytes: &[u8]) -> *mut c_char {
-    unsafe {
-        let string = CString::new(bytes).unwrap_or_default();
-        g_strdup(string.as_ptr())
-    }
 }
 
 /// # Safety
@@ -39,7 +18,7 @@ pub unsafe fn app_settings_get_channel_count(settings: *const AppSettings) -> c_
             return 0;
         }
 
-        (*(*settings).channels).len
+        (*settings).channels.len() as c_uint
     }
 }
 
@@ -51,11 +30,11 @@ pub unsafe fn app_settings_get_channel(
     index: c_uint,
 ) -> *const AppSettingsChannel {
     unsafe {
-        if settings.is_null() || index >= (*(*settings).channels).len {
+        if settings.is_null() || index >= (*settings).channels.len() as c_uint {
             return ptr::null();
         }
 
-        *(*(*settings).channels).pdata.add(index as usize) as *const AppSettingsChannel
+        &(&(*settings).channels)[index as usize]
     }
 }
 
@@ -64,7 +43,7 @@ pub unsafe fn app_settings_get_channel(
 pub unsafe fn app_settings_clear_channels(settings: *mut AppSettings) {
     unsafe {
         if !settings.is_null() {
-            g_ptr_array_set_size((*settings).channels, 0);
+            (*settings).channels.clear();
         }
     }
 }
@@ -111,11 +90,11 @@ pub unsafe fn app_settings_add_channel(
             stored_url.clone()
         };
 
-        let entry = Box::new(AppSettingsChannel {
-            label: dup_bytes(&stored_label),
-            channel: dup_bytes(&stored_channel),
-            url: dup_bytes(&stored_url),
-        });
-        g_ptr_array_add((*settings).channels, Box::into_raw(entry) as *mut c_void);
+        let entry = AppSettingsChannel {
+            label: CString::new(stored_label).expect("C string label"),
+            channel: CString::new(stored_channel).expect("C string channel"),
+            url: CString::new(stored_url).expect("C string URL"),
+        };
+        (*settings).channels.push(entry);
     }
 }

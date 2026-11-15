@@ -5,10 +5,7 @@ pub(super) const G_IO_ERROR_FAILED: c_int = 0;
 pub(super) const G_IO_ERROR_TIMED_OUT: c_int = 24;
 pub(super) const G_USEC_PER_SEC: i64 = 1_000_000;
 
-#[repr(C)]
-pub struct GTask {
-    _private: [u8; 0],
-}
+pub use gtk4::gio::ffi::GTask;
 
 unsafe extern "C" {
     pub(super) fn g_cancellable_set_error_if_cancelled(
@@ -26,7 +23,6 @@ unsafe extern "C" {
         format: *const c_char,
         ...
     );
-    pub(super) fn g_strdup(str: *const c_char) -> *mut c_char;
     pub(super) fn g_uri_escape_string(
         unescaped: *const c_char,
         reserved_chars_allowed: *const c_char,

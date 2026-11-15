@@ -3,81 +3,18 @@ use crate::twitch::stream_info::{GCancellable, GError};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 pub(super) const G_IO_ERROR_CANCELLED: c_int = 19;
 
-#[repr(C)]
-pub struct GObject {
-    _private: [u8; 0],
-}
+pub use gtk4::glib::gobject_ffi::GObject;
 
-#[repr(C)]
-pub struct GtkBox {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkButton {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkCheckButton {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkEditable {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkEntry {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkLabel {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkListBox {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkListBoxRow {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkScrolledWindow {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkStack {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkUriLauncher {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkWindow {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkWidget {
-    _private: [u8; 0],
-}
+pub use gtk4::ffi::{
+    GtkBox, GtkButton, GtkCheckButton, GtkEditable, GtkEntry, GtkLabel, GtkListBox, GtkListBoxRow,
+    GtkScrolledWindow, GtkStack, GtkUriLauncher, GtkWidget, GtkWindow,
+};
 
 unsafe extern "C" {
     pub(super) fn g_cancellable_cancel(cancellable: *mut GCancellable);
     pub(super) fn g_cancellable_new() -> *mut GCancellable;
     pub(super) fn g_clear_error(error: *mut *mut GError);
-    pub(super) fn g_error_matches(error: *mut GError, domain: c_uint, code: c_int) -> c_int;
+    pub(super) fn g_error_matches(error: *const GError, domain: c_uint, code: c_int) -> c_int;
     pub(super) fn g_free(mem: *mut c_void);
     pub(super) fn g_get_real_time() -> i64;
     pub(super) fn g_io_error_quark() -> c_uint;

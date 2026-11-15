@@ -2,7 +2,7 @@
 
 use super::ffi::*;
 use super::runtime::{
-    add_switcher_timeout, ptr_array_index, remove_source_if_active, switcher_is_closing,
+    add_switcher_timeout, preview_at, remove_source_if_active, switcher_is_closing,
 };
 use super::widgets::render_live_channels;
 use super::{ChannelSwitcherOverlay, channel_switcher_overlay_hide};
@@ -12,7 +12,7 @@ use crate::settings::{
 };
 use crate::twitch::channel::normalize_twitch_channel;
 use crate::twitch::stream_info::TwitchStreamPreview;
-use std::ffi::{CStr, c_char, c_double, c_int, c_uint, c_void};
+use std::ffi::{CStr, CString, c_char, c_double, c_int, c_uint, c_void};
 use std::ptr;
 
 const SEARCH_DEBOUNCE_MS: c_uint = 300;
@@ -27,9 +27,8 @@ pub(super) unsafe fn find_settings_channel(
         for i in 0..channel_count {
             let channel = app_settings_get_channel((*switcher).settings, i);
             if !channel.is_null()
-                && !(*channel).channel.is_null()
                 && !channel_name.is_null()
-                && g_ascii_strcasecmp((*channel).channel, channel_name) == 0
+                && g_ascii_strcasecmp((*channel).channel.as_ptr(), channel_name) == 0
             {
                 return channel;
             }
@@ -71,29 +70,9 @@ pub(super) unsafe extern "C" fn on_channel_button_clicked(
 
         let channel_name =
             g_object_get_data(button as *mut GObject, c"channel-name".as_ptr()) as *const c_char;
-        let channel = find_settings_channel(switcher, channel_name);
-
-        if !channel.is_null() {
-            if let Some(callback) = (*switcher).activate_callback {
-                callback(channel, (*switcher).user_data);
-            }
-        } else if is_nonempty(channel_name)
-            && let Some(callback) = (*switcher).activate_callback
-        {
-            let mut dynamic_channel = AppSettingsChannel {
-                channel: channel_name as *mut c_char,
-                label: g_object_get_data(button as *mut GObject, c"channel-label".as_ptr())
-                    as *mut c_char,
-                url: g_strdup_printf(c"https://www.twitch.tv/%s".as_ptr(), channel_name),
-            };
-            if !is_nonempty(dynamic_channel.label) {
-                dynamic_channel.label = dynamic_channel.channel;
-            }
-            callback(&dynamic_channel, (*switcher).user_data);
-            g_free(dynamic_channel.url as *mut c_void);
-        }
-
-        channel_switcher_overlay_hide(switcher);
+        let label =
+            g_object_get_data(button as *mut GObject, c"channel-label".as_ptr()) as *const c_char;
+        activate_dynamic_channel(switcher, channel_name, label);
     }
 }
 
@@ -119,20 +98,22 @@ unsafe fn activate_dynamic_channel(
             return;
         }
 
+        let name = CStr::from_ptr(channel_name);
+        let mut url = b"https://www.twitch.tv/".to_vec();
+        url.extend_from_slice(name.to_bytes());
         let dynamic_channel = AppSettingsChannel {
-            channel: channel_name as *mut c_char,
-            label: if is_nonempty(channel_label) {
-                channel_label as *mut c_char
+            channel: name.to_owned(),
+            label: CStr::from_ptr(if is_nonempty(channel_label) {
+                channel_label
             } else {
-                channel_name as *mut c_char
-            },
-            url: g_strdup_printf(c"https://www.twitch.tv/%s".as_ptr(), channel_name),
+                channel_name
+            })
+            .to_owned(),
+            url: CString::new(url).expect("channel URL"),
         };
-
         if let Some(callback) = (*switcher).activate_callback {
             callback(&dynamic_channel, (*switcher).user_data);
         }
-        g_free(dynamic_channel.url as *mut c_void);
         channel_switcher_overlay_hide(switcher);
     }
 }
@@ -196,14 +177,14 @@ unsafe fn string_contains_casefold(haystack: *const c_char, needle: *const c_cha
 }
 
 pub(super) unsafe fn preview_matches_filter(
-    preview: *mut TwitchStreamPreview,
+    preview: *const TwitchStreamPreview,
     filter: *const c_char,
 ) -> bool {
     unsafe {
-        string_contains_casefold((*preview).channel, filter)
-            || string_contains_casefold((*preview).display_name, filter)
-            || string_contains_casefold((*preview).title, filter)
-            || string_contains_casefold((*preview).category_name, filter)
+        string_contains_casefold((*preview).channel.as_ptr(), filter)
+            || string_contains_casefold((*preview).display_name.as_ptr(), filter)
+            || string_contains_casefold((*preview).title.as_ptr(), filter)
+            || string_contains_casefold((*preview).category_name.as_ptr(), filter)
     }
 }
 
@@ -245,7 +226,7 @@ pub(super) unsafe extern "C" fn on_search_changed(
         remove_source_if_active(&mut (*switcher).search_debounce_source);
         if (*switcher).panel.is_null()
             || gtk_widget_get_visible((*switcher).panel) == 0
-            || (*switcher).previews.is_null()
+            || (*switcher).previews.is_none()
         {
             return;
         }
@@ -259,15 +240,19 @@ pub(super) unsafe extern "C" fn on_search_changed(
 // Allow Enter to select a channel before its card has been built.
 pub(super) unsafe fn activate_first_matching_channel(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
-        if switcher.is_null() || (*switcher).previews.is_null() {
+        if switcher.is_null() || (*switcher).previews.is_none() {
             return;
         }
 
         let filter = current_search_filter(switcher);
-        for i in 0..(*(*switcher).previews).len {
-            let preview = ptr_array_index((*switcher).previews, i);
+        for i in 0..(*switcher).previews.as_ref().unwrap().len() as c_uint {
+            let preview = preview_at(switcher, i);
             if preview_matches_filter(preview, filter) {
-                activate_dynamic_channel(switcher, (*preview).channel, (*preview).display_name);
+                activate_dynamic_channel(
+                    switcher,
+                    (*preview).channel.as_ptr(),
+                    (*preview).display_name.as_ptr(),
+                );
                 return;
             }
         }

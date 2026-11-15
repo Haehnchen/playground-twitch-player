@@ -1,5 +1,3 @@
-#![allow(clashing_extern_declarations)]
-
 mod streams;
 
 mod chat;
@@ -28,7 +26,7 @@ use self::chat::capture_chat_width_from_paned;
 use self::controls::create_stream_tile;
 use self::controls::{schedule_footer_hide, show_tile_overlay};
 use self::ffi::{
-    GtkGrid, GtkOverlay, GtkPaned, g_free, g_malloc0, g_strdup, gtk_grid_attach, gtk_grid_new,
+    GtkGrid, GtkOverlay, GtkPaned, g_strdup, gtk_grid_attach, gtk_grid_new,
     gtk_grid_set_column_homogeneous, gtk_grid_set_row_homogeneous, gtk_overlay_new,
     gtk_overlay_set_child, gtk_paned_set_end_child, gtk_widget_add_css_class,
     gtk_widget_set_hexpand, gtk_widget_set_vexpand, gtk_widget_unparent,
@@ -67,8 +65,8 @@ use crate::player::stream_quality::PlayerStreamQualityState;
 use crate::settings::{AppSettings, app_settings_get_hwdec_enabled};
 use crate::twitch::stream_info::GCancellable;
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
+use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::{mem, ptr};
 const MAX_TILES: usize = PLAYER_LAYOUT_MAX_TILES;
 const STREAM_TITLE_REFRESH_SECONDS: c_uint = 3 * 60;
 const DEFAULT_CHAT_WIDTH: c_int = 220;
@@ -77,8 +75,9 @@ const TRUE: c_int = 1;
 const G_LOG_DOMAIN: &[u8] = b"twitch-player-surface\0";
 const PLAYER_TILE_FOCUS_ICON_EXPAND: c_int = 0;
 const PLAYER_CHAT_ICON_OPEN: c_int = 0;
-const PLAYER_STARTING_STREAM_STATUS: *const c_char = c"Starting stream".as_ptr();
+const PLAYER_STARTING_STREAM_STATUS: Option<&str> = Some("Starting stream");
 
+#[derive(Default)]
 struct StreamTile {
     app: *mut PlayerSurface,
     index: c_uint,
@@ -95,6 +94,7 @@ struct StreamTile {
     channel_refresh_button: *mut GtkWidget,
     close_button: *mut GtkWidget,
     empty_label: *mut GtkWidget,
+    status_label: Option<gtk4::Label>,
     focus_button: *mut GtkWidget,
     chat_toggle_button: *mut GtkWidget,
     stream_info_button: *mut GtkWidget,
@@ -135,6 +135,7 @@ struct StreamTile {
     render_callback_ref_held: c_int,
 }
 
+#[derive(Default)]
 pub struct PlayerSurface {
     targets: [*mut c_char; MAX_TILES],
     target_count: c_uint,
@@ -223,8 +224,7 @@ unsafe fn player_surface_unref(state: *mut PlayerSurface) {
             return;
         }
 
-        ptr::drop_in_place(state);
-        g_free(state as *mut c_void);
+        drop(Box::from_raw(state));
     }
 }
 
@@ -280,6 +280,7 @@ pub unsafe fn player_surface_free(player: *mut PlayerSurface) {
             }
             (*tile).close_button = ptr::null_mut();
             (*tile).empty_label = ptr::null_mut();
+            (*tile).status_label.take();
             (*tile).chat_toggle_button = ptr::null_mut();
             (*tile).stream_info_button = ptr::null_mut();
             (*tile).mute_button = ptr::null_mut();
@@ -328,9 +329,10 @@ pub unsafe fn player_surface_new<W>(
         let window = window as *mut GtkWindow;
         install_css();
 
-        let state = g_malloc0(mem::size_of::<PlayerSurface>()) as *mut PlayerSurface;
-        ptr::addr_of_mut!((*state).closing).write(AtomicBool::new(false));
-        ptr::addr_of_mut!((*state).ref_count).write(AtomicUsize::new(1));
+        let state = Box::into_raw(Box::new(PlayerSurface {
+            ref_count: AtomicUsize::new(1),
+            ..Default::default()
+        }));
         (*state).window = window as *mut GtkWidget;
         (*state).primary_session = primary_session;
         (*state).target_count = if !targets.is_null() {
@@ -437,7 +439,7 @@ pub unsafe fn player_surface_start(player: *mut PlayerSurface) {
                 if player_session_is_playing((*tile).session) != 0 {
                     sync_tile_from_session(tile);
                     update_tile_empty_state(tile);
-                    set_tile_status(tile, c"Playback running".as_ptr());
+                    set_tile_status(tile, None);
                     request_tile_title_update(tile, TRUE);
                     continue;
                 }

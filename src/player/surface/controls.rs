@@ -58,6 +58,7 @@ use crate::player::session::{
 };
 use crate::player::stream_settings::player_stream_settings_popover_new;
 use crate::settings::app_settings_get_hwdec_enabled;
+use gtk4::prelude::*;
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
@@ -472,6 +473,16 @@ pub(super) unsafe fn create_stream_tile(
         );
         gtk_overlay_add_overlay((*tile).overlay as *mut GtkOverlay, (*tile).empty_label);
 
+        let status = gtk4::Label::builder()
+            .halign(gtk4::Align::Center)
+            .valign(gtk4::Align::Center)
+            .can_target(false)
+            .visible(false)
+            .css_classes(["stream-status"])
+            .build();
+        gtk_overlay_add_overlay((*tile).overlay as *mut GtkOverlay, status.as_ptr().cast());
+        (*tile).status_label = Some(status);
+
         (*tile).footer = create_tile_footer(tile);
         gtk_widget_set_halign((*tile).footer, GTK_ALIGN_FILL);
         gtk_widget_set_valign((*tile).footer, GTK_ALIGN_END);
@@ -500,7 +511,7 @@ pub(super) unsafe fn create_stream_tile(
             on_video_pressed as *const c_void,
             tile,
         );
-        gtk_widget_add_controller((*tile).gl_area, video_click as *mut c_void);
+        gtk_widget_add_controller((*tile).gl_area, video_click.cast());
 
         let context_click = gtk_gesture_click_new();
         gtk_gesture_single_set_button(context_click as *mut GtkGestureSingle, GDK_BUTTON_SECONDARY);
@@ -510,7 +521,7 @@ pub(super) unsafe fn create_stream_tile(
             on_context_pressed as *const c_void,
             tile,
         );
-        gtk_widget_add_controller((*tile).overlay, context_click as *mut c_void);
+        gtk_widget_add_controller((*tile).overlay, context_click.cast());
 
         let video_legacy = gtk_event_controller_legacy_new();
         connect_tile_signal(
@@ -519,7 +530,7 @@ pub(super) unsafe fn create_stream_tile(
             on_video_legacy_event as *const c_void,
             tile,
         );
-        gtk_widget_add_controller((*tile).gl_area, video_legacy as *mut c_void);
+        gtk_widget_add_controller((*tile).gl_area, video_legacy.cast());
 
         let video_motion = gtk_event_controller_motion_new();
         gtk_event_controller_set_propagation_phase(video_motion, GTK_PHASE_CAPTURE);
@@ -529,7 +540,7 @@ pub(super) unsafe fn create_stream_tile(
             on_tile_motion as *const c_void,
             tile,
         );
-        gtk_widget_add_controller((*tile).overlay, video_motion as *mut c_void);
+        gtk_widget_add_controller((*tile).overlay, video_motion.cast());
 
         let tile_scroll = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
         gtk_event_controller_set_propagation_phase(tile_scroll, GTK_PHASE_CAPTURE);
@@ -539,7 +550,7 @@ pub(super) unsafe fn create_stream_tile(
             on_tile_scroll as *const c_void,
             tile,
         );
-        gtk_widget_add_controller((*tile).overlay, tile_scroll as *mut c_void);
+        gtk_widget_add_controller((*tile).overlay, tile_scroll.cast());
 
         connect_tile_signal(
             (*tile).gl_area as *mut c_void,

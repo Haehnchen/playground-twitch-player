@@ -1,116 +1,37 @@
 use super::ffi::{
-    GPtrArray, TwitchStreamQuality, g_date_time_difference, g_date_time_new_from_iso8601,
-    g_date_time_new_now_utc, g_date_time_unref, g_free, g_ptr_array_unref, g_strdup,
+    g_date_time_difference, g_date_time_new_from_iso8601, g_date_time_new_now_utc,
+    g_date_time_unref, g_free, g_strdup,
 };
-use super::{
-    TwitchCurrentStream, TwitchFollowedChannel, TwitchStreamPreview, TwitchStreamQualitiesResult,
-};
+use super::{TwitchCurrentStream, TwitchStreamQualitiesResult};
 use crate::glib_strings::{dup_bytes, is_nonempty};
 use std::ffi::{CStr, c_char, c_uint, c_void};
 use std::ptr;
 
-pub(super) unsafe extern "C" fn g_ptr_array_unref_destroy(data: *mut c_void) {
+pub(super) unsafe extern "C" fn drop_box<T>(data: *mut c_void) {
     unsafe {
-        g_ptr_array_unref(data as *mut GPtrArray);
+        if !data.is_null() {
+            drop(Box::from_raw(data.cast::<T>()));
+        }
     }
 }
 
 pub(super) unsafe extern "C" fn twitch_stream_qualities_result_free(data: *mut c_void) {
     unsafe {
-        let result = data as *mut TwitchStreamQualitiesResult;
-        if result.is_null() {
-            return;
-        }
-        if !(*result).qualities.is_null() {
-            g_ptr_array_unref((*result).qualities);
-        }
-        drop(Box::from_raw(result));
-    }
-}
-
-pub(super) unsafe extern "C" fn twitch_stream_preview_free_destroy(data: *mut c_void) {
-    unsafe {
-        twitch_stream_preview_free(data as *mut TwitchStreamPreview);
+        drop_box::<TwitchStreamQualitiesResult>(data);
     }
 }
 
 pub(super) unsafe extern "C" fn twitch_current_stream_free_destroy(data: *mut c_void) {
     unsafe {
-        twitch_current_stream_free(data as *mut TwitchCurrentStream);
+        drop_box::<TwitchCurrentStream>(data);
     }
 }
 
 /// # Safety
-/// - Null or owned module result; original GLib-allocated string fields.
-/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
-pub unsafe fn twitch_stream_preview_free(preview: *mut TwitchStreamPreview) {
-    unsafe {
-        if preview.is_null() {
-            return;
-        }
-        g_free((*preview).channel as *mut c_void);
-        g_free((*preview).display_name as *mut c_void);
-        g_free((*preview).title as *mut c_void);
-        g_free((*preview).avatar_url as *mut c_void);
-        g_free((*preview).preview_url as *mut c_void);
-        g_free((*preview).started_at as *mut c_void);
-        g_free((*preview).category_name as *mut c_void);
-        drop(Box::from_raw(preview));
-    }
-}
-
-/// # Safety
-/// - Null or owned module result; original GLib-allocated string fields.
-/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
+/// Null or owned result from this module; release once with no remaining borrowers.
 pub unsafe fn twitch_current_stream_free(stream: *mut TwitchCurrentStream) {
     unsafe {
-        if stream.is_null() {
-            return;
-        }
-        g_free((*stream).title as *mut c_void);
-        g_free((*stream).started_at as *mut c_void);
-        g_free((*stream).category_name as *mut c_void);
-        drop(Box::from_raw(stream));
-    }
-}
-
-pub(super) unsafe extern "C" fn twitch_stream_quality_free_destroy(data: *mut c_void) {
-    unsafe {
-        twitch_stream_quality_free(data as *mut TwitchStreamQuality);
-    }
-}
-
-/// # Safety
-/// - Null or owned module result; original GLib-allocated string fields.
-/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
-pub unsafe fn twitch_stream_quality_free(quality: *mut TwitchStreamQuality) {
-    unsafe {
-        if quality.is_null() {
-            return;
-        }
-        g_free((*quality).label as *mut c_void);
-        g_free((*quality).url as *mut c_void);
-        drop(Box::from_raw(quality));
-    }
-}
-
-/// # Safety
-/// - Null or owned module result; original GLib-allocated string fields.
-/// - Free once; no remaining borrowers. Not a stack struct or borrowed array entry.
-pub unsafe fn twitch_followed_channel_free(channel: *mut TwitchFollowedChannel) {
-    unsafe {
-        if channel.is_null() {
-            return;
-        }
-        g_free((*channel).channel as *mut c_void);
-        g_free((*channel).display_name as *mut c_void);
-        drop(Box::from_raw(channel));
-    }
-}
-
-pub(super) unsafe extern "C" fn twitch_followed_channel_free_destroy(data: *mut c_void) {
-    unsafe {
-        twitch_followed_channel_free(data as *mut TwitchFollowedChannel);
+        drop_box::<TwitchCurrentStream>(stream.cast());
     }
 }
 
@@ -168,10 +89,10 @@ pub unsafe fn twitch_stream_info_format_current_stream_title(
     stream: *const TwitchCurrentStream,
 ) -> *mut c_char {
     unsafe {
-        if stream.is_null() || !is_nonempty((*stream).title) {
+        if stream.is_null() || !is_nonempty((*stream).title.as_ptr()) {
             return g_strdup(c"".as_ptr());
         }
-        g_strdup((*stream).title)
+        g_strdup((*stream).title.as_ptr())
     }
 }
 
@@ -199,11 +120,11 @@ pub unsafe fn twitch_stream_info_format_current_stream_metadata(
         }
 
         let viewers = twitch_stream_info_format_viewer_count((*stream).viewer_count);
-        let duration = twitch_stream_info_format_live_duration((*stream).started_at);
+        let duration = twitch_stream_info_format_live_duration((*stream).started_at.as_ptr());
         let mut metadata = Vec::new();
         append_metadata_segment(&mut metadata, viewers);
         append_metadata_segment(&mut metadata, duration);
-        append_metadata_segment(&mut metadata, (*stream).category_name);
+        append_metadata_segment(&mut metadata, (*stream).category_name.as_ptr());
         g_free(viewers as *mut c_void);
         g_free(duration as *mut c_void);
         dup_bytes(&metadata)

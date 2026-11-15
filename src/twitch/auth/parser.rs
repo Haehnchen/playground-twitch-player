@@ -1,5 +1,5 @@
 use super::{TwitchAuthDeviceCode, TwitchAuthToken};
-use crate::twitch::json::{dup_string, invalid_response, parse, string, uint};
+use crate::twitch::json::{invalid_response, owned_string, parse, string, uint};
 use gtk4::glib;
 use serde_json::Value;
 
@@ -24,7 +24,7 @@ pub(super) fn parse_auth_error_message(json: &[u8]) -> String {
         .unwrap_or_default()
 }
 
-// Validate required fields before allocating the native result.
+// Reject incomplete authentication responses.
 pub(super) fn parse_device_code_response(
     json: &[u8],
 ) -> Result<*mut TwitchAuthDeviceCode, glib::Error> {
@@ -37,9 +37,9 @@ pub(super) fn parse_device_code_response(
     }
     let interval = uint(&value["interval"]);
     Ok(Box::into_raw(Box::new(TwitchAuthDeviceCode {
-        device_code: dup_string(&value["device_code"]),
-        user_code: dup_string(&value["user_code"]),
-        verification_uri: dup_string(&value["verification_uri"]),
+        device_code: owned_string(&value["device_code"]),
+        user_code: owned_string(&value["user_code"]),
+        verification_uri: owned_string(&value["verification_uri"]),
         expires_in: uint(&value["expires_in"]),
         interval: if interval == 0 { 5 } else { interval },
     })))
@@ -51,8 +51,8 @@ pub(super) fn parse_token_response(json: &[u8]) -> Result<*mut TwitchAuthToken, 
         return Err(invalid_response("Twitch did not return an access token"));
     }
     Ok(Box::into_raw(Box::new(TwitchAuthToken {
-        access_token: dup_string(&value["access_token"]),
-        refresh_token: dup_string(&value["refresh_token"]),
+        access_token: owned_string(&value["access_token"]),
+        refresh_token: owned_string(&value["refresh_token"]),
         expires_in: uint(&value["expires_in"]),
     })))
 }
@@ -61,13 +61,12 @@ pub(super) fn parse_token_response(json: &[u8]) -> Result<*mut TwitchAuthToken, 
 mod tests {
     use super::*;
     use crate::twitch::auth::{twitch_auth_device_code_free, twitch_auth_token_free};
-    use std::ffi::CStr;
 
     #[test]
     fn device_code_reads_fields_and_defaults_invalid_numbers() {
         let code = parse_device_code_response(br#"{"device_code":"device","user_code":"ABCD","verification_uri":"https://twitch.tv/activate","expires_in":600,"interval":2}"#).unwrap();
         unsafe {
-            assert_eq!(CStr::from_ptr((*code).user_code), c"ABCD");
+            assert_eq!((*code).user_code.as_c_str(), c"ABCD");
             assert_eq!((*code).expires_in, 600);
             assert_eq!((*code).interval, 2);
             twitch_auth_device_code_free(code);
@@ -97,17 +96,17 @@ mod tests {
         .unwrap();
         unsafe {
             assert_eq!(
-                CStr::from_ptr((*token).access_token).to_str().unwrap(),
+                (*token).access_token.as_c_str().to_str().unwrap(),
                 "t\"öken"
             );
-            assert_eq!(CStr::from_ptr((*token).refresh_token), c"refresh");
+            assert_eq!((*token).refresh_token.as_c_str(), c"refresh");
             assert_eq!((*token).expires_in, 3600);
             twitch_auth_token_free(token);
         }
         let token =
             parse_token_response(br#"{"access_token":"token","refresh_token":null}"#).unwrap();
         unsafe {
-            assert!((*token).refresh_token.is_null());
+            assert!((*token).refresh_token.is_empty());
             assert_eq!((*token).expires_in, 0);
             twitch_auth_token_free(token);
         }

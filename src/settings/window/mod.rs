@@ -170,7 +170,7 @@ pub unsafe fn settings_window_show<W>(
         for i in 0..app_settings_get_channel_count(settings) {
             let channel = app_settings_get_channel(settings, i);
             if !channel.is_null() {
-                add_channel_row(view, (*channel).channel);
+                add_channel_row(view, (*channel).channel.as_ptr());
             }
         }
         update_empty_state(view);

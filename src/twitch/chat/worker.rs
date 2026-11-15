@@ -7,8 +7,8 @@ use super::ffi::{
     g_socket_client_new, g_socket_client_set_timeout, g_socket_client_set_tls,
     g_socket_connection_get_socket, g_socket_set_timeout, g_usleep,
 };
+use super::messages::parse_privmsg;
 use super::messages::{channel_message, emit_message, emit_status, prefixed_message};
-use super::messages::{parse_privmsg, parsed_privmsg_free};
 use super::{ChatWorkerData, twitch_chat_client_unref};
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::ptr;
@@ -129,7 +129,7 @@ pub(super) unsafe fn run_chat_session(
 
         let nick = format!("justinfan{}\0", g_random_int_range(10000, 999999));
         let nick_line = format!("NICK {}\0", &nick[..nick.len() - 1]);
-        let channel = CStr::from_ptr((*data).channel).to_bytes();
+        let channel = CStr::from_ptr((*data).channel.as_ptr()).to_bytes();
         let mut join_line = Vec::with_capacity(channel.len() + 8);
         join_line.extend_from_slice(b"JOIN #");
         join_line.extend_from_slice(channel);
@@ -171,7 +171,7 @@ pub(super) unsafe fn run_chat_session(
         }
 
         {
-            let line = channel_message(b"Chat verbunden: #", (*data).channel);
+            let line = channel_message(b"Chat verbunden: #", (*data).channel.as_ptr());
             emit_status(
                 (*data).client,
                 (*data).generation,
@@ -249,10 +249,8 @@ pub(super) unsafe fn run_chat_session(
                 continue;
             }
 
-            let chat_line = parse_privmsg(line);
-            if !chat_line.is_null() {
+            if let Some(chat_line) = parse_privmsg(CStr::from_ptr(line).to_bytes()) {
                 emit_message((*data).client, (*data).generation, chat_line);
-                parsed_privmsg_free(chat_line);
             }
             g_free(line as *mut c_void);
         }
@@ -290,7 +288,6 @@ pub(super) unsafe extern "C" fn chat_worker(user_data: *mut c_void) -> *mut c_vo
         if !(*data).cancel.is_null() {
             g_object_unref((*data).cancel as *mut c_void);
         }
-        g_free((*data).channel as *mut c_void);
         twitch_chat_client_unref((*data).client);
         drop(Box::from_raw(data));
         ptr::null_mut()

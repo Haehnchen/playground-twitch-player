@@ -2,7 +2,7 @@
 
 use super::ffi::*;
 use super::{ChannelSwitcherOverlay, channel_switcher_overlay_ref, channel_switcher_overlay_unref};
-use crate::twitch::stream_info::GPtrArray;
+use crate::twitch::stream_info::TwitchStreamPreview;
 use std::ffi::{c_char, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
@@ -15,8 +15,11 @@ pub(super) unsafe extern "C" fn g_free_destroy(data: *mut c_void) {
     }
 }
 
-pub(super) unsafe fn ptr_array_index<T>(array: *mut GPtrArray, index: c_uint) -> *mut T {
-    unsafe { *(*array).pdata.add(index as usize) as *mut T }
+pub(super) unsafe fn preview_at(
+    switcher: *mut ChannelSwitcherOverlay,
+    index: c_uint,
+) -> *const TwitchStreamPreview {
+    unsafe { &(*switcher).previews.as_ref().unwrap()[index as usize] }
 }
 
 pub(super) unsafe fn clear_object<T>(slot: *mut *mut T) {

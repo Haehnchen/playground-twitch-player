@@ -1,6 +1,6 @@
 //! GTK, GDK, and GLib bindings.
 
-use crate::twitch::stream_info::{GCancellable, GError, GPtrArray};
+use crate::twitch::stream_info::{GCancellable, GError};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 pub(super) const FALSE: c_int = 0;
@@ -28,151 +28,23 @@ pub(super) const G_PRIORITY_DEFAULT: c_int = 0;
 pub(super) const PANGO_ELLIPSIZE_END: c_int = 3;
 pub(super) const PLAYER_WINDOW_ICON_CLOSE: c_int = 2;
 
-#[repr(C)]
-pub struct GraphenePoint {
-    pub(super) x: f32,
-    pub(super) y: f32,
-}
+pub use gtk4::graphene::ffi::graphene_point_t as GraphenePoint;
 
-#[repr(C)]
-pub struct GBytes {
-    _private: [u8; 0],
-}
+pub use gtk4::glib::ffi::GBytes;
 
-#[repr(C)]
-pub struct GdkDisplay {
-    _private: [u8; 0],
-}
+pub use gtk4::gdk::ffi::{GdkDisplay, GdkPaintable, GdkTexture};
 
-#[repr(C)]
-pub struct GdkPaintable {
-    _private: [u8; 0],
-}
+pub use gtk4::gdk_pixbuf::ffi::GdkPixbuf;
 
-#[repr(C)]
-pub struct GdkPixbuf {
-    _private: [u8; 0],
-}
+pub use gtk4::gio::ffi::{GFile, GInputStream, GTask};
 
-#[repr(C)]
-pub struct GdkTexture {
-    _private: [u8; 0],
-}
+pub use gtk4::glib::gobject_ffi::{GObject, GTypeInstance};
 
-#[repr(C)]
-pub struct GFile {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GHashTable {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GInputStream {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GTask {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GObject {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GTypeInstance {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkBox {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkButton {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkCssProvider {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkEditable {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkEntry {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkGesture {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkGestureClick {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkGestureSingle {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkGrid {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkLabel {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkOverlay {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkPicture {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkRoot {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkScrolledWindow {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkSearchEntry {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkStyleProvider {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkWidget {
-    _private: [u8; 0],
-}
+pub use gtk4::ffi::{
+    GtkBox, GtkButton, GtkCssProvider, GtkEditable, GtkEntry, GtkGesture, GtkGestureClick,
+    GtkGestureSingle, GtkGrid, GtkLabel, GtkOverlay, GtkPicture, GtkRoot, GtkScrolledWindow,
+    GtkSearchEntry, GtkStyleProvider, GtkWidget,
+};
 
 pub(super) type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
 pub(super) type GClosureNotify = unsafe extern "C" fn(*mut c_void, *mut c_void);
@@ -211,8 +83,6 @@ unsafe extern "C" {
         destroy: Option<GDestroyNotify>,
     );
     pub(super) fn g_object_unref(object: *mut c_void);
-    pub(super) fn g_ptr_array_ref(array: *mut GPtrArray) -> *mut GPtrArray;
-    pub(super) fn g_ptr_array_unref(array: *mut GPtrArray);
     pub(super) fn g_signal_connect_data(
         instance: *mut c_void,
         detailed_signal: *const c_char,
@@ -222,10 +92,8 @@ unsafe extern "C" {
         connect_flags: c_int,
     ) -> usize;
     pub(super) fn g_source_remove(tag: c_uint) -> c_int;
-    pub(super) fn g_strcmp0(str1: *const c_char, str2: *const c_char) -> c_int;
     pub(super) fn g_strdup(str: *const c_char) -> *mut c_char;
     pub(super) fn g_strdup_printf(format: *const c_char, ...) -> *mut c_char;
-    pub(super) fn g_strfreev(str_array: *mut *mut c_char);
     pub(super) fn g_timeout_add_full(
         priority: c_int,
         interval: c_uint,
@@ -325,7 +193,6 @@ unsafe extern "C" {
         provider: *mut GtkStyleProvider,
         priority: c_uint,
     );
-    pub(super) fn gtk_widget_add_controller(widget: *mut GtkWidget, controller: *mut c_void);
     pub(super) fn gtk_widget_add_css_class(widget: *mut GtkWidget, css_class: *const c_char);
     pub(super) fn gtk_widget_compute_point(
         widget: *mut GtkWidget,
@@ -354,3 +221,5 @@ unsafe extern "C" {
     pub(super) fn gtk_widget_set_visible(widget: *mut GtkWidget, visible: c_int);
 
 }
+
+pub(super) use gtk4::ffi::gtk_widget_add_controller;

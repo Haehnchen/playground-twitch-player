@@ -1,10 +1,5 @@
-use std::ffi::{c_char, c_void};
-use std::ptr;
-
-unsafe extern "C" {
-    fn g_strndup(value: *const c_char, length: usize) -> *mut c_char;
-    fn g_free(value: *mut c_void);
-}
+use gtk4::glib::ffi::g_strndup;
+use std::ffi::c_char;
 
 /// Copies through the first NUL; result owned, release with `g_free`.
 pub(crate) fn dup_bytes(bytes: &[u8]) -> *mut c_char {
@@ -16,15 +11,6 @@ pub(crate) fn dup_bytes(bytes: &[u8]) -> *mut c_char {
 /// - Non-null `value`: readable for at least one byte.
 pub(crate) unsafe fn is_nonempty(value: *const c_char) -> bool {
     unsafe { !value.is_null() && *value != 0 }
-}
-
-/// Free an owned GLib string and clear its pointer.
-///
-/// # Safety
-/// - Non-null `value`: owned GLib allocation; no remaining borrowers.
-pub(crate) unsafe fn clear_string(value: &mut *mut c_char) {
-    let old = std::mem::replace(value, ptr::null_mut());
-    unsafe { g_free(old.cast()) };
 }
 
 #[cfg(test)]
@@ -39,12 +25,10 @@ mod tests {
             ("äbc".as_bytes(), "äbc".as_bytes()),
             (b"a\0ignored".as_slice(), b"a".as_slice()),
         ] {
-            let mut copy = dup_bytes(input);
+            let copy = dup_bytes(input);
             unsafe {
                 assert_eq!(CStr::from_ptr(copy).to_bytes(), expected);
-                clear_string(&mut copy);
-                assert!(copy.is_null());
-                clear_string(&mut copy);
+                gtk4::glib::ffi::g_free(copy.cast());
             }
         }
     }

@@ -1,5 +1,5 @@
 use super::{FALSE, GClosureNotify, GDestroyNotify, GSourceFunc, GType, TRUE};
-use crate::twitch::stream_info::{GCancellable, GError, GPtrArray};
+use crate::twitch::stream_info::{GCancellable, GError};
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 pub(super) const MPV_MAINLOOP_PRIORITY: c_int = -100;
 pub(super) const G_PRIORITY_DEFAULT: c_int = 0;
@@ -32,180 +32,23 @@ pub(super) const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 pub(super) const GL_FRAMEBUFFER_BINDING: c_uint = 0x8CA6;
 pub(super) const PANGO_ELLIPSIZE_END: c_int = 3;
 
-#[repr(C)]
-pub(super) struct GdkDevice {
-    _private: [u8; 0],
-}
+pub(super) use gtk4::gdk::ffi::{
+    GdkDevice, GdkDisplay, GdkEvent, GdkGLContext, GdkSurface, GdkToplevel,
+};
 
-#[repr(C)]
-pub(super) struct GdkDisplay {
-    _private: [u8; 0],
-}
+pub(super) use gtk4::glib::gobject_ffi::{GObject, GParamSpec, GTypeInstance};
 
-#[repr(C)]
-pub(super) struct GdkEvent {
-    _private: [u8; 0],
-}
+pub(super) use gtk4::glib::ffi::GSource;
 
-#[repr(C)]
-pub(super) struct GdkGLContext {
-    _private: [u8; 0],
-}
+pub(super) use gtk4::ffi::{
+    GtkBox, GtkButton, GtkCssProvider, GtkEventController, GtkEventControllerLegacy,
+    GtkEventControllerMotion, GtkEventControllerScroll, GtkGLArea, GtkGesture, GtkGestureClick,
+    GtkGestureSingle, GtkGrid, GtkGridLayoutChild, GtkLabel, GtkLayoutChild, GtkLayoutManager,
+    GtkNative, GtkOverlay, GtkPaned, GtkPopover, GtkRange, GtkScale, GtkStyleProvider,
+    gtk_widget_add_controller,
+};
 
-#[repr(C)]
-pub(super) struct GdkSurface {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GdkToplevel {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GObject {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GParamSpec {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GSource {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GTypeInstance {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkBox {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkButton {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkCssProvider {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkEventController {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkEventControllerLegacy {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkEventControllerMotion {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkEventControllerScroll {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGesture {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGestureClick {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGestureSingle {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGLArea {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGrid {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGridLayoutChild {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkLabel {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkLayoutChild {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkLayoutManager {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkNative {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkOverlay {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkPaned {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkPopover {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkRange {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkScale {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkStyleProvider {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkWidget {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkWindow {
-    _private: [u8; 0],
-}
+pub use gtk4::ffi::{GtkWidget, GtkWindow};
 
 unsafe extern "C" {
     pub(super) static epoxy_eglGetProcAddress: unsafe extern "C" fn(*const c_char) -> *mut c_void;
@@ -236,7 +79,6 @@ unsafe extern "C" {
         context: *mut c_void,
         source_id: c_uint,
     ) -> *mut GSource;
-    pub(super) fn g_malloc0(n_bytes: usize) -> *mut c_void;
     pub(super) fn g_object_add_weak_pointer(
         object: *mut GObject,
         weak_pointer_location: *mut *mut c_void,
@@ -247,7 +89,6 @@ unsafe extern "C" {
         weak_pointer_location: *mut *mut c_void,
     );
     pub(super) fn g_object_unref(object: *mut c_void);
-    pub(super) fn g_ptr_array_unref(array: *mut GPtrArray);
     pub(super) fn g_signal_connect_data(
         instance: *mut c_void,
         detailed_signal: *const c_char,
@@ -380,7 +221,6 @@ unsafe extern "C" {
         provider: *mut GtkStyleProvider,
         priority: c_uint,
     );
-    pub(super) fn gtk_widget_add_controller(widget: *mut GtkWidget, controller: *mut c_void);
     pub(super) fn gtk_widget_add_css_class(widget: *mut GtkWidget, css_class: *const c_char);
     pub(super) fn gtk_widget_set_can_target(widget: *mut GtkWidget, can_target: c_int);
     pub(super) fn gtk_widget_get_height(widget: *mut GtkWidget) -> c_int;

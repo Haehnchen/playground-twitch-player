@@ -7,15 +7,9 @@ mod responses;
 mod tests;
 mod utils;
 
-pub use self::ffi::{
-    GAsyncResult, GCancellable, GDateTime, GError, GPtrArray, GTask, TwitchPlaybackInfo,
-    TwitchStreamQuality,
-};
+pub use self::ffi::{GAsyncResult, GCancellable, GDateTime, GError, GTask};
 pub use self::responses::twitch_stream_info_fetch_followed_channels;
-pub use self::utils::{
-    twitch_current_stream_free, twitch_followed_channel_free, twitch_stream_preview_free,
-    twitch_stream_quality_free,
-};
+pub use self::utils::twitch_current_stream_free;
 pub use self::utils::{
     twitch_stream_info_format_current_stream_metadata,
     twitch_stream_info_format_current_stream_title, twitch_stream_info_format_live_duration,
@@ -28,65 +22,85 @@ use self::fetch::{
     fetch_stream_qualities_data_free, fetch_stream_qualities_worker,
 };
 use self::ffi::{
-    g_ascii_strdown, g_malloc0, g_object_unref, g_quark_from_static_string, g_strdup,
-    g_task_is_valid, g_task_new, g_task_propagate_pointer, g_task_run_in_thread,
-    g_task_set_task_data,
+    g_object_unref, g_quark_from_static_string, g_task_is_valid, g_task_new,
+    g_task_propagate_pointer, g_task_run_in_thread, g_task_set_task_data,
 };
-use self::utils::twitch_stream_qualities_result_free;
 use crate::glib_strings::is_nonempty;
-use std::ffi::{c_char, c_int, c_uint, c_void};
+use std::ffi::{CStr, CString, c_char, c_double, c_int, c_uint, c_void};
 use std::ptr;
 
+#[derive(Clone, Debug)]
+pub struct TwitchStreamQuality {
+    pub label: CString,
+    pub url: CString,
+    pub width: c_uint,
+    pub height: c_uint,
+    pub bandwidth: c_uint,
+    pub frame_rate: c_double,
+}
+
+#[derive(Clone, Copy)]
+pub struct TwitchPlaybackInfo {
+    pub available: c_int,
+    pub authenticated: c_int,
+    pub user_id: u64,
+    pub subscriber: c_int,
+    pub turbo: c_int,
+    pub show_ads: c_int,
+    pub hide_ads: c_int,
+    pub server_ads: c_int,
+}
+
+#[derive(Clone, Debug)]
 pub struct TwitchStreamPreview {
-    pub channel: *mut c_char,
-    pub display_name: *mut c_char,
-    pub title: *mut c_char,
-    pub avatar_url: *mut c_char,
-    pub preview_url: *mut c_char,
-    pub started_at: *mut c_char,
-    pub category_name: *mut c_char,
+    pub channel: CString,
+    pub display_name: CString,
+    pub title: CString,
+    pub avatar_url: CString,
+    pub preview_url: CString,
+    pub started_at: CString,
+    pub category_name: CString,
     pub viewer_count: c_uint,
 }
 
+#[derive(Clone, Debug)]
 pub struct TwitchCurrentStream {
-    pub title: *mut c_char,
-    pub started_at: *mut c_char,
-    pub category_name: *mut c_char,
+    pub title: CString,
+    pub started_at: CString,
+    pub category_name: CString,
     pub viewer_count: c_uint,
 }
 
 struct TwitchStreamQualitiesResult {
-    qualities: *mut GPtrArray,
+    qualities: Vec<TwitchStreamQuality>,
     playback_info: TwitchPlaybackInfo,
 }
 
+#[derive(Clone, Debug)]
 pub struct TwitchFollowedChannel {
-    pub channel: *mut c_char,
-    pub display_name: *mut c_char,
+    pub channel: CString,
+    pub display_name: CString,
 }
 
 pub struct FetchCurrentStreamData {
-    channel: *mut c_char,
+    channel: CString,
 }
 
 pub struct FetchStreamQualitiesData {
-    channel: *mut c_char,
-    oauth_token: *mut c_char,
+    channel: CString,
+    oauth_token: CString,
 }
 
 pub struct FetchLiveChannelsData {
-    channels: *mut *mut c_char,
-    channel_count: c_uint,
+    channels: Vec<CString>,
 }
 
 pub struct FetchFollowedChannelsData {
-    client_id: *mut c_char,
-    oauth_token: *mut c_char,
+    client_id: CString,
+    oauth_token: CString,
 }
 
 pub type GAsyncReadyCallback = unsafe extern "C" fn(*mut c_void, *mut GAsyncResult, *mut c_void);
-
-type GCompareFunc = unsafe extern "C" fn(*const c_void, *const c_void) -> c_int;
 
 type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
 
@@ -125,7 +139,7 @@ pub unsafe fn twitch_stream_info_fetch_current_stream_async(
             return;
         }
         let data = Box::into_raw(Box::new(FetchCurrentStreamData {
-            channel: g_ascii_strdown(channel, -1),
+            channel: CString::new(CStr::from_ptr(channel).to_bytes().to_ascii_lowercase()).unwrap(),
         }));
         let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
         g_task_set_task_data(
@@ -170,11 +184,11 @@ pub unsafe fn twitch_stream_info_fetch_stream_qualities_async(
             return;
         }
         let data = Box::into_raw(Box::new(FetchStreamQualitiesData {
-            channel: g_ascii_strdown(channel, -1),
+            channel: CString::new(CStr::from_ptr(channel).to_bytes().to_ascii_lowercase()).unwrap(),
             oauth_token: if is_nonempty(oauth_token) {
-                g_strdup(oauth_token)
+                CStr::from_ptr(oauth_token).to_owned()
             } else {
-                ptr::null_mut()
+                CString::default()
             },
         }));
         let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
@@ -192,32 +206,30 @@ pub unsafe fn twitch_stream_info_fetch_stream_qualities_async(
 /// - `result`: matching async result, consumed once on originating main context.
 /// - `error`: null or writable, initially null `GError*` slot.
 /// - `playback_info_out`: null or writable `TwitchPlaybackInfo` slot.
-/// - Result owned; release with `g_ptr_array_unref`.
+/// - Returns the owned list on success.
 pub unsafe fn twitch_stream_info_fetch_stream_qualities_finish(
     result: *mut GAsyncResult,
     playback_info_out: *mut TwitchPlaybackInfo,
     error: *mut *mut GError,
-) -> *mut GPtrArray {
+) -> Option<Vec<TwitchStreamQuality>> {
     unsafe {
         if !playback_info_out.is_null() {
             *playback_info_out = twitch_playback_info_empty();
         }
         if g_task_is_valid(result as *mut c_void, ptr::null_mut()) == 0 {
-            return ptr::null_mut();
+            return None;
         }
         let fetched = g_task_propagate_pointer(result as *mut GTask, error)
             as *mut TwitchStreamQualitiesResult;
         if fetched.is_null() {
-            return ptr::null_mut();
+            return None;
         }
 
         if !playback_info_out.is_null() {
             *playback_info_out = (*fetched).playback_info;
         }
-        let qualities = (*fetched).qualities;
-        (*fetched).qualities = ptr::null_mut();
-        twitch_stream_qualities_result_free(fetched as *mut c_void);
-        qualities
+        let fetched = Box::from_raw(fetched);
+        Some(fetched.qualities)
     }
 }
 
@@ -225,28 +237,19 @@ pub unsafe fn twitch_stream_info_fetch_stream_qualities_finish(
 /// - `cancel`: null or live `GCancellable`.
 /// - Callback: declared C ABI, no unwind; data valid through completion.
 /// - Non-null strings: readable, NUL-terminated UTF-8 for this call.
-/// - `channels`: `channel_count` readable string-pointer slots.
 pub unsafe fn twitch_stream_info_fetch_live_channels_async(
-    channels: *const *const c_char,
-    channel_count: c_uint,
+    channels: &[String],
     cancel: *mut GCancellable,
     callback: Option<GAsyncReadyCallback>,
     user_data: *mut c_void,
 ) {
     unsafe {
         let data = Box::into_raw(Box::new(FetchLiveChannelsData {
-            channel_count,
-            channels: g_malloc0((channel_count as usize + 1) * std::mem::size_of::<*mut c_char>())
-                as *mut *mut c_char,
+            channels: channels
+                .iter()
+                .map(|channel| CString::new(channel.as_str()).expect("channel login"))
+                .collect(),
         }));
-        for i in 0..channel_count {
-            let channel = *channels.add(i as usize);
-            *(*data).channels.add(i as usize) = if channel.is_null() {
-                g_strdup(c"".as_ptr())
-            } else {
-                g_ascii_strdown(channel, -1)
-            };
-        }
         let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
         g_task_set_task_data(
             task,
@@ -261,16 +264,18 @@ pub unsafe fn twitch_stream_info_fetch_live_channels_async(
 /// # Safety
 /// - `result`: matching async result, consumed once on originating main context.
 /// - `error`: null or writable, initially null `GError*` slot.
-/// - Result owned; release with `g_ptr_array_unref`.
+/// - Returns the owned list on success.
 pub unsafe fn twitch_stream_info_fetch_live_channels_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,
-) -> *mut GPtrArray {
+) -> Option<Vec<TwitchStreamPreview>> {
     unsafe {
         if g_task_is_valid(result as *mut c_void, ptr::null_mut()) == 0 {
-            return ptr::null_mut();
+            return None;
         }
-        g_task_propagate_pointer(result as *mut GTask, error) as *mut GPtrArray
+        let values =
+            g_task_propagate_pointer(result as *mut GTask, error) as *mut Vec<TwitchStreamPreview>;
+        (!values.is_null()).then(|| *Box::from_raw(values))
     }
 }
 
@@ -290,8 +295,8 @@ pub unsafe fn twitch_stream_info_fetch_followed_channels_async(
             return;
         }
         let data = Box::into_raw(Box::new(FetchFollowedChannelsData {
-            client_id: g_strdup(client_id),
-            oauth_token: g_strdup(oauth_token),
+            client_id: CStr::from_ptr(client_id).to_owned(),
+            oauth_token: CStr::from_ptr(oauth_token).to_owned(),
         }));
         let task = g_task_new(ptr::null_mut(), cancel, callback, user_data);
         g_task_set_task_data(
@@ -307,15 +312,17 @@ pub unsafe fn twitch_stream_info_fetch_followed_channels_async(
 /// # Safety
 /// - `result`: matching async result, consumed once on originating main context.
 /// - `error`: null or writable, initially null `GError*` slot.
-/// - Result owned; release with `g_ptr_array_unref`.
+/// - Returns the owned list on success.
 pub unsafe fn twitch_stream_info_fetch_followed_channels_finish(
     result: *mut GAsyncResult,
     error: *mut *mut GError,
-) -> *mut GPtrArray {
+) -> Option<Vec<TwitchFollowedChannel>> {
     unsafe {
         if g_task_is_valid(result as *mut c_void, ptr::null_mut()) == 0 {
-            return ptr::null_mut();
+            return None;
         }
-        g_task_propagate_pointer(result as *mut GTask, error) as *mut GPtrArray
+        let values = g_task_propagate_pointer(result as *mut GTask, error)
+            as *mut Vec<TwitchFollowedChannel>;
+        (!values.is_null()).then(|| *Box::from_raw(values))
     }
 }

@@ -1,7 +1,5 @@
 //! Channel picker state and public API.
 
-#![allow(clashing_extern_declarations)]
-
 mod actions;
 mod channels;
 mod ffi;
@@ -17,11 +15,10 @@ mod tests;
 use self::channels::fetch_channel_list;
 use self::ffi::*;
 pub use self::ffi::{
-    GBytes, GFile, GHashTable, GInputStream, GObject, GTask, GTypeInstance, GdkDisplay,
-    GdkPaintable, GdkPixbuf, GdkTexture, GraphenePoint, GtkBox, GtkButton, GtkCssProvider,
-    GtkEditable, GtkEntry, GtkGesture, GtkGestureClick, GtkGestureSingle, GtkGrid, GtkLabel,
-    GtkOverlay, GtkPicture, GtkRoot, GtkScrolledWindow, GtkSearchEntry, GtkStyleProvider,
-    GtkWidget,
+    GBytes, GFile, GInputStream, GObject, GTask, GTypeInstance, GdkDisplay, GdkPaintable,
+    GdkPixbuf, GdkTexture, GraphenePoint, GtkBox, GtkButton, GtkCssProvider, GtkEditable, GtkEntry,
+    GtkGesture, GtkGestureClick, GtkGestureSingle, GtkGrid, GtkLabel, GtkOverlay, GtkPicture,
+    GtkRoot, GtkScrolledWindow, GtkSearchEntry, GtkStyleProvider, GtkWidget,
 };
 use self::images::clear_image_cache;
 use self::layout::position_panel;
@@ -30,9 +27,9 @@ use self::style::install_css;
 use self::widgets::build_widgets;
 use self::widgets::{clear_grid, clear_preview_cards, show_status};
 use crate::settings::{AppSettings, AppSettingsChannel};
-use crate::twitch::stream_info::{GCancellable, GPtrArray};
+use crate::twitch::stream_info::{GCancellable, TwitchStreamPreview};
 use std::collections::HashMap;
-use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
+use std::ffi::{c_double, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -47,7 +44,7 @@ pub struct ChannelSwitcherOverlay {
 
     settings: *mut AppSettings,
 
-    previews: *mut GPtrArray,
+    previews: Option<Vec<TwitchStreamPreview>>,
     preview_cards: Vec<gtk4::Widget>,
     preview_card_columns: c_uint,
     preview_card_width: c_int,
@@ -60,7 +57,7 @@ pub struct ChannelSwitcherOverlay {
     image_cache: HashMap<images::ImageKey, gtk4::gdk::Texture>,
     image_waiters: HashMap<images::ImageKey, images::ImageWaiters>,
 
-    cached_channels_key: *mut c_char,
+    cached_channels_key: Option<String>,
     cached_at_us: i64,
     cancel: *mut GCancellable,
     search_debounce_source: c_uint,
@@ -99,7 +96,7 @@ impl ChannelSwitcherOverlay {
 
             settings,
 
-            previews: ptr::null_mut(),
+            previews: None,
             preview_cards: Vec::new(),
             preview_card_columns: 0,
             preview_card_width: 0,
@@ -112,7 +109,7 @@ impl ChannelSwitcherOverlay {
             image_cache: HashMap::new(),
             image_waiters: HashMap::new(),
 
-            cached_channels_key: ptr::null_mut(),
+            cached_channels_key: None,
             cached_at_us: 0,
             cancel: ptr::null_mut(),
             search_debounce_source: 0,
@@ -151,10 +148,7 @@ unsafe fn channel_switcher_overlay_unref(switcher: *mut ChannelSwitcherOverlay) 
             g_cancellable_cancel((*switcher).cancel);
             clear_object(&mut (*switcher).cancel);
         }
-        if !(*switcher).previews.is_null() {
-            g_ptr_array_unref((*switcher).previews);
-        }
-        g_free((*switcher).cached_channels_key as *mut c_void);
+        (*switcher).previews = None;
 
         remove_weak_pointer(&mut (*switcher).direct_channel_entry);
         remove_weak_pointer(&mut (*switcher).search_entry);
@@ -216,13 +210,9 @@ pub unsafe fn channel_switcher_overlay_set_settings(
         }
 
         (*switcher).settings = settings;
-        if !(*switcher).previews.is_null() {
-            g_ptr_array_unref((*switcher).previews);
-            (*switcher).previews = ptr::null_mut();
-        }
+        (*switcher).previews = None;
         clear_preview_cards(switcher);
-        g_free((*switcher).cached_channels_key as *mut c_void);
-        (*switcher).cached_channels_key = ptr::null_mut();
+        (*switcher).cached_channels_key = None;
         (*switcher).cached_at_us = 0;
     }
 }
@@ -337,13 +327,9 @@ pub unsafe fn channel_switcher_overlay_free(switcher: *mut ChannelSwitcherOverla
         }
 
         channel_switcher_overlay_hide(switcher);
-        if !(*switcher).previews.is_null() {
-            g_ptr_array_unref((*switcher).previews);
-            (*switcher).previews = ptr::null_mut();
-        }
+        (*switcher).previews = None;
         clear_preview_cards(switcher);
-        g_free((*switcher).cached_channels_key as *mut c_void);
-        (*switcher).cached_channels_key = ptr::null_mut();
+        (*switcher).cached_channels_key = None;
         (*switcher).cached_at_us = 0;
         if !(*switcher).panel.is_null() && !(*switcher).overlay.is_null() {
             gtk_overlay_remove_overlay((*switcher).overlay, (*switcher).panel);

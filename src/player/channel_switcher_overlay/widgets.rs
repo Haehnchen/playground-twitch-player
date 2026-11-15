@@ -8,8 +8,8 @@ use super::ffi::*;
 use super::images::load_remote_image;
 use super::layout::{AVATAR_SIZE, CARD_SPACING, current_card_layout, get_grid_columns};
 use super::runtime::{
-    add_switcher_timeout, add_weak_pointer, connect_switcher_signal, g_free_destroy,
-    ptr_array_index, remove_source_if_active, switcher_is_closing,
+    add_switcher_timeout, add_weak_pointer, connect_switcher_signal, g_free_destroy, preview_at,
+    remove_source_if_active, switcher_is_closing,
 };
 use crate::glib_strings::is_nonempty;
 use crate::player::icons::{player_settings_icon_new, player_window_icon_new};
@@ -41,7 +41,7 @@ pub(super) unsafe fn build_widgets(switcher: *mut ChannelSwitcherOverlay) {
             on_backdrop_pressed as *const c_void,
             switcher,
         );
-        gtk_widget_add_controller((*switcher).backdrop, backdrop_click as *mut c_void);
+        gtk_widget_add_controller((*switcher).backdrop, backdrop_click.cast());
         gtk_overlay_add_overlay(overlay, (*switcher).backdrop);
 
         (*switcher).panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -312,10 +312,10 @@ unsafe fn format_viewer_count(viewer_count: c_uint) -> *mut c_char {
     }
 }
 
-unsafe fn format_meta_text(preview: *mut TwitchStreamPreview) -> *mut c_char {
+unsafe fn format_meta_text(preview: *const TwitchStreamPreview) -> *mut c_char {
     unsafe {
         let viewers = format_viewer_count((*preview).viewer_count);
-        let duration = twitch_stream_info_format_live_duration((*preview).started_at);
+        let duration = twitch_stream_info_format_live_duration((*preview).started_at.as_ptr());
         let result = g_strdup_printf(
             c"%s \u{2022} %s".as_ptr(),
             viewers,
@@ -333,17 +333,17 @@ unsafe fn format_meta_text(preview: *mut TwitchStreamPreview) -> *mut c_char {
 
 unsafe fn create_channel_card(
     switcher: *mut ChannelSwitcherOverlay,
-    preview: *mut TwitchStreamPreview,
+    preview: *const TwitchStreamPreview,
     card_width: c_int,
     preview_width: c_int,
     preview_height: c_int,
 ) -> *mut GtkWidget {
     unsafe {
-        let channel = find_settings_channel(switcher, (*preview).channel);
-        let label = if !channel.is_null() && is_nonempty((*channel).label) {
-            (*channel).label
+        let channel = find_settings_channel(switcher, (*preview).channel.as_ptr());
+        let label = if !channel.is_null() && is_nonempty((*channel).label.as_ptr()) {
+            (*channel).label.as_ptr()
         } else {
-            (*preview).display_name
+            (*preview).display_name.as_ptr()
         };
 
         let button = gtk_button_new();
@@ -354,7 +354,7 @@ unsafe fn create_channel_card(
         g_object_set_data_full(
             button as *mut GObject,
             c"channel-name".as_ptr(),
-            g_strdup((*preview).channel) as *mut c_void,
+            g_strdup((*preview).channel.as_ptr()) as *mut c_void,
             Some(g_free_destroy),
         );
         g_object_set_data_full(
@@ -378,7 +378,7 @@ unsafe fn create_channel_card(
         let preview_frame = create_fixed_picture_frame(
             create_image_picture(
                 switcher,
-                (*preview).preview_url,
+                (*preview).preview_url.as_ptr(),
                 preview_width,
                 preview_height,
                 c"channel-switcher-preview".as_ptr(),
@@ -399,7 +399,7 @@ unsafe fn create_channel_card(
         let avatar_frame = create_fixed_picture_frame(
             create_image_picture(
                 switcher,
-                (*preview).avatar_url,
+                (*preview).avatar_url.as_ptr(),
                 AVATAR_SIZE,
                 AVATAR_SIZE,
                 c"channel-switcher-avatar".as_ptr(),
@@ -408,10 +408,10 @@ unsafe fn create_channel_card(
             AVATAR_SIZE,
         );
 
-        let title_label = gtk_label_new(if (*preview).title.is_null() {
+        let title_label = gtk_label_new(if (*preview).title.is_empty() {
             c"".as_ptr()
         } else {
-            (*preview).title
+            (*preview).title.as_ptr()
         });
         gtk_widget_add_css_class(title_label, c"channel-switcher-title".as_ptr());
         gtk_label_set_xalign(title_label as *mut GtkLabel, 0.0);
@@ -439,8 +439,8 @@ unsafe fn create_channel_card(
         gtk_box_append(text_box as *mut GtkBox, title_label);
         gtk_box_append(text_box as *mut GtkBox, name_label);
         gtk_box_append(text_box as *mut GtkBox, meta_label);
-        if is_nonempty((*preview).category_name) {
-            let category_label = gtk_label_new((*preview).category_name);
+        if is_nonempty((*preview).category_name.as_ptr()) {
+            let category_label = gtk_label_new((*preview).category_name.as_ptr());
             gtk_widget_add_css_class(category_label, c"channel-switcher-meta".as_ptr());
             gtk_label_set_xalign(category_label as *mut GtkLabel, 0.0);
             gtk_label_set_ellipsize(category_label as *mut GtkLabel, PANGO_ELLIPSIZE_END);
@@ -464,7 +464,7 @@ unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
         let switcher = user_data as *mut ChannelSwitcherOverlay;
         if switcher_is_closing(switcher)
             || (*switcher).panel.is_null()
-            || (*switcher).previews.is_null()
+            || (*switcher).previews.is_none()
         {
             (*switcher).preview_card_build_source = 0;
             return G_SOURCE_REMOVE;
@@ -476,15 +476,14 @@ unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
         }
 
         let start = (*switcher).preview_card_next_index;
-        let end = (*(*switcher).previews)
-            .len
+        let end = ((*switcher).previews.as_ref().unwrap().len() as c_uint)
             .min(start.saturating_add(PREVIEW_CARD_BUILD_BATCH_SIZE));
         if start == 0 {
             clear_grid(switcher);
         }
         let filter = current_search_filter(switcher);
         for i in start..end {
-            let preview = ptr_array_index((*switcher).previews, i);
+            let preview = preview_at(switcher, i);
             if i as usize >= (*switcher).preview_cards.len() {
                 let card = create_channel_card(
                     switcher,
@@ -511,7 +510,7 @@ unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
         }
         (*switcher).preview_card_next_index = end;
 
-        if end < (*(*switcher).previews).len {
+        if end < (*switcher).previews.as_ref().unwrap().len() as c_uint {
             return G_SOURCE_CONTINUE;
         }
 
@@ -544,7 +543,9 @@ unsafe fn prepare_preview_card_layout(switcher: *mut ChannelSwitcherOverlay) {
 pub(super) unsafe fn render_live_channels(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
         remove_source_if_active(&mut (*switcher).preview_card_build_source);
-        if (*switcher).previews.is_null() || (*(*switcher).previews).len == 0 {
+        if (*switcher).previews.is_none()
+            || (*switcher).previews.as_ref().unwrap().len() as c_uint == 0
+        {
             show_status(switcher, c"No configured channels are live".as_ptr());
             return;
         }

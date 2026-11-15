@@ -1,20 +1,17 @@
-use super::ffi::{
-    GError, GPtrArray, TwitchStreamQuality, g_free, g_ptr_array_new_with_free_func,
-    g_ptr_array_unref,
-};
+use super::TwitchCurrentStream;
+use super::ffi::g_free;
 use super::playlist::parse_stream_qualities_playlist;
 use super::requests::{build_live_channels_request_body, build_stream_title_request_body};
 use super::responses::parse_current_stream_response;
 use super::responses::parse_live_channels_response;
 use super::responses::parse_playback_info;
 use super::responses::{parse_followed_channels_page, parse_helix_user_id_response};
+use super::utils::twitch_current_stream_free;
 use super::utils::{
     format_live_duration_from_span, format_viewer_count,
     twitch_stream_info_format_current_stream_metadata,
     twitch_stream_info_format_current_stream_title, twitch_stream_info_format_live_duration,
 };
-use super::utils::{twitch_current_stream_free, twitch_followed_channel_free};
-use super::{TwitchCurrentStream, TwitchFollowedChannel, TwitchStreamPreview};
 use serde_json::{Value, json};
 use std::ffi::{CStr, CString, c_char, c_longlong, c_uint, c_void};
 use std::ptr;
@@ -40,16 +37,6 @@ unsafe fn str_from_ptr<'a>(value: *const c_char) -> &'a str {
 unsafe fn assert_cstr_eq(actual: *const c_char, expected: &str) {
     unsafe {
         assert_eq!(str_from_ptr(actual), expected);
-    }
-}
-
-unsafe fn ptr_array_index<T>(array: *mut GPtrArray, index: usize) -> *mut T {
-    unsafe { *(*array).pdata.add(index) as *mut T }
-}
-
-unsafe extern "C" fn free_followed_channel(data: *mut c_void) {
-    unsafe {
-        twitch_followed_channel_free(data as *mut TwitchFollowedChannel);
     }
 }
 
@@ -107,9 +94,9 @@ fn test_parse_current_stream_response_returns_title_viewers_and_category() {
         let stream = parse_current_stream_response((json).as_bytes()).unwrap();
 
         assert!(!stream.is_null());
-        assert_cstr_eq((*stream).title, "Live now");
-        assert_cstr_eq((*stream).started_at, "2026-04-30T10:00:00Z");
-        assert_cstr_eq((*stream).category_name, "Games + Demos");
+        assert_cstr_eq((*stream).title.as_ptr(), "Live now");
+        assert_cstr_eq((*stream).started_at.as_ptr(), "2026-04-30T10:00:00Z");
+        assert_cstr_eq((*stream).category_name.as_ptr(), "Games + Demos");
         assert_eq!((*stream).viewer_count, 1234);
         twitch_current_stream_free(stream);
     }
@@ -122,9 +109,9 @@ fn test_parse_current_stream_response_handles_missing_optional_fields() {
         let stream = parse_current_stream_response((json).as_bytes()).unwrap();
 
         assert!(!stream.is_null());
-        assert_cstr_eq((*stream).title, "");
-        assert!((*stream).started_at.is_null());
-        assert!((*stream).category_name.is_null());
+        assert_cstr_eq((*stream).title.as_ptr(), "");
+        assert!((*stream).started_at.is_empty());
+        assert!((*stream).category_name.is_empty());
         assert_eq!((*stream).viewer_count, 0);
         twitch_current_stream_free(stream);
     }
@@ -144,24 +131,20 @@ fn test_parse_stream_qualities_playlist_returns_sorted_variants() {
          #EXT-X-STREAM-INF:BANDWIDTH=160000,NAME=\"Audio Only\"\n\
          https://example.test/audio.m3u8\n",
         );
-        let mut error: *mut GError = ptr::null_mut();
-        let qualities = parse_stream_qualities_playlist(playlist.as_ptr(), &mut error);
+        let qualities = parse_stream_qualities_playlist(playlist.as_bytes()).unwrap();
 
-        assert!(error.is_null());
-        assert!(!qualities.is_null());
-        assert_eq!((*qualities).len, 3);
+        assert_eq!(qualities.len(), 3);
 
-        let low = ptr_array_index::<TwitchStreamQuality>(qualities, 0);
-        let mid = ptr_array_index::<TwitchStreamQuality>(qualities, 1);
-        let source = ptr_array_index::<TwitchStreamQuality>(qualities, 2);
+        let low = &qualities[0];
+        let mid = &qualities[1];
+        let source = &qualities[2];
 
-        assert_cstr_eq((*low).label, "480p");
-        assert_cstr_eq((*mid).label, "720p60");
-        assert_cstr_eq((*source).label, "1080p60");
-        assert_cstr_eq((*source).url, "https://example.test/1080p60.m3u8");
-        assert_eq!((*source).width, 1920);
-        assert_eq!((*source).height, 1080);
-        g_ptr_array_unref(qualities);
+        assert_cstr_eq(low.label.as_ptr(), "480p");
+        assert_cstr_eq(mid.label.as_ptr(), "720p60");
+        assert_cstr_eq(source.label.as_ptr(), "1080p60");
+        assert_cstr_eq(source.url.as_ptr(), "https://example.test/1080p60.m3u8");
+        assert_eq!(source.width, 1920);
+        assert_eq!(source.height, 1080);
     }
 }
 
@@ -239,17 +222,17 @@ fn test_format_current_stream_title_and_metadata_separately() {
         let started_value = cstring("2999-01-01T00:00:00Z");
         let category_value = cstring("Games + Demos");
         let stream = TwitchCurrentStream {
-            title: title_value.as_ptr() as *mut c_char,
-            started_at: started_value.as_ptr() as *mut c_char,
-            category_name: category_value.as_ptr() as *mut c_char,
+            title: title_value,
+            started_at: started_value,
+            category_name: category_value,
             viewer_count: 1234,
         };
         let untitled_value = cstring("");
         let untitled_category = cstring("Just Chatting");
         let untitled_stream = TwitchCurrentStream {
-            title: untitled_value.as_ptr() as *mut c_char,
-            started_at: ptr::null_mut(),
-            category_name: untitled_category.as_ptr() as *mut c_char,
+            title: untitled_value,
+            started_at: CString::default(),
+            category_name: untitled_category,
             viewer_count: 42,
         };
 
@@ -275,23 +258,21 @@ fn test_parse_live_channels_response_returns_only_live_streams() {
         let json = r#"{"data":{"users":[{"login":"LiveOne","displayName":"Live One","profileImageURL":"https://avatar","stream":{"title":"Now live","viewersCount":1234,"createdAt":"2026-04-30T10:00:00Z","game":{"name":"Just Chatting"},"previewImageURL":"https://preview"}},{"login":"BiggerLive","displayName":"Bigger Live","profileImageURL":"https://avatar-big","stream":{"title":"More live","viewersCount":9999,"createdAt":"2026-04-30T09:00:00Z","game":{"name":"Games + Demos"},"previewImageURL":"https://preview-big"}},{"login":"OfflineOne","displayName":"Offline One","profileImageURL":"https://offline","stream":null}]}}"#;
         let previews = parse_live_channels_response((json).as_bytes()).unwrap();
 
-        assert!(!previews.is_null());
-        assert_eq!((*previews).len, 2);
+        assert_eq!(previews.len(), 2);
 
-        let preview = ptr_array_index::<TwitchStreamPreview>(previews, 0);
-        assert_cstr_eq((*preview).channel, "biggerlive");
-        assert_cstr_eq((*preview).display_name, "Bigger Live");
-        assert_cstr_eq((*preview).title, "More live");
-        assert_cstr_eq((*preview).avatar_url, "https://avatar-big");
-        assert_cstr_eq((*preview).preview_url, "https://preview-big");
-        assert_cstr_eq((*preview).started_at, "2026-04-30T09:00:00Z");
-        assert_cstr_eq((*preview).category_name, "Games + Demos");
-        assert_eq!((*preview).viewer_count, 9999);
+        let preview = &previews[0];
+        assert_cstr_eq(preview.channel.as_ptr(), "biggerlive");
+        assert_cstr_eq(preview.display_name.as_ptr(), "Bigger Live");
+        assert_cstr_eq(preview.title.as_ptr(), "More live");
+        assert_cstr_eq(preview.avatar_url.as_ptr(), "https://avatar-big");
+        assert_cstr_eq(preview.preview_url.as_ptr(), "https://preview-big");
+        assert_cstr_eq(preview.started_at.as_ptr(), "2026-04-30T09:00:00Z");
+        assert_cstr_eq(preview.category_name.as_ptr(), "Games + Demos");
+        assert_eq!(preview.viewer_count, 9999);
 
-        let preview = ptr_array_index::<TwitchStreamPreview>(previews, 1);
-        assert_cstr_eq((*preview).channel, "liveone");
-        assert_eq!((*preview).viewer_count, 1234);
-        g_ptr_array_unref(previews);
+        let preview = &previews[1];
+        assert_cstr_eq(preview.channel.as_ptr(), "liveone");
+        assert_eq!(preview.viewer_count, 1234);
     }
 }
 
@@ -301,19 +282,17 @@ fn test_parse_live_channels_response_handles_missing_optional_fields() {
         let json = r#"{"data":{"users":[{"login":"FallbackLogin","displayName":null,"profileImageURL":null,"stream":{"title":null,"viewersCount":null,"createdAt":null,"game":null,"previewImageURL":null}}]}}"#;
         let previews = parse_live_channels_response((json).as_bytes()).unwrap();
 
-        assert!(!previews.is_null());
-        assert_eq!((*previews).len, 1);
+        assert_eq!(previews.len(), 1);
 
-        let preview = ptr_array_index::<TwitchStreamPreview>(previews, 0);
-        assert_cstr_eq((*preview).channel, "fallbacklogin");
-        assert_cstr_eq((*preview).display_name, "FallbackLogin");
-        assert_cstr_eq((*preview).title, "");
-        assert!((*preview).avatar_url.is_null());
-        assert!((*preview).preview_url.is_null());
-        assert!((*preview).started_at.is_null());
-        assert!((*preview).category_name.is_null());
-        assert_eq!((*preview).viewer_count, 0);
-        g_ptr_array_unref(previews);
+        let preview = &previews[0];
+        assert_cstr_eq(preview.channel.as_ptr(), "fallbacklogin");
+        assert_cstr_eq(preview.display_name.as_ptr(), "FallbackLogin");
+        assert_cstr_eq(preview.title.as_ptr(), "");
+        assert!(preview.avatar_url.is_empty());
+        assert!(preview.preview_url.is_empty());
+        assert!(preview.started_at.is_empty());
+        assert!(preview.category_name.is_empty());
+        assert_eq!(preview.viewer_count, 0);
     }
 }
 
@@ -323,30 +302,18 @@ fn test_parse_live_channels_response_sorts_equal_viewers_by_display_name() {
         let json = r#"{"data":{"users":[{"login":"zeta","displayName":"Zeta","stream":{"title":"Z","viewersCount":10}},{"login":"alpha","displayName":"Alpha","stream":{"title":"A","viewersCount":10}}]}}"#;
         let previews = parse_live_channels_response((json).as_bytes()).unwrap();
 
-        assert!(!previews.is_null());
-        assert_eq!((*previews).len, 2);
+        assert_eq!(previews.len(), 2);
 
-        assert_cstr_eq(
-            (*ptr_array_index::<TwitchStreamPreview>(previews, 0)).display_name,
-            "Alpha",
-        );
-        assert_cstr_eq(
-            (*ptr_array_index::<TwitchStreamPreview>(previews, 1)).display_name,
-            "Zeta",
-        );
-        g_ptr_array_unref(previews);
+        assert_cstr_eq(previews[0].display_name.as_ptr(), "Alpha");
+        assert_cstr_eq(previews[1].display_name.as_ptr(), "Zeta");
     }
 }
 
 #[test]
 fn test_parse_live_channels_response_returns_empty_for_missing_users() {
-    unsafe {
-        let previews = parse_live_channels_response(r#"{"data":{}}"#.as_bytes()).unwrap();
+    let previews = parse_live_channels_response(r#"{"data":{}}"#.as_bytes()).unwrap();
 
-        assert!(!previews.is_null());
-        assert_eq!((*previews).len, 0);
-        g_ptr_array_unref(previews);
-    }
+    assert_eq!(previews.len(), 0);
 }
 
 #[test]
@@ -368,21 +335,20 @@ fn test_parse_followed_channels_page_returns_channels_and_cursor() {
         let json = cstring(
             r#"{"data":[{"broadcaster_login":"PapaPlatte","broadcaster_name":"Papaplatte"},{"broadcaster_login":"rocketbeans","broadcaster_name":"Rocket Beans TV"}],"pagination":{"cursor":"next-page"}}"#,
         );
-        let channels = g_ptr_array_new_with_free_func(Some(free_followed_channel));
-        let cursor = parse_followed_channels_page(json.as_bytes(), channels).unwrap();
-        assert_eq!((*channels).len, 2);
+        let mut channels = Vec::new();
+        let cursor = parse_followed_channels_page(json.as_bytes(), &mut channels).unwrap();
+        assert_eq!(channels.len(), 2);
         assert_cstr_eq(cursor, "next-page");
 
-        let channel = ptr_array_index::<TwitchFollowedChannel>(channels, 0);
-        assert_cstr_eq((*channel).channel, "papaplatte");
-        assert_cstr_eq((*channel).display_name, "Papaplatte");
+        let channel = &channels[0];
+        assert_cstr_eq(channel.channel.as_ptr(), "papaplatte");
+        assert_cstr_eq(channel.display_name.as_ptr(), "Papaplatte");
 
-        let channel = ptr_array_index::<TwitchFollowedChannel>(channels, 1);
-        assert_cstr_eq((*channel).channel, "rocketbeans");
-        assert_cstr_eq((*channel).display_name, "Rocket Beans TV");
+        let channel = &channels[1];
+        assert_cstr_eq(channel.channel.as_ptr(), "rocketbeans");
+        assert_cstr_eq(channel.display_name.as_ptr(), "Rocket Beans TV");
 
         g_free(cursor as *mut c_void);
-        g_ptr_array_unref(channels);
     }
 }
 
@@ -458,10 +424,10 @@ fn stream_response_handles_wrong_types_and_bounded_viewer_counts() {
             json!(u32::MAX),
         ] {
             let response = json!({"data": {"user": {"stream": {"title": 7, "game": [], "viewersCount": viewers}}}}).to_string();
-            let stream = parse_current_stream_response((&response).as_bytes()).unwrap();
+            let stream = parse_current_stream_response(response.as_bytes()).unwrap();
             assert!(!stream.is_null());
-            assert_cstr_eq((*stream).title, "");
-            assert!((*stream).category_name.is_null());
+            assert_cstr_eq((*stream).title.as_ptr(), "");
+            assert!((*stream).category_name.is_empty());
             assert_eq!(
                 (*stream).viewer_count,
                 if viewers == json!(u32::MAX) {
@@ -479,15 +445,14 @@ fn stream_response_handles_wrong_types_and_bounded_viewer_counts() {
 fn helix_pages_skip_invalid_entries_and_use_login_as_display_name() {
     unsafe {
         let response = br#"{"data":[null,{},false,{"broadcaster_login":7},{"broadcaster_login":"\u0000hidden"},{"broadcaster_login":"MixedCase","broadcaster_name":null}],"pagination":{"cursor":null}}trailing"#;
-        let channels = g_ptr_array_new_with_free_func(Some(free_followed_channel));
+        let mut channels = Vec::new();
         let length = response.len() - b"trailing".len();
-        let cursor = parse_followed_channels_page(&response[..length], channels).unwrap();
-        assert_eq!((*channels).len, 1);
-        let channel = ptr_array_index::<TwitchFollowedChannel>(channels, 0);
-        assert_cstr_eq((*channel).channel, "mixedcase");
-        assert_cstr_eq((*channel).display_name, "MixedCase");
+        let cursor = parse_followed_channels_page(&response[..length], &mut channels).unwrap();
+        assert_eq!(channels.len(), 1);
+        let channel = &channels[0];
+        assert_cstr_eq(channel.channel.as_ptr(), "mixedcase");
+        assert_cstr_eq(channel.display_name.as_ptr(), "MixedCase");
         assert!(cursor.is_null());
-        g_ptr_array_unref(channels);
     }
 }
 
@@ -497,29 +462,20 @@ fn hls_parser_handles_quoted_commas_and_excludes_audio_and_iframe_variants() {
         let playlist = cstring(
             "#EXTM3U\n#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100,RESOLUTION=320x180,URI=\"iframe.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1234,RESOLUTION=1280x720,FRAME-RATE=59.94,CODECS=\"avc1.64001f,mp4a.40.2\"\nvideo.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=123,NAME=\"Audio Only\"\naudio.m3u8\n",
         );
-        let mut error = ptr::null_mut();
-        let qualities = parse_stream_qualities_playlist(playlist.as_ptr(), &mut error);
-        assert!(error.is_null());
-        assert!(!qualities.is_null());
-        assert_eq!((*qualities).len, 1);
-        let quality = ptr_array_index::<TwitchStreamQuality>(qualities, 0);
-        assert_cstr_eq((*quality).label, "720p60");
-        assert_cstr_eq((*quality).url, "video.m3u8");
-        g_ptr_array_unref(qualities);
+        let qualities = parse_stream_qualities_playlist(playlist.as_bytes()).unwrap();
+        assert_eq!(qualities.len(), 1);
+        let quality = &qualities[0];
+        assert_cstr_eq(quality.label.as_ptr(), "720p60");
+        assert_cstr_eq(quality.url.as_ptr(), "video.m3u8");
     }
 }
 
 #[test]
 fn hls_parser_reports_invalid_or_video_free_playlists() {
-    unsafe {
-        for playlist in [
-            c"bad playlist",
-            c"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=123,NAME=\"Audio Only\"\naudio.m3u8\n",
-        ] {
-            let mut error = ptr::null_mut();
-            assert!(parse_stream_qualities_playlist(playlist.as_ptr(), &mut error).is_null());
-            assert!(!error.is_null());
-            gtk4::glib::ffi::g_error_free(error.cast());
-        }
+    for playlist in [
+        "bad playlist",
+        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=123,NAME=\"Audio Only\"\naudio.m3u8\n",
+    ] {
+        assert!(parse_stream_qualities_playlist(playlist.as_bytes()).is_err());
     }
 }

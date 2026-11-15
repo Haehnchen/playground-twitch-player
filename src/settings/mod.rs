@@ -6,52 +6,46 @@ pub use self::channels::{
     app_settings_add_channel, app_settings_clear_channels, app_settings_get_channel,
     app_settings_get_channel_count,
 };
-pub use self::ffi::{GError, GPtrArray};
+pub use self::ffi::GError;
 pub use self::storage::{app_settings_get_path, app_settings_load, app_settings_save};
 
-use self::channels::{app_settings_channel_free, dup_bytes, trimmed_bytes};
-use self::ffi::{g_free, g_ptr_array_new_with_free_func, g_ptr_array_unref, g_strdup};
-use crate::glib_strings::is_nonempty;
-use std::ffi::{c_char, c_int, c_void};
+use self::channels::trimmed_bytes;
+use std::ffi::{CStr, CString, c_char, c_int};
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct AppSettingsChannel {
-    pub label: *mut c_char,
-    pub channel: *mut c_char,
-    pub url: *mut c_char,
+    pub label: CString,
+    pub channel: CString,
+    pub url: CString,
 }
 
 pub struct AppSettings {
-    channels: *mut GPtrArray,
+    channels: Vec<AppSettingsChannel>,
 
-    twitch_oauth_token: *mut c_char,
-    twitch_refresh_token: *mut c_char,
+    twitch_oauth_token: Option<CString>,
+    twitch_refresh_token: Option<CString>,
     twitch_oauth_expires_at: i64,
-    twitch_playback_auth_token: *mut c_char,
+    twitch_playback_auth_token: Option<CString>,
 
     hwdec_enabled: c_int,
 
     ref_count: AtomicUsize,
 }
 
-type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
-
 pub fn app_settings_new() -> *mut AppSettings {
-    unsafe {
-        Box::into_raw(Box::new(AppSettings {
-            channels: g_ptr_array_new_with_free_func(Some(app_settings_channel_free)),
+    Box::into_raw(Box::new(AppSettings {
+        channels: Vec::new(),
 
-            twitch_oauth_token: ptr::null_mut(),
-            twitch_refresh_token: ptr::null_mut(),
-            twitch_oauth_expires_at: 0,
-            twitch_playback_auth_token: ptr::null_mut(),
+        twitch_oauth_token: None,
+        twitch_refresh_token: None,
+        twitch_oauth_expires_at: 0,
+        twitch_playback_auth_token: None,
 
-            hwdec_enabled: 1,
+        hwdec_enabled: 1,
 
-            ref_count: AtomicUsize::new(1),
-        }))
-    }
+        ref_count: AtomicUsize::new(1),
+    }))
 }
 
 pub(crate) unsafe fn app_settings_ref(settings: *mut AppSettings) -> *mut AppSettings {
@@ -69,11 +63,7 @@ unsafe fn app_settings_unref(settings: *mut AppSettings) {
             return;
         }
 
-        let settings = Box::from_raw(settings);
-        g_ptr_array_unref(settings.channels);
-        g_free(settings.twitch_oauth_token as *mut c_void);
-        g_free(settings.twitch_refresh_token as *mut c_void);
-        g_free(settings.twitch_playback_auth_token as *mut c_void);
+        drop(Box::from_raw(settings));
     }
 }
 
@@ -117,7 +107,10 @@ pub unsafe fn app_settings_get_twitch_oauth_token(settings: *const AppSettings) 
             return ptr::null();
         }
 
-        (*settings).twitch_oauth_token
+        (*settings)
+            .twitch_oauth_token
+            .as_ref()
+            .map_or(ptr::null(), |token| token.as_ptr())
     }
 }
 
@@ -130,7 +123,10 @@ pub unsafe fn app_settings_get_twitch_refresh_token(settings: *const AppSettings
             return ptr::null();
         }
 
-        (*settings).twitch_refresh_token
+        (*settings)
+            .twitch_refresh_token
+            .as_ref()
+            .map_or(ptr::null(), |token| token.as_ptr())
     }
 }
 
@@ -157,7 +153,10 @@ pub unsafe fn app_settings_get_twitch_playback_auth_token(
             return ptr::null();
         }
 
-        (*settings).twitch_playback_auth_token
+        (*settings)
+            .twitch_playback_auth_token
+            .as_ref()
+            .map_or(ptr::null(), |token| token.as_ptr())
     }
 }
 
@@ -174,13 +173,8 @@ pub unsafe fn app_settings_set_twitch_playback_auth_token(
         }
 
         let token = trimmed_bytes(token);
-        let new_token = if token.is_empty() {
-            ptr::null_mut()
-        } else {
-            dup_bytes(&token)
-        };
-        g_free((*settings).twitch_playback_auth_token as *mut c_void);
-        (*settings).twitch_playback_auth_token = new_token;
+        (*settings).twitch_playback_auth_token =
+            (!token.is_empty()).then(|| CString::new(token).expect("trimmed C string"));
     }
 }
 
@@ -196,16 +190,9 @@ pub unsafe fn app_settings_set_twitch_oauth_token(
             return;
         }
 
-        let new_oauth_token = if is_nonempty(oauth_token) {
-            g_strdup(oauth_token)
-        } else {
-            ptr::null_mut()
-        };
-        g_free((*settings).twitch_oauth_token as *mut c_void);
-        (*settings).twitch_oauth_token = new_oauth_token;
-        if (*settings).twitch_oauth_token.is_null() {
-            g_free((*settings).twitch_refresh_token as *mut c_void);
-            (*settings).twitch_refresh_token = ptr::null_mut();
+        (*settings).twitch_oauth_token = copy_token(oauth_token);
+        if (*settings).twitch_oauth_token.is_none() {
+            (*settings).twitch_refresh_token = None;
             (*settings).twitch_oauth_expires_at = 0;
         }
     }
@@ -225,27 +212,17 @@ pub unsafe fn app_settings_set_twitch_auth_tokens(
             return;
         }
 
-        let new_oauth_token = if is_nonempty(oauth_token) {
-            g_strdup(oauth_token)
-        } else {
-            ptr::null_mut()
-        };
-        let new_refresh_token = if is_nonempty(refresh_token) {
-            g_strdup(refresh_token)
-        } else {
-            ptr::null_mut()
-        };
-
-        g_free((*settings).twitch_oauth_token as *mut c_void);
-        (*settings).twitch_oauth_token = new_oauth_token;
-        g_free((*settings).twitch_refresh_token as *mut c_void);
-        (*settings).twitch_refresh_token = new_refresh_token;
-        (*settings).twitch_oauth_expires_at = if (*settings).twitch_oauth_token.is_null() {
-            0
-        } else {
-            oauth_expires_at
-        };
+        // Copy both inputs before replacing tokens; callers may pass borrowed getters.
+        let oauth = copy_token(oauth_token);
+        let refresh = copy_token(refresh_token);
+        (*settings).twitch_oauth_expires_at = if oauth.is_some() { oauth_expires_at } else { 0 };
+        (*settings).twitch_oauth_token = oauth;
+        (*settings).twitch_refresh_token = refresh;
     }
+}
+
+unsafe fn copy_token(token: *const c_char) -> Option<CString> {
+    unsafe { (!token.is_null() && *token != 0).then(|| CStr::from_ptr(token).to_owned()) }
 }
 
 pub mod window;
@@ -256,6 +233,37 @@ mod tests {
     use super::*;
     use std::ffi::CStr;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn token_setters_accept_their_own_borrowed_values() {
+        unsafe {
+            let settings = app_settings_new();
+            app_settings_set_twitch_auth_tokens(
+                settings,
+                c"access".as_ptr(),
+                c"refresh".as_ptr(),
+                42,
+            );
+            app_settings_set_twitch_auth_tokens(
+                settings,
+                app_settings_get_twitch_refresh_token(settings),
+                app_settings_get_twitch_oauth_token(settings),
+                84,
+            );
+            assert_eq!(
+                CStr::from_ptr(app_settings_get_twitch_oauth_token(settings)),
+                c"refresh"
+            );
+            assert_eq!(
+                CStr::from_ptr(app_settings_get_twitch_refresh_token(settings)),
+                c"access"
+            );
+            app_settings_set_twitch_oauth_token(settings, ptr::null());
+            assert!(app_settings_get_twitch_refresh_token(settings).is_null());
+            assert_eq!(app_settings_get_twitch_oauth_expires_at(settings), 0);
+            app_settings_free(settings);
+        }
+    }
 
     #[test]
     fn owner_release_waits_for_async_reference() {
@@ -317,12 +325,9 @@ mod tests {
                     app_settings_get_twitch_playback_auth_token(restored),
                     "playback-token-789",
                 ),
-                ((*channel).label as *const c_char, "Papaplatte Live"),
-                ((*channel).channel as *const c_char, "papaplatte"),
-                (
-                    (*channel).url as *const c_char,
-                    "https://www.twitch.tv/papaplatte",
-                ),
+                ((*channel).label.as_ptr(), "Papaplatte Live"),
+                ((*channel).channel.as_ptr(), "papaplatte"),
+                ((*channel).url.as_ptr(), "https://www.twitch.tv/papaplatte"),
             ] {
                 assert_eq!(CStr::from_ptr(actual).to_str().unwrap(), expected);
             }
@@ -363,9 +368,9 @@ mod tests {
             assert_eq!(app_settings_get_channel_count(settings), 1);
             assert!(app_settings_get_twitch_oauth_token(settings).is_null());
             let channel = app_settings_get_channel(settings, 0);
-            assert_eq!(CStr::from_ptr((*channel).channel), c"papaplatte");
+            assert_eq!((*channel).channel.as_c_str(), c"papaplatte");
             assert_eq!(
-                CStr::from_ptr((*channel).url),
+                (*channel).url.as_c_str(),
                 c"https://www.twitch.tv/papaplatte"
             );
             app_settings_free(settings);

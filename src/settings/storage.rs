@@ -131,9 +131,9 @@ pub(super) unsafe fn to_json(settings: *mut AppSettings) -> Value {
             .map(|index| {
                 let channel = app_settings_get_channel(settings, index);
                 json!({
-                    "label": CStr::from_ptr((*channel).label).to_string_lossy(),
-                    "channel": CStr::from_ptr((*channel).channel).to_string_lossy(),
-                    "url": CStr::from_ptr((*channel).url).to_string_lossy(),
+                    "label": CStr::from_ptr((*channel).label.as_ptr()).to_string_lossy(),
+                    "channel": CStr::from_ptr((*channel).channel.as_ptr()).to_string_lossy(),
+                    "url": CStr::from_ptr((*channel).url.as_ptr()).to_string_lossy(),
                 })
             })
             .collect();

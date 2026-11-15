@@ -229,13 +229,12 @@ pub unsafe fn player_session_set_wakeup_callback(
 /// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_toggle_stream_info(session: *mut PlayerSession) {
     unsafe {
-        if let Some(mpv) = player_session_get_mpv(session) {
-            if mpv
+        if let Some(mpv) = player_session_get_mpv(session)
+            && mpv
                 .command("script-binding", &["stats/display-stats-toggle"])
                 .is_err()
-            {
-                report(mpv.command("keypress", &["i"]), "toggle stream info");
-            }
+        {
+            report(mpv.command("keypress", &["i"]), "toggle stream info");
         }
     }
 }
@@ -259,10 +258,10 @@ pub unsafe fn player_session_reenable_video(session: *mut PlayerSession) {
 /// - `session`: null or live instance; serialize access.
 pub unsafe fn player_session_drop_buffers(session: *mut PlayerSession) {
     unsafe {
-        if player_session_is_playing(session) != 0 {
-            if let Some(mpv) = player_session_get_mpv(session) {
-                report(command_async(&mpv, c"drop-buffers", &[]), "drop buffers");
-            }
+        if player_session_is_playing(session) != 0
+            && let Some(mpv) = player_session_get_mpv(session)
+        {
+            report(command_async(&mpv, c"drop-buffers", &[]), "drop buffers");
         }
     }
 }

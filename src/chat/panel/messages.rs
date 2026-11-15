@@ -1,8 +1,7 @@
 use super::ffi::{
     G_SOURCE_REMOVE, GDK_EVENT_PROPAGATE, GdkRGBA, GtkAdjustment, GtkEventControllerScroll,
-    GtkScrolledWindow, GtkTextIter, GtkTextTag, GtkTextView, PANGO_WEIGHT_BOLD,
-    g_hash_table_insert, g_hash_table_lookup, g_hash_table_size, g_idle_add_full, g_str_hash,
-    g_strdup, gdk_rgba_parse, gtk_adjustment_get_page_size, gtk_adjustment_get_upper,
+    GtkScrolledWindow, GtkTextIter, GtkTextTag, GtkTextView, PANGO_WEIGHT_BOLD, g_idle_add_full,
+    g_str_hash, gdk_rgba_parse, gtk_adjustment_get_page_size, gtk_adjustment_get_upper,
     gtk_adjustment_get_value, gtk_adjustment_set_value, gtk_scrolled_window_get_vadjustment,
     gtk_text_buffer_create_tag, gtk_text_buffer_delete, gtk_text_buffer_get_end_iter,
     gtk_text_buffer_get_start_iter, gtk_text_buffer_insert, gtk_text_buffer_insert_with_tags,
@@ -59,16 +58,11 @@ pub(super) unsafe fn get_username_tag(
             color
         };
 
-        let tag = g_hash_table_lookup((*priv_).username_tags, tag_color as *const c_void)
-            as *mut GtkTextTag;
-        if !tag.is_null() {
-            return tag;
+        let key = CStr::from_ptr(tag_color).to_bytes();
+        if let Some(tag) = (*priv_).username_tags.get(key) {
+            return *tag;
         }
-
-        let tag_name = format!(
-            "username-color-{}\0",
-            g_hash_table_size((*priv_).username_tags)
-        );
+        let tag_name = format!("username-color-{}\0", (*priv_).username_tags.len());
         let tag = gtk_text_buffer_create_tag(
             (*priv_).buffer,
             tag_name.as_ptr() as *const c_char,
@@ -78,11 +72,7 @@ pub(super) unsafe fn get_username_tag(
             PANGO_WEIGHT_BOLD,
             ptr::null::<c_char>(),
         );
-        g_hash_table_insert(
-            (*priv_).username_tags,
-            g_strdup(tag_color) as *mut c_void,
-            tag as *mut c_void,
-        );
+        (*priv_).username_tags.insert(key.to_vec(), tag);
         tag
     }
 }
@@ -92,22 +82,7 @@ pub(super) unsafe fn trim_old_lines(panel: *mut ChatPanel) {
         let priv_ = (*panel).priv_;
 
         while (*priv_).line_count > MAX_CHAT_LINES {
-            let mut start = GtkTextIter {
-                dummy1: ptr::null_mut(),
-                dummy2: ptr::null_mut(),
-                dummy3: 0,
-                dummy4: 0,
-                dummy5: 0,
-                dummy6: 0,
-                dummy7: 0,
-                dummy8: 0,
-                dummy9: ptr::null_mut(),
-                dummy10: ptr::null_mut(),
-                dummy11: 0,
-                dummy12: 0,
-                dummy13: 0,
-                dummy14: ptr::null_mut(),
-            };
+            let mut start: GtkTextIter = std::mem::zeroed();
             gtk_text_buffer_get_start_iter((*priv_).buffer, &mut start);
 
             let mut delete_end = start;
@@ -126,7 +101,7 @@ pub(super) unsafe fn insert_reply(
     unsafe {
         let priv_ = (*panel).priv_;
 
-        if !is_nonempty((*line).reply_display_name) {
+        if !is_nonempty((*line).reply_display_name.as_ptr()) {
             return;
         }
 
@@ -141,13 +116,13 @@ pub(super) unsafe fn insert_reply(
         gtk_text_buffer_insert_with_tags(
             (*priv_).buffer,
             iter,
-            (*line).reply_display_name,
+            (*line).reply_display_name.as_ptr(),
             -1,
             (*priv_).reply_tag,
             ptr::null_mut::<GtkTextTag>(),
         );
 
-        if is_nonempty((*line).reply_message) {
+        if is_nonempty((*line).reply_message.as_ptr()) {
             gtk_text_buffer_insert_with_tags(
                 (*priv_).buffer,
                 iter,
@@ -159,7 +134,7 @@ pub(super) unsafe fn insert_reply(
             gtk_text_buffer_insert_with_tags(
                 (*priv_).buffer,
                 iter,
-                (*line).reply_message,
+                (*line).reply_message.as_ptr(),
                 -1,
                 (*priv_).reply_tag,
                 ptr::null_mut::<GtkTextTag>(),
@@ -180,23 +155,7 @@ pub(super) unsafe fn append_status_line(panel: *mut ChatPanel, line: *const c_ch
         }
 
         let stick_to_bottom = (*priv_).follow_tail != 0 || is_scrolled_to_bottom(panel);
-        let mut end = GtkTextIter {
-            dummy1: ptr::null_mut(),
-            dummy2: ptr::null_mut(),
-            dummy3: 0,
-            dummy4: 0,
-            dummy5: 0,
-            dummy6: 0,
-            dummy7: 0,
-            dummy8: 0,
-            dummy9: ptr::null_mut(),
-            dummy10: ptr::null_mut(),
-            dummy11: 0,
-            dummy12: 0,
-            dummy13: 0,
-            dummy14: ptr::null_mut(),
-        };
-
+        let mut end: GtkTextIter = std::mem::zeroed();
         gtk_text_buffer_get_end_iter((*priv_).buffer, &mut end);
         gtk_text_buffer_insert((*priv_).buffer, &mut end, line, -1);
         gtk_text_buffer_insert((*priv_).buffer, &mut end, c"\n".as_ptr(), -1);
@@ -219,32 +178,17 @@ pub(super) unsafe fn append_message(panel: *mut ChatPanel, line: *const TwitchCh
         }
 
         let stick_to_bottom = (*priv_).follow_tail != 0 || is_scrolled_to_bottom(panel);
-        let mut end = GtkTextIter {
-            dummy1: ptr::null_mut(),
-            dummy2: ptr::null_mut(),
-            dummy3: 0,
-            dummy4: 0,
-            dummy5: 0,
-            dummy6: 0,
-            dummy7: 0,
-            dummy8: 0,
-            dummy9: ptr::null_mut(),
-            dummy10: ptr::null_mut(),
-            dummy11: 0,
-            dummy12: 0,
-            dummy13: 0,
-            dummy14: ptr::null_mut(),
-        };
-
+        let mut end: GtkTextIter = std::mem::zeroed();
         gtk_text_buffer_get_end_iter((*priv_).buffer, &mut end);
 
         insert_reply(panel, &mut end, line);
 
-        let username_tag = get_username_tag(panel, (*line).display_name, (*line).color);
+        let username_tag =
+            get_username_tag(panel, (*line).display_name.as_ptr(), (*line).color.as_ptr());
         gtk_text_buffer_insert_with_tags(
             (*priv_).buffer,
             &mut end,
-            (*line).display_name,
+            (*line).display_name.as_ptr(),
             -1,
             username_tag,
             ptr::null_mut::<GtkTextTag>(),
@@ -255,8 +199,8 @@ pub(super) unsafe fn append_message(panel: *mut ChatPanel, line: *const TwitchCh
             (*priv_).buffer,
             (*priv_).view as *mut GtkTextView,
             &mut end,
-            (*line).message,
-            (*line).emotes,
+            (*line).message.as_ptr(),
+            (*line).emotes.as_ptr(),
         );
         gtk_text_buffer_insert((*priv_).buffer, &mut end, c"\n".as_ptr(), -1);
         (*priv_).line_count += 1;
@@ -295,7 +239,7 @@ pub(super) unsafe extern "C" fn on_chat_line(line: *const TwitchChatLine, user_d
             if (*line).kind == 1 {
                 append_message(panel, line);
             } else {
-                append_status_line(panel, (*line).message);
+                append_status_line(panel, (*line).message.as_ptr());
             }
         }
     }

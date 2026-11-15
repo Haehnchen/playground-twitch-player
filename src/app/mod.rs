@@ -1,5 +1,3 @@
-#![allow(clashing_extern_declarations)]
-
 mod content;
 mod desktop;
 mod ffi;
@@ -353,7 +351,7 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
             on_root_motion as *const c_void,
             state,
         );
-        gtk_widget_add_controller((*state).root_overlay, motion as *mut c_void);
+        gtk_widget_add_controller((*state).root_overlay, motion.cast());
 
         let key_controller = gtk_event_controller_key_new();
         gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
@@ -363,7 +361,7 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
             on_key_pressed as *const c_void,
             state,
         );
-        gtk_widget_add_controller((*state).window, key_controller as *mut c_void);
+        gtk_widget_add_controller((*state).window, key_controller.cast());
 
         g_object_set_data_full(
             (*state).window as *mut GObject,

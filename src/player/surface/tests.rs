@@ -2,7 +2,6 @@ use super::chat::{
     get_chat_paned_position_for_width as position_for,
     get_chat_width_for_position as chat_width_for,
 };
-use super::ffi::g_malloc0;
 use super::layout::compact_tile_order;
 use super::layout::{
     player_surface_fullscreen_should_exit_app as should_exit_app,
@@ -11,8 +10,7 @@ use super::layout::{
 use super::{
     MAX_TILES, PlayerSurface, player_surface_free, player_surface_ref, player_surface_unref,
 };
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::{mem, ptr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn compact_tile_order_moves_streams_ahead_of_grid_gaps() {
@@ -53,9 +51,10 @@ fn compact_tile_order_does_not_prioritize_an_empty_focused_tile() {
 #[test]
 fn owner_release_waits_for_pending_callback_reference() {
     unsafe {
-        let state = g_malloc0(mem::size_of::<PlayerSurface>()) as *mut PlayerSurface;
-        ptr::addr_of_mut!((*state).closing).write(AtomicBool::new(false));
-        ptr::addr_of_mut!((*state).ref_count).write(AtomicUsize::new(1));
+        let state = Box::into_raw(Box::new(PlayerSurface {
+            ref_count: AtomicUsize::new(1),
+            ..Default::default()
+        }));
         let pending = player_surface_ref(state);
 
         player_surface_free(state);

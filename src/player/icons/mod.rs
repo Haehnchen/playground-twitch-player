@@ -203,20 +203,9 @@ pub unsafe fn player_tile_focus_icon_new<W>(kind: c_int) -> *mut W {
 
 pub(super) const GTK_ALIGN_CENTER: c_int = 3;
 
-#[repr(C)]
-pub struct GtkWidget {
-    _private: [u8; 0],
-}
+pub use gtk4::ffi::{GtkDrawingArea, GtkWidget};
 
-#[repr(C)]
-pub struct GtkDrawingArea {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct Cairo {
-    _private: [u8; 0],
-}
+pub use gtk4::cairo::ffi::cairo_t as Cairo;
 
 unsafe extern "C" {
     pub(super) fn cairo_arc(

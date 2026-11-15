@@ -347,15 +347,9 @@ scale slider {
 }
 "#;
 
-#[repr(C)]
-pub struct GdkDisplay {
-    _private: [u8; 0],
-}
+pub use gtk4::gdk::ffi::GdkDisplay;
 
-#[repr(C)]
-pub struct GtkCssProvider {
-    _private: [u8; 0],
-}
+pub use gtk4::ffi::{GtkCssProvider, GtkStyleProvider};
 
 unsafe extern "C" {
     fn g_object_unref(object: *mut c_void);
@@ -364,7 +358,7 @@ unsafe extern "C" {
     fn gtk_css_provider_new() -> *mut GtkCssProvider;
     fn gtk_style_context_add_provider_for_display(
         display: *mut GdkDisplay,
-        provider: *mut c_void,
+        provider: *mut GtkStyleProvider,
         priority: u32,
     );
 }
@@ -380,7 +374,7 @@ unsafe fn install_css(css: &CStr, priority: u32) {
         gtk_css_provider_load_from_string(provider, css.as_ptr());
         gtk_style_context_add_provider_for_display(
             gdk_display_get_default(),
-            provider as *mut c_void,
+            provider as *mut GtkStyleProvider,
             priority,
         );
         g_object_unref(provider as *mut c_void);

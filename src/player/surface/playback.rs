@@ -35,8 +35,9 @@ use crate::settings::{
     AppSettingsChannel, app_settings_get_hwdec_enabled, app_settings_get_twitch_playback_auth_token,
 };
 use crate::twitch::channel::normalize_twitch_channel;
-use gtk4::glib;
-use libmpv2::{Mpv, events::Event, mpv_end_file_reason};
+use gtk4::{glib, prelude::*};
+use libmpv2::{Mpv, events::mpv_event_id, mpv_end_file_reason};
+use libmpv2_sys as mpv_sys;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::rc::Rc;
@@ -59,24 +60,38 @@ pub(super) unsafe extern "C" fn process_mpv_events(user_data: *mut c_void) -> c_
         let Some(mpv) = tile_mpv(tile) else {
             return G_SOURCE_REMOVE;
         };
-        while let Some(event) = mpv.wait_event(0.0) {
-            match event {
-                Ok(Event::StartFile) => set_tile_status(tile, c"Loading".as_ptr()),
-                Ok(Event::FileLoaded) => set_tile_status(tile, c"Playback running".as_ptr()),
-                Ok(Event::EndFile(mpv_end_file_reason::Eof)) => {
-                    set_tile_status(tile, c"Stopped".as_ptr())
+        // Native events keep playback errors separate from failed commands.
+        loop {
+            let event = &*mpv_sys::mpv_wait_event(mpv.ctx.as_ptr(), 0.0);
+            match event.event_id {
+                mpv_event_id::None => break,
+                mpv_event_id::StartFile => set_tile_status(tile, Some("Loading")),
+                mpv_event_id::FileLoaded => set_tile_status(tile, None),
+                mpv_event_id::EndFile => {
+                    let end = &*event.data.cast::<mpv_sys::mpv_event_end_file>();
+                    match end.reason {
+                        mpv_end_file_reason::Eof => set_tile_status(tile, Some("Stopped")),
+                        mpv_end_file_reason::Error => {
+                            set_tile_status(tile, Some("Stream could not be played"));
+                            glib::g_debug!("twitch-player", "mpv playback error: {}", end.error);
+                        }
+                        _ => {}
+                    }
                 }
-                Ok(Event::EndFile(mpv_end_file_reason::Error)) | Err(_) => {
-                    set_tile_status(tile, c"Stream could not be played".as_ptr());
+                mpv_event_id::LogMessage => {
+                    let message = &*event.data.cast::<mpv_sys::mpv_event_log_message>();
+                    glib::g_debug!(
+                        "twitch-player",
+                        "mpv[{}][{}]: {}",
+                        CStr::from_ptr(message.prefix).to_string_lossy(),
+                        (*tile).index,
+                        CStr::from_ptr(message.text).to_string_lossy(),
+                    );
                 }
-                Ok(Event::LogMessage {
-                    prefix,
-                    text,
-                    ..
-                }) => {
-                    glib::g_debug!("twitch-player", "mpv[{prefix}][{}]: {text}", (*tile).index);
+                mpv_event_id::Shutdown => return G_SOURCE_REMOVE,
+                _ if event.error < 0 => {
+                    glib::g_debug!("twitch-player", "mpv command error: {}", event.error);
                 }
-                Ok(Event::Shutdown) => return G_SOURCE_REMOVE,
                 _ => {}
             }
         }
@@ -127,7 +142,15 @@ pub(super) unsafe fn target_to_label(target: *const c_char, channel: *const c_ch
     }
 }
 
-pub(super) unsafe fn set_tile_status(_tile: *mut StreamTile, _message: *const c_char) {}
+// Hide the status as soon as video playback starts.
+pub(super) unsafe fn set_tile_status(tile: *mut StreamTile, message: Option<&str>) {
+    unsafe {
+        if let Some(label) = &(*tile).status_label {
+            label.set_text(message.unwrap_or_default());
+            label.set_visible(message.is_some());
+        }
+    }
+}
 
 pub(super) unsafe fn sync_tile_from_session(tile: *mut StreamTile) {
     unsafe {
@@ -261,6 +284,7 @@ pub(super) unsafe fn stop_tile_stream(tile: *mut StreamTile) {
         }
 
         reset_owned_tile_session(tile);
+        set_tile_status(tile, None);
         clear_pointer(&mut (*tile).label);
         clear_pointer(&mut (*tile).channel);
         reset_tile_quality_selection(tile);
@@ -304,14 +328,14 @@ pub(super) unsafe fn ensure_tile_session(tile: *mut StreamTile) -> c_int {
 
 pub(super) unsafe fn set_tile_channel(tile: *mut StreamTile, channel: *const AppSettingsChannel) {
     unsafe {
-        if channel.is_null() || !is_nonempty((*channel).channel) {
+        if channel.is_null() || !is_nonempty((*channel).channel.as_ptr()) {
             return;
         }
 
         g_free((*tile).label as *mut c_void);
         g_free((*tile).channel as *mut c_void);
-        (*tile).label = g_strdup((*channel).label);
-        (*tile).channel = g_strdup((*channel).channel);
+        (*tile).label = g_strdup((*channel).label.as_ptr());
+        (*tile).channel = g_strdup((*channel).channel.as_ptr());
         reset_tile_quality_selection(tile);
         reset_tile_stream_title(tile);
 

@@ -5,7 +5,6 @@ use super::images::clear_image_cache;
 use super::runtime::{G_LOG_DOMAIN, clear_object, log_debug};
 use super::widgets::{clear_preview_cards, render_live_channels, show_status};
 use super::{ChannelSwitcherOverlay, channel_switcher_overlay_ref, channel_switcher_overlay_unref};
-use crate::glib_strings::dup_bytes;
 use crate::twitch::channel_list::{
     twitch_channel_list_fetch_async, twitch_channel_list_fetch_finish,
 };
@@ -13,7 +12,7 @@ use crate::twitch::stream_info::{
     GAsyncResult, GError, twitch_stream_info_fetch_live_channels_async,
     twitch_stream_info_fetch_live_channels_finish,
 };
-use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
 
@@ -68,9 +67,6 @@ unsafe extern "C" fn on_live_channels_fetched(
             || (*switcher).panel.is_null()
         {
             g_clear_error(&mut error);
-            if !previews.is_null() {
-                g_ptr_array_unref(previews);
-            }
             live_fetch_callback_data_free(data);
             return;
         }
@@ -88,25 +84,12 @@ unsafe extern "C" fn on_live_channels_fetched(
                 show_status(switcher, c"Live channels could not be loaded".as_ptr());
             }
             g_clear_error(&mut error);
-            if !previews.is_null() {
-                g_ptr_array_unref(previews);
-            }
             live_fetch_callback_data_free(data);
             return;
         }
 
-        if !(*switcher).previews.is_null() {
-            g_ptr_array_unref((*switcher).previews);
-        }
         clear_preview_cards(switcher);
-        (*switcher).previews = if previews.is_null() {
-            ptr::null_mut()
-        } else {
-            g_ptr_array_ref(previews)
-        };
-        if !previews.is_null() {
-            g_ptr_array_unref(previews);
-        }
+        (*switcher).previews = previews;
         (*switcher).cached_at_us = g_get_monotonic_time();
         render_live_channels(switcher);
 
@@ -114,80 +97,43 @@ unsafe extern "C" fn on_live_channels_fetched(
     }
 }
 
-unsafe fn build_channels_cache_key(
-    channels: *mut *mut c_char,
-    channel_count: c_uint,
-) -> *mut c_char {
-    unsafe {
-        let mut key = Vec::new();
-
-        for i in 0..channel_count {
-            if i > 0 {
-                key.push(b'\n');
-            }
-            let channel = *channels.add(i as usize);
-            if !channel.is_null() {
-                key.extend_from_slice(CStr::from_ptr(channel).to_bytes());
-            }
-        }
-
-        dup_bytes(&key)
-    }
-}
-
-unsafe fn has_fresh_cache(
-    switcher: *mut ChannelSwitcherOverlay,
-    channels_key: *const c_char,
-) -> bool {
+unsafe fn has_fresh_cache(switcher: *mut ChannelSwitcherOverlay, channels_key: &str) -> bool {
     unsafe {
         let now_us = g_get_monotonic_time();
 
-        !(*switcher).previews.is_null()
-            && !(*switcher).cached_channels_key.is_null()
-            && !channels_key.is_null()
-            && g_strcmp0((*switcher).cached_channels_key, channels_key) == 0
+        (*switcher).previews.is_some()
+            && (*switcher).cached_channels_key.as_deref() == Some(channels_key)
             && now_us - (*switcher).cached_at_us < LIVE_CHANNELS_CACHE_SECONDS * G_USEC_PER_SEC
     }
 }
 
 unsafe fn start_live_channel_fetch(
     switcher: *mut ChannelSwitcherOverlay,
-    channels: *mut *mut c_char,
-    channel_count: c_uint,
+    channels: &[String],
     allow_cache: c_int,
 ) {
     unsafe {
-        let channels_key = build_channels_cache_key(channels, channel_count);
+        let channels_key = channels.join("\n");
 
-        if channel_count == 0 {
-            if !(*switcher).previews.is_null() {
-                g_ptr_array_unref((*switcher).previews);
-                (*switcher).previews = ptr::null_mut();
-            }
+        if channels.is_empty() {
+            (*switcher).previews = None;
             clear_preview_cards(switcher);
             clear_image_cache(switcher);
-            g_free((*switcher).cached_channels_key as *mut c_void);
-            (*switcher).cached_channels_key = ptr::null_mut();
+            (*switcher).cached_channels_key = None;
             (*switcher).cached_at_us = 0;
             show_status(switcher, c"No channels configured".as_ptr());
-            g_free(channels_key as *mut c_void);
             return;
         }
 
-        if allow_cache != 0 && has_fresh_cache(switcher, channels_key) {
+        if allow_cache != 0 && has_fresh_cache(switcher, &channels_key) {
             render_live_channels(switcher);
-            g_free(channels_key as *mut c_void);
             return;
         }
 
-        if !(*switcher).previews.is_null() {
-            g_ptr_array_unref((*switcher).previews);
-            (*switcher).previews = ptr::null_mut();
-        }
+        (*switcher).previews = None;
         clear_preview_cards(switcher);
         clear_image_cache(switcher);
-        g_free((*switcher).cached_channels_key as *mut c_void);
-        (*switcher).cached_channels_key = g_strdup(channels_key);
+        (*switcher).cached_channels_key = Some(channels_key);
         (*switcher).cached_at_us = 0;
 
         (*switcher).cancel = g_cancellable_new();
@@ -196,13 +142,11 @@ unsafe fn start_live_channel_fetch(
             generation: (*switcher).generation,
         }));
         twitch_stream_info_fetch_live_channels_async(
-            channels as *const *const c_char,
-            channel_count,
+            channels,
             (*switcher).cancel,
             Some(on_live_channels_fetched),
             data as *mut c_void,
         );
-        g_free(channels_key as *mut c_void);
     }
 }
 
@@ -215,15 +159,13 @@ unsafe extern "C" fn on_channel_list_fetched(
         let data = user_data as *mut ChannelListFetchCallbackData;
         let switcher = (*data).switcher;
         let mut error: *mut GError = ptr::null_mut();
-        let mut channel_count = 0;
-        let channels = twitch_channel_list_fetch_finish(result, &mut channel_count, &mut error);
+        let channels = twitch_channel_list_fetch_finish(result, &mut error);
 
         if (*switcher).closing.load(Ordering::Acquire)
             || (*data).generation != (*switcher).generation
             || (*switcher).panel.is_null()
         {
             g_clear_error(&mut error);
-            g_strfreev(channels);
             channel_list_fetch_callback_data_free(data);
             return;
         }
@@ -240,14 +182,11 @@ unsafe extern "C" fn on_channel_list_fetched(
                 show_status(switcher, (*error).message);
             }
             g_clear_error(&mut error);
-            g_strfreev(channels);
             channel_list_fetch_callback_data_free(data);
             return;
         }
 
-        start_live_channel_fetch(switcher, channels, channel_count, TRUE);
-
-        g_strfreev(channels);
+        start_live_channel_fetch(switcher, channels.as_deref().unwrap_or_default(), TRUE);
         channel_list_fetch_callback_data_free(data);
     }
 }

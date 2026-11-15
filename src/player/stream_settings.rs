@@ -1,7 +1,7 @@
-use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::ffi::{CStr, c_char, c_int, c_void};
 
 use crate::player::icons::{player_account_icon_new, player_info_icon_new};
-use crate::twitch::stream_info::{GPtrArray, TwitchStreamQuality};
+use crate::twitch::stream_info::TwitchStreamQuality;
 
 const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
 const GTK_ORIENTATION_VERTICAL: c_int = 1;
@@ -10,35 +10,9 @@ const GTK_ALIGN_START: c_int = 1;
 const GTK_ALIGN_CENTER: c_int = 3;
 const GTK_POS_TOP: c_int = 2;
 
-#[repr(C)]
-pub struct GtkWidget {
-    _private: [u8; 0],
-}
+pub use gtk4::ffi::{GtkBox, GtkButton, GtkLabel, GtkPopover, GtkWidget};
 
-#[repr(C)]
-pub struct GtkBox {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkButton {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkLabel {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GtkPopover {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct GObject {
-    _private: [u8; 0],
-}
+pub use gtk4::glib::gobject_ffi::GObject;
 
 pub type PlayerStreamSettingsDataRef = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
 pub type PlayerStreamSettingsDataFree = unsafe extern "C" fn(*mut c_void, *mut c_void);
@@ -56,7 +30,7 @@ unsafe extern "C" {
     fn g_signal_connect_data(
         instance: *mut c_void,
         detailed_signal: *const c_char,
-        c_handler: *mut c_void,
+        c_handler: *const c_void,
         data: *mut c_void,
         destroy_data: Option<PlayerStreamSettingsDataFree>,
         connect_flags: c_int,
@@ -249,10 +223,6 @@ pub unsafe fn player_stream_settings_popover_new<W>(
     }
 }
 
-unsafe fn quality_at(qualities: *mut GPtrArray, index: c_uint) -> *mut TwitchStreamQuality {
-    unsafe { *(*qualities).pdata.add(index as usize) as *mut TwitchStreamQuality }
-}
-
 unsafe fn current_label(label: *const c_char) -> Vec<u8> {
     unsafe {
         let mut value = Vec::new();
@@ -277,7 +247,7 @@ unsafe fn current_label(label: *const c_char) -> Vec<u8> {
 pub unsafe fn player_stream_settings_quality_list_populate<W>(
     quality_list_box: *mut W,
     quality_status_label: *mut W,
-    qualities: *mut GPtrArray,
+    qualities: &[TwitchStreamQuality],
     selected_quality_url: *const c_char,
     selected_quality_label: *const c_char,
     callbacks: QualitySelectionCallbacks,
@@ -296,7 +266,7 @@ pub unsafe fn player_stream_settings_quality_list_populate<W>(
             child = next;
         }
 
-        if qualities.is_null() || (*qualities).len == 0 {
+        if qualities.is_empty() {
             gtk_label_set_text(
                 quality_status_label as *mut GtkLabel,
                 c"No qualities found".as_ptr(),
@@ -306,19 +276,19 @@ pub unsafe fn player_stream_settings_quality_list_populate<W>(
 
         gtk_label_set_text(quality_status_label as *mut GtkLabel, c"".as_ptr());
 
-        for i in 0..(*qualities).len {
-            let quality = quality_at(qualities, i);
+        for quality in qualities {
+            let quality = quality as *const TwitchStreamQuality;
             let selected = ((!selected_quality_url.is_null()
-                && g_strcmp0(selected_quality_url, (*quality).url) == 0)
+                && g_strcmp0(selected_quality_url, (*quality).url.as_ptr()) == 0)
                 || (!selected_quality_label.is_null()
-                    && g_strcmp0(selected_quality_label, (*quality).label) == 0))
+                    && g_strcmp0(selected_quality_label, (*quality).label.as_ptr()) == 0))
                 as c_int;
             let label_storage;
             let label = if selected != 0 {
-                label_storage = current_label((*quality).label);
+                label_storage = current_label((*quality).label.as_ptr());
                 label_storage.as_ptr() as *const c_char
             } else {
-                (*quality).label
+                (*quality).label.as_ptr()
             };
             let button = player_stream_settings_item_button_new(label, selected);
             g_object_set_data(

@@ -1,5 +1,3 @@
-#![allow(clashing_extern_declarations)]
-
 pub mod app;
 pub mod chat;
 mod glib_strings;

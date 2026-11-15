@@ -8,7 +8,6 @@ use super::{
     AuthResponse, DeviceCodeData, PollTokenData, TwitchAuthDeviceCode, TwitchAuthToken,
     twitch_auth_device_code_free, twitch_auth_token_free,
 };
-use crate::glib_strings::dup_bytes;
 use crate::twitch::http;
 use crate::twitch::stream_info::{GCancellable, GError};
 use gtk4::{
@@ -73,7 +72,7 @@ pub(super) unsafe fn post_auth_form(
         ) {
             Ok(response) => Box::into_raw(Box::new(AuthResponse {
                 status: response.status,
-                body: dup_bytes(&response.body),
+                body: response.body,
             })),
             Err(err) => {
                 glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
@@ -112,7 +111,7 @@ pub(super) unsafe fn request_device_code(
 ) -> *mut TwitchAuthDeviceCode {
     unsafe {
         let mut form = Vec::new();
-        append_form_pair(&mut form, c"client_id".as_ptr(), (*data).client_id);
+        append_form_pair(&mut form, c"client_id".as_ptr(), (*data).client_id.as_ptr());
         append_form_pair(
             &mut form,
             c"scopes".as_ptr(),
@@ -130,7 +129,7 @@ pub(super) unsafe fn request_device_code(
         }
 
         if (*response).status < 200 || (*response).status >= 300 {
-            let message = parse_auth_error_message(CStr::from_ptr((*response).body).to_bytes());
+            let message = parse_auth_error_message(&(*response).body);
             glib::ffi::g_propagate_error(
                 error.cast(),
                 glib::Error::new(
@@ -148,7 +147,7 @@ pub(super) unsafe fn request_device_code(
             return ptr::null_mut();
         }
 
-        let code = parse_device_code_response(CStr::from_ptr((*response).body).to_bytes());
+        let code = parse_device_code_response(&(*response).body);
         auth_response_free(response);
         match code {
             Ok(code) => code,
@@ -181,13 +180,17 @@ pub(super) unsafe fn poll_device_token(
             }
 
             let mut form = Vec::new();
-            append_form_pair(&mut form, c"client_id".as_ptr(), (*data).client_id);
+            append_form_pair(&mut form, c"client_id".as_ptr(), (*data).client_id.as_ptr());
             append_form_pair(
                 &mut form,
                 c"scope".as_ptr(),
                 TWITCH_FOLLOWS_SCOPE.as_ptr() as *const c_char,
             );
-            append_form_pair(&mut form, c"device_code".as_ptr(), (*data).device_code);
+            append_form_pair(
+                &mut form,
+                c"device_code".as_ptr(),
+                (*data).device_code.as_ptr(),
+            );
             append_form_pair(
                 &mut form,
                 c"grant_type".as_ptr(),
@@ -205,7 +208,7 @@ pub(super) unsafe fn poll_device_token(
             }
 
             if (*response).status >= 200 && (*response).status < 300 {
-                let token = parse_token_response(CStr::from_ptr((*response).body).to_bytes());
+                let token = parse_token_response(&(*response).body);
                 auth_response_free(response);
                 return match token {
                     Ok(token) => token,
@@ -216,7 +219,7 @@ pub(super) unsafe fn poll_device_token(
                 };
             }
 
-            let message = parse_auth_error_message(CStr::from_ptr((*response).body).to_bytes());
+            let message = parse_auth_error_message(&(*response).body);
             auth_response_free(response);
             if message == "authorization_pending" {
                 if sleep_poll_interval(interval, cancel, error) == 0 {
@@ -294,7 +297,7 @@ pub unsafe fn twitch_auth_refresh_token(
         }
 
         if (*response).status < 200 || (*response).status >= 300 {
-            let message = parse_auth_error_message(CStr::from_ptr((*response).body).to_bytes());
+            let message = parse_auth_error_message(&(*response).body);
             glib::ffi::g_propagate_error(
                 error.cast(),
                 glib::Error::new(
@@ -312,7 +315,7 @@ pub unsafe fn twitch_auth_refresh_token(
             return ptr::null_mut();
         }
 
-        let token = parse_token_response(CStr::from_ptr((*response).body).to_bytes());
+        let token = parse_token_response(&(*response).body);
         auth_response_free(response);
         let token = match token {
             Ok(token) => token,
@@ -321,7 +324,7 @@ pub unsafe fn twitch_auth_refresh_token(
                 return ptr::null_mut();
             }
         };
-        if (*token).refresh_token.is_null() || *(*token).refresh_token == 0 {
+        if (*token).refresh_token.is_empty() {
             twitch_auth_token_free(token);
             g_set_error(
                 error,
@@ -342,8 +345,7 @@ pub(super) unsafe extern "C" fn device_code_data_free(data: *mut c_void) {
             return;
         }
 
-        let data = Box::from_raw(data as *mut DeviceCodeData);
-        g_free(data.client_id as *mut c_void);
+        drop(Box::from_raw(data as *mut DeviceCodeData));
     }
 }
 
@@ -353,9 +355,7 @@ pub(super) unsafe extern "C" fn poll_token_data_free(data: *mut c_void) {
             return;
         }
 
-        let data = Box::from_raw(data as *mut PollTokenData);
-        g_free(data.client_id as *mut c_void);
-        g_free(data.device_code as *mut c_void);
+        drop(Box::from_raw(data as *mut PollTokenData));
     }
 }
 
@@ -365,8 +365,7 @@ pub(super) unsafe fn auth_response_free(response: *mut AuthResponse) {
             return;
         }
 
-        let response = Box::from_raw(response);
-        g_free(response.body as *mut c_void);
+        drop(Box::from_raw(response));
     }
 }
 

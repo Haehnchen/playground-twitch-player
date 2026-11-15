@@ -41,6 +41,7 @@ pub(super) const GRID_CSS: &str = concat!(
     "  box-shadow: none;",
     "  min-width: 1px;",
     "}",
+    ".stream-status { color: white; background: rgba(0, 0, 0, 0.72); padding: 8px 12px; border-radius: 4px; }",
     ".tile-footer {",
     "  background: rgba(0, 0, 0, 0.58);",
     "  color: white;",

@@ -201,7 +201,7 @@ pub(super) unsafe fn create_resize_handle(
             on_resize_pressed as *const c_void,
             state,
         );
-        gtk_widget_add_controller(handle, click as *mut c_void);
+        gtk_widget_add_controller(handle, click.cast());
 
         handle
     }

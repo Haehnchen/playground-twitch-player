@@ -25,145 +25,20 @@ pub(super) const GDK_SURFACE_EDGE_SOUTH_WEST: c_int = 5;
 pub(super) const GDK_SURFACE_EDGE_SOUTH: c_int = 6;
 pub(super) const GDK_SURFACE_EDGE_SOUTH_EAST: c_int = 7;
 
-#[repr(C)]
-pub(super) struct GdkDevice {
-    _private: [u8; 0],
-}
+pub(super) use gtk4::gdk::ffi::{
+    GdkDevice, GdkDisplay, GdkEvent, GdkEventSequence, GdkSurface, GdkToplevel,
+};
 
-#[repr(C)]
-pub(super) struct GdkDisplay {
-    _private: [u8; 0],
-}
+pub(super) use gtk4::glib::gobject_ffi::{GObject, GParamSpec, GTypeInstance};
 
-#[repr(C)]
-pub(super) struct GdkEvent {
-    _private: [u8; 0],
-}
+pub(super) use gtk4::glib::ffi::GSource;
 
-#[repr(C)]
-pub(super) struct GdkEventSequence {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GdkSurface {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GdkToplevel {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GObject {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GParamSpec {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GSource {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GTypeInstance {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkApplication {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkBox {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkButton {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkLabel {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkPopover {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkCssProvider {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkEventController {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkEventControllerKey {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkEventControllerMotion {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGesture {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGestureClick {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkGestureSingle {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkIconTheme {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkNative {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkOverlay {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkStyleProvider {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkWidget {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct GtkWindow {
-    _private: [u8; 0],
-}
+pub(super) use gtk4::ffi::{
+    GtkApplication, GtkBox, GtkButton, GtkCssProvider, GtkEventController, GtkEventControllerKey,
+    GtkEventControllerMotion, GtkGesture, GtkGestureClick, GtkGestureSingle, GtkIconTheme,
+    GtkLabel, GtkNative, GtkOverlay, GtkPopover, GtkStyleProvider, GtkWidget, GtkWindow,
+    gtk_widget_add_controller,
+};
 
 unsafe extern "C" {
     pub(super) fn g_application_run(
@@ -316,7 +191,6 @@ unsafe extern "C" {
         provider: *mut GtkStyleProvider,
         priority: c_uint,
     );
-    pub(super) fn gtk_widget_add_controller(widget: *mut GtkWidget, controller: *mut c_void);
     pub(super) fn gtk_widget_add_css_class(widget: *mut GtkWidget, css_class: *const c_char);
     pub(super) fn gtk_widget_get_height(widget: *mut GtkWidget) -> c_int;
     pub(super) fn gtk_widget_get_native(widget: *mut GtkWidget) -> *mut GtkNative;
