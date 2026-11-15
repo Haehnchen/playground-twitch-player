@@ -55,7 +55,7 @@ jobs:
           cargo --version
 
       - name: Check Rust formatting
-        run: cargo fmt --all -- --check
+        run: make fmt-check
 
       - name: Verify dependencies
         run: bash scripts/check-deps.sh

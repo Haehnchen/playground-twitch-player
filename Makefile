@@ -8,7 +8,7 @@ BUILD_VERSION ?= nightly
 BUILD_DATE ?= $(shell date -u +%Y-%m-%d)
 RELEASE_BIN := $(CARGO_TARGET_DIR)/release/twitch-player
 
-.PHONY: setup build test run run-grid appimage install clean
+.PHONY: setup build test fmt fmt-check run run-grid appimage install clean
 
 setup:
 	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" "$(CARGO)" fetch
@@ -19,6 +19,12 @@ build:
 
 test:
 	BUILD_VERSION="$(BUILD_VERSION)" BUILD_DATE="$(BUILD_DATE)" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" "$(CARGO)" test --release
+
+fmt:
+	"$(CARGO)" fmt --all
+
+fmt-check:
+	"$(CARGO)" fmt --all -- --check
 
 run: build
 	"$(RELEASE_BIN)"

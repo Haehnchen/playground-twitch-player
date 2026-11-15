@@ -807,7 +807,9 @@ pub unsafe fn twitch_chat_client_new(
             user_data,
             thread: ptr::null_mut(),
             cancel: ptr::null_mut(),
-            mutex: GMutex { p: ptr::null_mut() },
+            mutex: GMutex {
+                p: ptr::null_mut(),
+            },
             ref_count: 1,
             pending_lines: 0,
             generation: 0,

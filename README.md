@@ -55,6 +55,8 @@ make build
 
 This uses `cargo build --release` and strips the resulting binary.
 
+Format Rust code with `make fmt`; check formatting with `make fmt-check`.
+
 Or build and copy to `~/.local/bin`
 
 ```bash
