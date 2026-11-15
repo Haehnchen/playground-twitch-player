@@ -15,6 +15,7 @@ use super::utils::{
 };
 use super::utils::{twitch_current_stream_free, twitch_followed_channel_free};
 use super::{TwitchCurrentStream, TwitchFollowedChannel, TwitchStreamPreview};
+use serde_json::{Value, json};
 use std::ffi::{CStr, CString, c_char, c_longlong, c_uint, c_void};
 use std::ptr;
 
@@ -24,10 +25,6 @@ const TWITCH_GQL_QUERY: &str =
 const TWITCH_GQL_LIVE_CHANNELS_QUERY: &str = "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:320,height:180) game{name}}}}";
 
 const G_TIME_SPAN_MINUTE: c_longlong = 60_000_000;
-
-unsafe extern "C" {
-    fn g_clear_error(error: *mut *mut GError);
-}
 
 fn cstring(value: &str) -> CString {
     CString::new(value).unwrap()
@@ -50,27 +47,6 @@ unsafe fn ptr_array_index<T>(array: *mut GPtrArray, index: usize) -> *mut T {
     unsafe { *(*array).pdata.add(index) as *mut T }
 }
 
-unsafe fn parse_current(json: &str, error: *mut *mut GError) -> *mut TwitchCurrentStream {
-    unsafe {
-        let json = cstring(json);
-        parse_current_stream_response(json.as_ptr(), json.as_bytes().len(), error)
-    }
-}
-
-unsafe fn parse_live(json: &str, error: *mut *mut GError) -> *mut GPtrArray {
-    unsafe {
-        let json = cstring(json);
-        parse_live_channels_response(json.as_ptr(), json.as_bytes().len(), error)
-    }
-}
-
-unsafe fn parse_helix_user_id(json: &str, error: *mut *mut GError) -> *mut c_char {
-    unsafe {
-        let json = cstring(json);
-        parse_helix_user_id_response(json.as_ptr(), json.as_bytes().len(), error)
-    }
-}
-
 unsafe extern "C" fn free_followed_channel(data: *mut c_void) {
     unsafe {
         twitch_followed_channel_free(data as *mut TwitchFollowedChannel);
@@ -81,9 +57,9 @@ unsafe extern "C" fn free_followed_channel(data: *mut c_void) {
 fn test_build_stream_title_request_body() {
     unsafe {
         let body = build_stream_title_request_body(cstring("papaplatte").as_ptr());
-        assert_cstr_eq(
-            body,
-            &format!(r#"{{"query":"{TWITCH_GQL_QUERY}","variables":{{"login":"papaplatte"}}}}"#),
+        assert_eq!(
+            serde_json::from_str::<Value>(str_from_ptr(body)).unwrap(),
+            json!({"query": TWITCH_GQL_QUERY, "variables": {"login": "papaplatte"}}),
         );
         g_free(body as *mut c_void);
     }
@@ -96,11 +72,9 @@ fn test_build_live_channels_request_body() {
         let ptrs = [channels[0].as_ptr(), channels[1].as_ptr()];
         let body = build_live_channels_request_body(ptrs.as_ptr(), ptrs.len() as c_uint);
 
-        assert_cstr_eq(
-            body,
-            &format!(
-                r#"{{"query":"{TWITCH_GQL_LIVE_CHANNELS_QUERY}","variables":{{"logins":["papaplatte","rocketbeans"]}}}}"#
-            ),
+        assert_eq!(
+            serde_json::from_str::<Value>(str_from_ptr(body)).unwrap(),
+            json!({"query": TWITCH_GQL_LIVE_CHANNELS_QUERY, "variables": {"logins": ["papaplatte", "rocketbeans"]}}),
         );
         g_free(body as *mut c_void);
     }
@@ -118,11 +92,9 @@ fn test_build_live_channels_request_body_skips_empty_channels() {
         ];
         let body = build_live_channels_request_body(ptrs.as_ptr(), ptrs.len() as c_uint);
 
-        assert_cstr_eq(
-            body,
-            &format!(
-                r#"{{"query":"{TWITCH_GQL_LIVE_CHANNELS_QUERY}","variables":{{"logins":["papaplatte","rocketbeans"]}}}}"#
-            ),
+        assert_eq!(
+            serde_json::from_str::<Value>(str_from_ptr(body)).unwrap(),
+            json!({"query": TWITCH_GQL_LIVE_CHANNELS_QUERY, "variables": {"logins": ["papaplatte", "rocketbeans"]}}),
         );
         g_free(body as *mut c_void);
     }
@@ -132,10 +104,8 @@ fn test_build_live_channels_request_body_skips_empty_channels() {
 fn test_parse_current_stream_response_returns_title_viewers_and_category() {
     unsafe {
         let json = r#"{"data":{"user":{"stream":{"title":"Live now","viewersCount":1234,"createdAt":"2026-04-30T10:00:00Z","game":{"name":"Games + Demos"}}}}}"#;
-        let mut error: *mut GError = ptr::null_mut();
-        let stream = parse_current(json, &mut error);
+        let stream = parse_current_stream_response((json).as_bytes()).unwrap();
 
-        assert!(error.is_null());
         assert!(!stream.is_null());
         assert_cstr_eq((*stream).title, "Live now");
         assert_cstr_eq((*stream).started_at, "2026-04-30T10:00:00Z");
@@ -149,10 +119,8 @@ fn test_parse_current_stream_response_returns_title_viewers_and_category() {
 fn test_parse_current_stream_response_handles_missing_optional_fields() {
     unsafe {
         let json = r#"{"data":{"user":{"stream":{"title":null,"viewersCount":null,"createdAt":null,"game":null}}}}"#;
-        let mut error: *mut GError = ptr::null_mut();
-        let stream = parse_current(json, &mut error);
+        let stream = parse_current_stream_response((json).as_bytes()).unwrap();
 
-        assert!(error.is_null());
         assert!(!stream.is_null());
         assert_cstr_eq((*stream).title, "");
         assert!((*stream).started_at.is_null());
@@ -199,40 +167,32 @@ fn test_parse_stream_qualities_playlist_returns_sorted_variants() {
 
 #[test]
 fn test_parse_playback_info_returns_authentication_and_ad_claims() {
-    unsafe {
-        let value = cstring(
-            r#"{"user_id":123456789,"subscriber":true,"turbo":false,"show_ads":false,"hide_ads":true,"server_ads":false}"#,
-        );
-        let info = parse_playback_info(value.as_ptr());
+    let value = r#"{"user_id":123456789,"subscriber":true,"turbo":false,"show_ads":false,"hide_ads":true,"server_ads":false}"#;
+    let info = parse_playback_info(value);
 
-        assert_eq!(info.available, 1);
-        assert_eq!(info.authenticated, 1);
-        assert_eq!(info.user_id, 123456789);
-        assert_eq!(info.subscriber, 1);
-        assert_eq!(info.turbo, 0);
-        assert_eq!(info.show_ads, 0);
-        assert_eq!(info.hide_ads, 1);
-        assert_eq!(info.server_ads, 0);
-    }
+    assert_eq!(info.available, 1);
+    assert_eq!(info.authenticated, 1);
+    assert_eq!(info.user_id, 123456789);
+    assert_eq!(info.subscriber, 1);
+    assert_eq!(info.turbo, 0);
+    assert_eq!(info.show_ads, 0);
+    assert_eq!(info.hide_ads, 1);
+    assert_eq!(info.server_ads, 0);
 }
 
 #[test]
 fn test_parse_playback_info_handles_anonymous_and_invalid_values() {
-    unsafe {
-        let anonymous = cstring(
-            r#"{"user_id":null,"subscriber":false,"turbo":false,"show_ads":true,"hide_ads":false,"server_ads":true}"#,
-        );
-        let anonymous_info = parse_playback_info(anonymous.as_ptr());
-        let invalid = cstring("{");
-        let invalid_info = parse_playback_info(invalid.as_ptr());
+    let anonymous = r#"{"user_id":null,"subscriber":false,"turbo":false,"show_ads":true,"hide_ads":false,"server_ads":true}"#;
+    let anonymous_info = parse_playback_info(anonymous);
+    let invalid = "{";
+    let invalid_info = parse_playback_info(invalid);
 
-        assert_eq!(anonymous_info.available, 1);
-        assert_eq!(anonymous_info.authenticated, 0);
-        assert_eq!(anonymous_info.user_id, 0);
-        assert_eq!(anonymous_info.show_ads, 1);
-        assert_eq!(anonymous_info.server_ads, 1);
-        assert_eq!(invalid_info.available, 0);
-    }
+    assert_eq!(anonymous_info.available, 1);
+    assert_eq!(anonymous_info.authenticated, 0);
+    assert_eq!(anonymous_info.user_id, 0);
+    assert_eq!(anonymous_info.show_ads, 1);
+    assert_eq!(anonymous_info.server_ads, 1);
+    assert_eq!(invalid_info.available, 0);
 }
 
 #[test]
@@ -313,10 +273,8 @@ fn test_format_current_stream_title_and_metadata_separately() {
 fn test_parse_live_channels_response_returns_only_live_streams() {
     unsafe {
         let json = r#"{"data":{"users":[{"login":"LiveOne","displayName":"Live One","profileImageURL":"https://avatar","stream":{"title":"Now live","viewersCount":1234,"createdAt":"2026-04-30T10:00:00Z","game":{"name":"Just Chatting"},"previewImageURL":"https://preview"}},{"login":"BiggerLive","displayName":"Bigger Live","profileImageURL":"https://avatar-big","stream":{"title":"More live","viewersCount":9999,"createdAt":"2026-04-30T09:00:00Z","game":{"name":"Games + Demos"},"previewImageURL":"https://preview-big"}},{"login":"OfflineOne","displayName":"Offline One","profileImageURL":"https://offline","stream":null}]}}"#;
-        let mut error: *mut GError = ptr::null_mut();
-        let previews = parse_live(json, &mut error);
+        let previews = parse_live_channels_response((json).as_bytes()).unwrap();
 
-        assert!(error.is_null());
         assert!(!previews.is_null());
         assert_eq!((*previews).len, 2);
 
@@ -341,10 +299,8 @@ fn test_parse_live_channels_response_returns_only_live_streams() {
 fn test_parse_live_channels_response_handles_missing_optional_fields() {
     unsafe {
         let json = r#"{"data":{"users":[{"login":"FallbackLogin","displayName":null,"profileImageURL":null,"stream":{"title":null,"viewersCount":null,"createdAt":null,"game":null,"previewImageURL":null}}]}}"#;
-        let mut error: *mut GError = ptr::null_mut();
-        let previews = parse_live(json, &mut error);
+        let previews = parse_live_channels_response((json).as_bytes()).unwrap();
 
-        assert!(error.is_null());
         assert!(!previews.is_null());
         assert_eq!((*previews).len, 1);
 
@@ -365,10 +321,8 @@ fn test_parse_live_channels_response_handles_missing_optional_fields() {
 fn test_parse_live_channels_response_sorts_equal_viewers_by_display_name() {
     unsafe {
         let json = r#"{"data":{"users":[{"login":"zeta","displayName":"Zeta","stream":{"title":"Z","viewersCount":10}},{"login":"alpha","displayName":"Alpha","stream":{"title":"A","viewersCount":10}}]}}"#;
-        let mut error: *mut GError = ptr::null_mut();
-        let previews = parse_live(json, &mut error);
+        let previews = parse_live_channels_response((json).as_bytes()).unwrap();
 
-        assert!(error.is_null());
         assert!(!previews.is_null());
         assert_eq!((*previews).len, 2);
 
@@ -387,10 +341,8 @@ fn test_parse_live_channels_response_sorts_equal_viewers_by_display_name() {
 #[test]
 fn test_parse_live_channels_response_returns_empty_for_missing_users() {
     unsafe {
-        let mut error: *mut GError = ptr::null_mut();
-        let previews = parse_live(r#"{"data":{}}"#, &mut error);
+        let previews = parse_live_channels_response(r#"{"data":{}}"#.as_bytes()).unwrap();
 
-        assert!(error.is_null());
         assert!(!previews.is_null());
         assert_eq!((*previews).len, 0);
         g_ptr_array_unref(previews);
@@ -400,11 +352,11 @@ fn test_parse_live_channels_response_returns_empty_for_missing_users() {
 #[test]
 fn test_parse_helix_user_id_response_returns_user_id() {
     unsafe {
-        let mut error: *mut GError = ptr::null_mut();
-        let user_id =
-            parse_helix_user_id(r#"{"data":[{"id":"12345","login":"viewer"}]}"#, &mut error);
+        let user_id = parse_helix_user_id_response(
+            r#"{"data":[{"id":"12345","login":"viewer"}]}"#.as_bytes(),
+        )
+        .unwrap();
 
-        assert!(error.is_null());
         assert_cstr_eq(user_id, "12345");
         g_free(user_id as *mut c_void);
     }
@@ -416,21 +368,8 @@ fn test_parse_followed_channels_page_returns_channels_and_cursor() {
         let json = cstring(
             r#"{"data":[{"broadcaster_login":"PapaPlatte","broadcaster_name":"Papaplatte"},{"broadcaster_login":"rocketbeans","broadcaster_name":"Rocket Beans TV"}],"pagination":{"cursor":"next-page"}}"#,
         );
-        let mut error: *mut GError = ptr::null_mut();
         let channels = g_ptr_array_new_with_free_func(Some(free_followed_channel));
-        let mut cursor: *mut c_char = ptr::null_mut();
-
-        assert_ne!(
-            parse_followed_channels_page(
-                json.as_ptr(),
-                json.as_bytes().len(),
-                channels,
-                &mut cursor,
-                &mut error,
-            ),
-            0
-        );
-        assert!(error.is_null());
+        let cursor = parse_followed_channels_page(json.as_bytes(), channels).unwrap();
         assert_eq!((*channels).len, 2);
         assert_cstr_eq(cursor, "next-page");
 
@@ -449,46 +388,105 @@ fn test_parse_followed_channels_page_returns_channels_and_cursor() {
 
 #[test]
 fn test_parse_live_channels_response_reports_invalid_json() {
-    unsafe {
-        let mut error: *mut GError = ptr::null_mut();
-        let previews = parse_live("{", &mut error);
-
-        assert!(previews.is_null());
-        assert!(!error.is_null());
-        g_clear_error(&mut error);
-    }
+    assert!(parse_live_channels_response(b"{").is_err());
 }
 
 #[test]
 fn test_parse_current_stream_response_returns_null_for_offline_stream() {
-    unsafe {
-        let mut error: *mut GError = ptr::null_mut();
-        let stream = parse_current(r#"{"data":{"user":{"stream":null}}}"#, &mut error);
+    let stream =
+        parse_current_stream_response(r#"{"data":{"user":{"stream":null}}}"#.as_bytes()).unwrap();
 
-        assert!(error.is_null());
-        assert!(stream.is_null());
-    }
+    assert!(stream.is_null());
 }
 
 #[test]
 fn test_parse_current_stream_response_returns_null_for_missing_user() {
-    unsafe {
-        let mut error: *mut GError = ptr::null_mut();
-        let stream = parse_current(r#"{"data":{"user":null}}"#, &mut error);
+    let stream = parse_current_stream_response(r#"{"data":{"user":null}}"#.as_bytes()).unwrap();
 
-        assert!(error.is_null());
-        assert!(stream.is_null());
-    }
+    assert!(stream.is_null());
 }
 
 #[test]
 fn test_parse_current_stream_response_reports_invalid_json() {
-    unsafe {
-        let mut error: *mut GError = ptr::null_mut();
-        let stream = parse_current("{", &mut error);
+    assert!(parse_current_stream_response(b"{").is_err());
+}
 
-        assert!(stream.is_null());
-        assert!(!error.is_null());
-        g_clear_error(&mut error);
+#[test]
+fn playback_request_escapes_query_and_login() {
+    use super::requests::{
+        TWITCH_GQL_PLAYBACK_ACCESS_TOKEN_QUERY, build_playback_access_token_request_body,
+    };
+    unsafe {
+        let login = cstring("ö\\\"\n");
+        let body = build_playback_access_token_request_body(login.as_ptr());
+        assert_eq!(
+            serde_json::from_str::<Value>(str_from_ptr(body)).unwrap(),
+            json!({"query": TWITCH_GQL_PLAYBACK_ACCESS_TOKEN_QUERY, "variables": {"login": "ö\\\"\n"}}),
+        );
+        g_free(body.cast());
+    }
+}
+
+#[test]
+fn playback_token_response_reads_nested_claims_and_requires_signature() {
+    use super::responses::parse_playback_access_token_response;
+    for signature in [json!("sig"), json!(""), Value::Null] {
+        let claim = r#"{"user_id":42,"subscriber":true}"#;
+        let response = json!({"data": {"streamPlaybackAccessToken": {"value": claim, "signature": signature}}}).to_string();
+        let token = parse_playback_access_token_response(response.as_bytes()).unwrap();
+        if signature == "sig" {
+            let token = token.unwrap();
+            assert_eq!(token.value, claim);
+            assert_eq!(token.signature, "sig");
+            assert_eq!(token.info.user_id, 42);
+            assert_eq!(token.info.authenticated, 1);
+            assert_eq!(token.info.subscriber, 1);
+        } else {
+            assert!(token.is_none());
+        }
+    }
+}
+
+#[test]
+fn stream_response_handles_wrong_types_and_bounded_viewer_counts() {
+    unsafe {
+        for viewers in [
+            json!(-1),
+            json!(4294967296_u64),
+            json!("12"),
+            json!(null),
+            json!(u32::MAX),
+        ] {
+            let response = json!({"data": {"user": {"stream": {"title": 7, "game": [], "viewersCount": viewers}}}}).to_string();
+            let stream = parse_current_stream_response((&response).as_bytes()).unwrap();
+            assert!(!stream.is_null());
+            assert_cstr_eq((*stream).title, "");
+            assert!((*stream).category_name.is_null());
+            assert_eq!(
+                (*stream).viewer_count,
+                if viewers == json!(u32::MAX) {
+                    u32::MAX
+                } else {
+                    0
+                }
+            );
+            twitch_current_stream_free(stream);
+        }
+    }
+}
+
+#[test]
+fn helix_pages_skip_invalid_entries_and_use_login_as_display_name() {
+    unsafe {
+        let response = br#"{"data":[null,{},false,{"broadcaster_login":7},{"broadcaster_login":"\u0000hidden"},{"broadcaster_login":"MixedCase","broadcaster_name":null}],"pagination":{"cursor":null}}trailing"#;
+        let channels = g_ptr_array_new_with_free_func(Some(free_followed_channel));
+        let length = response.len() - b"trailing".len();
+        let cursor = parse_followed_channels_page(&response[..length], channels).unwrap();
+        assert_eq!((*channels).len, 1);
+        let channel = ptr_array_index::<TwitchFollowedChannel>(channels, 0);
+        assert_cstr_eq((*channel).channel, "mixedcase");
+        assert_cstr_eq((*channel).display_name, "MixedCase");
+        assert!(cursor.is_null());
+        g_ptr_array_unref(channels);
     }
 }

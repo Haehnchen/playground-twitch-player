@@ -60,26 +60,6 @@ pub struct GTask {
 }
 
 #[repr(C)]
-pub struct JsonArray {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct JsonNode {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct JsonObject {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct JsonParser {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
 pub struct SoupMessage {
     _private: [u8; 0],
 }
@@ -167,36 +147,6 @@ unsafe extern "C" {
         reserved_chars_allowed: *const c_char,
         allow_utf8: c_int,
     ) -> *mut c_char;
-
-    pub(super) fn json_array_get_element(array: *mut JsonArray, index_: c_uint) -> *mut JsonNode;
-    pub(super) fn json_array_get_length(array: *mut JsonArray) -> c_uint;
-    pub(super) fn json_node_get_array(node: *mut JsonNode) -> *mut JsonArray;
-    pub(super) fn json_node_get_int(node: *mut JsonNode) -> i64;
-    pub(super) fn json_node_get_node_type(node: *mut JsonNode) -> c_int;
-    pub(super) fn json_node_get_object(node: *mut JsonNode) -> *mut JsonObject;
-    pub(super) fn json_node_get_string(node: *mut JsonNode) -> *const c_char;
-    pub(super) fn json_object_get_member(
-        object: *mut JsonObject,
-        member_name: *const c_char,
-    ) -> *mut JsonNode;
-    pub(super) fn json_object_get_boolean_member_with_default(
-        object: *mut JsonObject,
-        member_name: *const c_char,
-        default_value: c_int,
-    ) -> c_int;
-    pub(super) fn json_object_get_string_member_with_default(
-        object: *mut JsonObject,
-        member_name: *const c_char,
-        default_value: *const c_char,
-    ) -> *const c_char;
-    pub(super) fn json_parser_get_root(parser: *mut JsonParser) -> *mut JsonNode;
-    pub(super) fn json_parser_load_from_data(
-        parser: *mut JsonParser,
-        data: *const c_char,
-        length: isize,
-        error: *mut *mut GError,
-    ) -> c_int;
-    pub(super) fn json_parser_new() -> *mut JsonParser;
 
     pub(super) fn soup_message_get_request_headers(
         message: *mut SoupMessage,

@@ -8,9 +8,8 @@ mod tests;
 mod utils;
 
 pub use self::ffi::{
-    GAsyncResult, GBytes, GCancellable, GDateTime, GError, GPtrArray, GTask, JsonArray, JsonNode,
-    JsonObject, JsonParser, SoupMessage, SoupMessageHeaders, SoupSession, TwitchPlaybackInfo,
-    TwitchStreamQuality,
+    GAsyncResult, GBytes, GCancellable, GDateTime, GError, GPtrArray, GTask, SoupMessage,
+    SoupMessageHeaders, SoupSession, TwitchPlaybackInfo, TwitchStreamQuality,
 };
 pub use self::responses::twitch_stream_info_fetch_followed_channels;
 pub use self::utils::{
@@ -37,10 +36,6 @@ use self::utils::twitch_stream_qualities_result_free;
 use crate::glib_strings::is_nonempty;
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
-const JSON_NODE_OBJECT: c_int = 0;
-const JSON_NODE_ARRAY: c_int = 1;
-const JSON_NODE_VALUE: c_int = 2;
-const JSON_NODE_NULL: c_int = 3;
 
 pub struct TwitchStreamPreview {
     pub channel: *mut c_char,

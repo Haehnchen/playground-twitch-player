@@ -1,102 +1,13 @@
 use super::ffi::{
-    GError, GPtrArray, JsonNode, JsonObject, JsonParser, TwitchStreamQuality,
-    g_date_time_difference, g_date_time_new_from_iso8601, g_date_time_new_now_utc,
-    g_date_time_unref, g_free, g_object_unref, g_ptr_array_unref, g_strdup, json_node_get_int,
-    json_node_get_node_type, json_node_get_string, json_object_get_member,
-    json_parser_load_from_data, json_parser_new,
+    GPtrArray, TwitchStreamQuality, g_date_time_difference, g_date_time_new_from_iso8601,
+    g_date_time_new_now_utc, g_date_time_unref, g_free, g_ptr_array_unref, g_strdup,
 };
 use super::{
-    JSON_NODE_NULL, JSON_NODE_VALUE, TwitchCurrentStream, TwitchFollowedChannel,
-    TwitchStreamPreview, TwitchStreamQualitiesResult,
+    TwitchCurrentStream, TwitchFollowedChannel, TwitchStreamPreview, TwitchStreamQualitiesResult,
 };
 use crate::glib_strings::{dup_bytes, is_nonempty};
-use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::ffi::{CStr, c_char, c_uint, c_void};
 use std::ptr;
-
-pub(super) fn json_escape_bytes(bytes: &[u8]) -> Vec<u8> {
-    let mut escaped = Vec::with_capacity(bytes.len() + 8);
-    for &byte in bytes {
-        match byte {
-            b'"' => escaped.extend_from_slice(br#"\""#),
-            b'\\' => escaped.extend_from_slice(br#"\\"#),
-            b'\n' => escaped.extend_from_slice(br#"\n"#),
-            b'\r' => escaped.extend_from_slice(br#"\r"#),
-            b'\t' => escaped.extend_from_slice(br#"\t"#),
-            0x00..=0x1f => escaped.extend_from_slice(format!("\\u{byte:04x}").as_bytes()),
-            other => escaped.push(other),
-        }
-    }
-    escaped
-}
-
-pub(super) unsafe fn c_bytes(value: *const c_char) -> Vec<u8> {
-    unsafe {
-        if value.is_null() {
-            Vec::new()
-        } else {
-            CStr::from_ptr(value).to_bytes().to_vec()
-        }
-    }
-}
-
-pub(super) unsafe fn json_string_from_c(value: *const c_char) -> Vec<u8> {
-    unsafe { json_escape_bytes(&c_bytes(value)) }
-}
-
-pub(super) unsafe fn node_is(node: *mut JsonNode, kind: c_int) -> bool {
-    unsafe { !node.is_null() && json_node_get_node_type(node) == kind }
-}
-
-pub(super) unsafe fn json_object_get_string_or_null(
-    object: *mut JsonObject,
-    member_name: *const c_char,
-) -> *const c_char {
-    unsafe {
-        let node = json_object_get_member(object, member_name);
-
-        if node.is_null() || node_is(node, JSON_NODE_NULL) || !node_is(node, JSON_NODE_VALUE) {
-            return ptr::null();
-        }
-
-        json_node_get_string(node)
-    }
-}
-
-pub(super) unsafe fn json_object_get_uint_or_zero(
-    object: *mut JsonObject,
-    member_name: *const c_char,
-) -> c_uint {
-    unsafe {
-        let node = json_object_get_member(object, member_name);
-
-        if node.is_null() || node_is(node, JSON_NODE_NULL) || !node_is(node, JSON_NODE_VALUE) {
-            return 0;
-        }
-
-        let value = json_node_get_int(node);
-        if value > 0 && value <= c_uint::MAX as i64 {
-            value as c_uint
-        } else {
-            0
-        }
-    }
-}
-
-pub(super) unsafe fn parser_new_loaded(
-    json: *const c_char,
-    length: usize,
-    error: *mut *mut GError,
-) -> *mut JsonParser {
-    unsafe {
-        let parser = json_parser_new();
-        if json_parser_load_from_data(parser, json, length as isize, error) == 0 {
-            g_object_unref(parser as *mut c_void);
-            return ptr::null_mut();
-        }
-
-        parser
-    }
-}
 
 pub(super) unsafe extern "C" fn g_ptr_array_unref_destroy(data: *mut c_void) {
     unsafe {

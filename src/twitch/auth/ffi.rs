@@ -30,21 +30,6 @@ pub struct SoupMessageHeaders {
     _private: [u8; 0],
 }
 
-#[repr(C)]
-pub struct JsonParser {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct JsonNode {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct JsonObject {
-    _private: [u8; 0],
-}
-
 unsafe extern "C" {
     pub(super) fn g_bytes_get_data(bytes: *mut GBytes, size: *mut usize) -> *const c_void;
     pub(super) fn g_bytes_new_static(data: *const c_void, size: usize) -> *mut GBytes;
@@ -53,7 +38,6 @@ unsafe extern "C" {
         cancellable: *mut GCancellable,
         error: *mut *mut GError,
     ) -> c_int;
-    pub(super) fn g_clear_error(error: *mut *mut GError);
     pub(super) fn g_free(mem: *mut c_void);
     pub(super) fn g_get_monotonic_time() -> i64;
     pub(super) fn g_io_error_quark() -> c_uint;
@@ -67,7 +51,6 @@ unsafe extern "C" {
         ...
     );
     pub(super) fn g_strdup(str: *const c_char) -> *mut c_char;
-    pub(super) fn g_strcmp0(str1: *const c_char, str2: *const c_char) -> c_int;
     pub(super) fn g_strndup(str: *const c_char, n: usize) -> *mut c_char;
     pub(super) fn g_uri_escape_string(
         unescaped: *const c_char,
@@ -99,23 +82,6 @@ unsafe extern "C" {
         task_data: *mut c_void,
         task_data_destroy: Option<GDestroyNotify>,
     );
-
-    pub(super) fn json_node_get_int(node: *mut JsonNode) -> i64;
-    pub(super) fn json_node_get_node_type(node: *mut JsonNode) -> c_int;
-    pub(super) fn json_node_get_object(node: *mut JsonNode) -> *mut JsonObject;
-    pub(super) fn json_node_get_string(node: *mut JsonNode) -> *const c_char;
-    pub(super) fn json_object_get_member(
-        object: *mut JsonObject,
-        member_name: *const c_char,
-    ) -> *mut JsonNode;
-    pub(super) fn json_parser_get_root(parser: *mut JsonParser) -> *mut JsonNode;
-    pub(super) fn json_parser_load_from_data(
-        parser: *mut JsonParser,
-        data: *const c_char,
-        length: isize,
-        error: *mut *mut GError,
-    ) -> c_int;
-    pub(super) fn json_parser_new() -> *mut JsonParser;
 
     pub(super) fn soup_message_get_request_headers(
         msg: *mut SoupMessage,

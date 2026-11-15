@@ -29,7 +29,6 @@ check_pkg gio-2.0
 check_pkg gdk-pixbuf-2.0
 check_pkg mpv
 check_pkg epoxy
-check_pkg json-glib-1.0
 check_pkg libsoup-3.0
 
 if [ "$missing" -ne 0 ]; then
@@ -38,7 +37,7 @@ if [ "$missing" -ne 0 ]; then
 Rust: install rustup (https://rustup.rs/); rust-toolchain.toml selects the compiler.
 
 Ubuntu/Debian packages:
-  sudo apt install build-essential pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libjson-glib-dev libsoup-3.0-dev mpv yt-dlp
+  sudo apt install build-essential pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libsoup-3.0-dev mpv yt-dlp
 EOF
   exit 1
 fi

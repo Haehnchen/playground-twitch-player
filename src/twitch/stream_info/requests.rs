@@ -6,8 +6,8 @@ use super::ffi::{
     soup_session_new, soup_session_send_and_read,
 };
 use super::twitch_stream_info_error_quark;
-use super::utils::{json_escape_bytes, json_string_from_c};
 use crate::glib_strings::{dup_bytes, is_nonempty};
+use serde_json::json;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::ptr;
 pub(super) const TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED: c_int = 0;
@@ -20,14 +20,13 @@ pub(super) const TWITCH_GQL_PLAYBACK_ACCESS_TOKEN_QUERY: &str = "query($login:St
 
 pub(super) unsafe fn build_gql_login_body(query: &str, channel: *const c_char) -> *mut c_char {
     unsafe {
-        let login = json_string_from_c(channel);
-        let mut body = Vec::new();
-        body.extend_from_slice(br#"{"query":""#);
-        body.extend_from_slice(json_escape_bytes(query.as_bytes()).as_slice());
-        body.extend_from_slice(br#"","variables":{"login":""#);
-        body.extend_from_slice(&login);
-        body.extend_from_slice(br#""}}"#);
-        dup_bytes(&body)
+        let login = if channel.is_null() {
+            std::borrow::Cow::Borrowed("")
+        } else {
+            CStr::from_ptr(channel).to_string_lossy()
+        };
+        let body = json!({"query": query, "variables": {"login": login}});
+        dup_bytes(body.to_string().as_bytes())
     }
 }
 
@@ -40,31 +39,16 @@ pub(super) unsafe fn build_live_channels_request_body(
     channel_count: c_uint,
 ) -> *mut c_char {
     unsafe {
-        let mut body = Vec::new();
-        body.extend_from_slice(br#"{"query":""#);
-        body.extend_from_slice(
-            json_escape_bytes(TWITCH_GQL_LIVE_CHANNELS_QUERY.as_bytes()).as_slice(),
-        );
-        body.extend_from_slice(br#"","variables":{"logins":["#);
-        let mut first = true;
-
+        let mut logins = Vec::new();
         for i in 0..channel_count {
             let channel = *channels.add(i as usize);
-            if !is_nonempty(channel) {
-                continue;
+            if is_nonempty(channel) {
+                logins.push(CStr::from_ptr(channel).to_string_lossy());
             }
-
-            if !first {
-                body.push(b',');
-            }
-            first = false;
-            body.push(b'"');
-            body.extend_from_slice(&json_string_from_c(channel));
-            body.push(b'"');
         }
-
-        body.extend_from_slice(br#"]}}"#);
-        dup_bytes(&body)
+        let body =
+            json!({"query": TWITCH_GQL_LIVE_CHANNELS_QUERY, "variables": {"logins": logins}});
+        dup_bytes(body.to_string().as_bytes())
     }
 }
 

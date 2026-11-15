@@ -21,8 +21,9 @@ use super::utils::{
 use super::{
     FetchCurrentStreamData, FetchFollowedChannelsData, FetchLiveChannelsData,
     FetchStreamQualitiesData, TwitchCurrentStream, TwitchStreamQualitiesResult,
-    twitch_playback_info_empty,
 };
+use crate::glib_strings::dup_bytes;
+use gtk4::glib::{self, translate::IntoGlibPtr};
 use std::ffi::{CStr, c_char, c_uint, c_void};
 use std::ptr;
 
@@ -41,13 +42,15 @@ pub(super) unsafe fn fetch_current_stream(
             return ptr::null_mut();
         }
 
-        let stream = parse_current_stream_response(
-            response,
-            CStr::from_ptr(response).to_bytes().len(),
-            error,
-        );
-        g_free(response as *mut c_void);
-        stream
+        let stream = parse_current_stream_response(CStr::from_ptr(response).to_bytes());
+        g_free(response.cast());
+        match stream {
+            Ok(stream) => stream,
+            Err(err) => {
+                glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                ptr::null_mut()
+            }
+        }
     }
 }
 
@@ -65,30 +68,27 @@ pub(super) unsafe fn fetch_stream_qualities(
             return ptr::null_mut();
         }
 
-        let mut token: *mut c_char = ptr::null_mut();
-        let mut signature: *mut c_char = ptr::null_mut();
-        let mut playback_info = twitch_playback_info_empty();
-        if parse_playback_access_token_response(
-            response,
-            CStr::from_ptr(response).to_bytes().len(),
-            &mut token,
-            &mut signature,
-            &mut playback_info,
-            error,
-        ) == 0
-        {
-            g_free(response as *mut c_void);
-            if error.is_null() || (*error).is_null() {
+        let token = parse_playback_access_token_response(CStr::from_ptr(response).to_bytes());
+        g_free(response.cast());
+        let token = match token {
+            Ok(Some(token)) => token,
+            Ok(None) => {
                 g_set_error(
                     error,
                     g_io_error_quark(),
                     G_IO_ERROR_FAILED,
                     c"Twitch playback token is unavailable".as_ptr(),
                 );
+                return ptr::null_mut();
             }
-            return ptr::null_mut();
-        }
-        g_free(response as *mut c_void);
+            Err(err) => {
+                glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                return ptr::null_mut();
+            }
+        };
+        let playback_info = token.info;
+        let signature = dup_bytes(token.signature.as_bytes());
+        let token = dup_bytes(token.value.as_bytes());
 
         let escaped_channel = g_uri_escape_string(channel, ptr::null(), 0);
         let escaped_token = g_uri_escape_string(token, ptr::null(), 0);
@@ -150,16 +150,16 @@ pub(super) unsafe fn fetch_live_channels(
                 return ptr::null_mut();
             }
 
-            let chunk_previews = parse_live_channels_response(
-                response,
-                CStr::from_ptr(response).to_bytes().len(),
-                error,
-            );
-            g_free(response as *mut c_void);
-            if chunk_previews.is_null() {
-                g_ptr_array_unref(all_previews);
-                return ptr::null_mut();
-            }
+            let chunk_previews = parse_live_channels_response(CStr::from_ptr(response).to_bytes());
+            g_free(response.cast());
+            let chunk_previews = match chunk_previews {
+                Ok(previews) => previews,
+                Err(err) => {
+                    glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                    g_ptr_array_unref(all_previews);
+                    return ptr::null_mut();
+                }
+            };
 
             for i in 0..(*chunk_previews).len {
                 g_ptr_array_add(all_previews, *(*chunk_previews).pdata.add(i as usize));

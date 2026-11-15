@@ -28,7 +28,6 @@ fn main() {
         "gdk-pixbuf-2.0",
         "mpv",
         "epoxy",
-        "json-glib-1.0",
         "libsoup-3.0",
     ];
 

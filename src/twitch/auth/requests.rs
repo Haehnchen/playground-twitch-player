@@ -1,8 +1,8 @@
 use super::ffi::{
     G_IO_ERROR_FAILED, G_IO_ERROR_TIMED_OUT, G_USEC_PER_SEC, GTask, g_bytes_get_data,
     g_bytes_new_static, g_bytes_unref, g_cancellable_set_error_if_cancelled, g_free,
-    g_get_monotonic_time, g_io_error_quark, g_object_set, g_object_unref, g_set_error, g_strcmp0,
-    g_strndup, g_task_return_error, g_task_return_pointer, g_uri_escape_string, g_usleep,
+    g_get_monotonic_time, g_io_error_quark, g_object_set, g_object_unref, g_set_error, g_strndup,
+    g_task_return_error, g_task_return_pointer, g_uri_escape_string, g_usleep,
     soup_message_get_request_headers, soup_message_get_status, soup_message_headers_append,
     soup_message_new, soup_message_set_request_body_from_bytes, soup_session_new,
     soup_session_send_and_read,
@@ -13,6 +13,10 @@ use super::{
     twitch_auth_device_code_free, twitch_auth_token_free,
 };
 use crate::twitch::stream_info::{GCancellable, GError};
+use gtk4::{
+    gio,
+    glib::{self, translate::IntoGlibPtr},
+};
 use std::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
 use std::ptr;
 
@@ -148,28 +152,33 @@ pub(super) unsafe fn request_device_code(
         }
 
         if (*response).status < 200 || (*response).status >= 300 {
-            let message = parse_auth_error_message((*response).body);
-            g_set_error(
-                error,
-                g_io_error_quark(),
-                G_IO_ERROR_FAILED,
-                c"Twitch auth returned HTTP %u%s%s".as_ptr(),
-                (*response).status,
-                if *message != 0 {
-                    c": ".as_ptr()
-                } else {
-                    c"".as_ptr()
-                },
-                message,
+            let message = parse_auth_error_message(CStr::from_ptr((*response).body).to_bytes());
+            glib::ffi::g_propagate_error(
+                error.cast(),
+                glib::Error::new(
+                    gio::IOErrorEnum::Failed,
+                    &format!(
+                        "Twitch auth returned HTTP {}{}{}",
+                        (*response).status,
+                        if message.is_empty() { "" } else { ": " },
+                        message
+                    ),
+                )
+                .into_glib_ptr(),
             );
-            g_free(message as *mut c_void);
             auth_response_free(response);
             return ptr::null_mut();
         }
 
-        let code = parse_device_code_response((*response).body, error);
+        let code = parse_device_code_response(CStr::from_ptr((*response).body).to_bytes());
         auth_response_free(response);
-        code
+        match code {
+            Ok(code) => code,
+            Err(err) => {
+                glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                ptr::null_mut()
+            }
+        }
     }
 }
 
@@ -218,22 +227,26 @@ pub(super) unsafe fn poll_device_token(
             }
 
             if (*response).status >= 200 && (*response).status < 300 {
-                let token = parse_token_response((*response).body, error);
+                let token = parse_token_response(CStr::from_ptr((*response).body).to_bytes());
                 auth_response_free(response);
-                return token;
+                return match token {
+                    Ok(token) => token,
+                    Err(err) => {
+                        glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                        ptr::null_mut()
+                    }
+                };
             }
 
-            let message = parse_auth_error_message((*response).body);
+            let message = parse_auth_error_message(CStr::from_ptr((*response).body).to_bytes());
             auth_response_free(response);
-            if g_strcmp0(message, c"authorization_pending".as_ptr()) == 0 {
-                g_free(message as *mut c_void);
+            if message == "authorization_pending" {
                 if sleep_poll_interval(interval, cancel, error) == 0 {
                     return ptr::null_mut();
                 }
                 continue;
             }
-            if g_strcmp0(message, c"slow_down".as_ptr()) == 0 {
-                g_free(message as *mut c_void);
+            if message == "slow_down" {
                 interval += 5;
                 if sleep_poll_interval(interval, cancel, error) == 0 {
                     return ptr::null_mut();
@@ -241,19 +254,18 @@ pub(super) unsafe fn poll_device_token(
                 continue;
             }
 
-            g_set_error(
-                error,
-                g_io_error_quark(),
-                G_IO_ERROR_FAILED,
-                c"Twitch authorization failed%s%s".as_ptr(),
-                if *message != 0 {
-                    c": ".as_ptr()
-                } else {
-                    c"".as_ptr()
-                },
-                message,
+            glib::ffi::g_propagate_error(
+                error.cast(),
+                glib::Error::new(
+                    gio::IOErrorEnum::Failed,
+                    &format!(
+                        "Twitch authorization failed{}{}",
+                        if message.is_empty() { "" } else { ": " },
+                        message
+                    ),
+                )
+                .into_glib_ptr(),
             );
-            g_free(message as *mut c_void);
             return ptr::null_mut();
         }
 
@@ -304,30 +316,33 @@ pub unsafe fn twitch_auth_refresh_token(
         }
 
         if (*response).status < 200 || (*response).status >= 300 {
-            let message = parse_auth_error_message((*response).body);
-            g_set_error(
-                error,
-                g_io_error_quark(),
-                G_IO_ERROR_FAILED,
-                c"Twitch token refresh failed with HTTP %u%s%s".as_ptr(),
-                (*response).status,
-                if *message != 0 {
-                    c": ".as_ptr()
-                } else {
-                    c"".as_ptr()
-                },
-                message,
+            let message = parse_auth_error_message(CStr::from_ptr((*response).body).to_bytes());
+            glib::ffi::g_propagate_error(
+                error.cast(),
+                glib::Error::new(
+                    gio::IOErrorEnum::Failed,
+                    &format!(
+                        "Twitch token refresh failed with HTTP {}{}{}",
+                        (*response).status,
+                        if message.is_empty() { "" } else { ": " },
+                        message
+                    ),
+                )
+                .into_glib_ptr(),
             );
-            g_free(message as *mut c_void);
             auth_response_free(response);
             return ptr::null_mut();
         }
 
-        let token = parse_token_response((*response).body, error);
+        let token = parse_token_response(CStr::from_ptr((*response).body).to_bytes());
         auth_response_free(response);
-        if token.is_null() {
-            return ptr::null_mut();
-        }
+        let token = match token {
+            Ok(token) => token,
+            Err(err) => {
+                glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                return ptr::null_mut();
+            }
+        };
         if (*token).refresh_token.is_null() || *(*token).refresh_token == 0 {
             twitch_auth_token_free(token);
             g_set_error(

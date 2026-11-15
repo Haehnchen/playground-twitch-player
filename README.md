@@ -37,7 +37,7 @@ Clippy and rustfmt locally and in CI.
 Native libraries and runtime tools are supplied by the operating system. On Ubuntu/Debian:
 
 ```bash
-sudo apt install build-essential pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libjson-glib-dev libsoup-3.0-dev mpv yt-dlp
+sudo apt install build-essential pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libsoup-3.0-dev mpv yt-dlp
 ```
 
 Check the local machine:

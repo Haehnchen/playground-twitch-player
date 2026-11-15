@@ -1,180 +1,144 @@
-use super::ffi::{
-    G_IO_ERROR_FAILED, JsonObject, JsonParser, g_clear_error, g_io_error_quark, g_object_unref,
-    g_set_error, g_strdup, json_node_get_int, json_node_get_node_type, json_node_get_object,
-    json_node_get_string, json_object_get_member, json_parser_get_root, json_parser_load_from_data,
-    json_parser_new,
-};
 use super::{TwitchAuthDeviceCode, TwitchAuthToken};
-use crate::twitch::stream_info::GError;
-use std::ffi::{c_char, c_int, c_uint, c_void};
-use std::ptr;
-pub(super) const JSON_NODE_OBJECT: c_int = 0;
-pub(super) const JSON_NODE_VALUE: c_int = 2;
-pub(super) const JSON_NODE_NULL: c_int = 3;
+use crate::twitch::json::{dup_string, invalid_response, parse, string, uint};
+use gtk4::glib;
+use serde_json::Value;
 
-pub(super) unsafe fn parse_json_object(
-    parser: *mut JsonParser,
-    json: *const c_char,
-    error: *mut *mut GError,
-) -> *mut JsonObject {
-    unsafe {
-        if json_parser_load_from_data(parser, json, -1, error) == 0 {
-            return ptr::null_mut();
+fn parse_json_object(json: &[u8]) -> Result<Value, glib::Error> {
+    let value = parse(json)?;
+    if !value.is_object() {
+        return Err(invalid_response("Twitch returned invalid JSON"));
+    }
+    Ok(value)
+}
+
+pub(super) fn parse_auth_error_message(json: &[u8]) -> String {
+    parse_json_object(json)
+        .ok()
+        .map(|value| {
+            string(&value["message"])
+                .filter(|s| !s.is_empty())
+                .or_else(|| string(&value["error"]))
+                .unwrap_or("")
+                .to_owned()
+        })
+        .unwrap_or_default()
+}
+
+// Validate required fields before allocating the native result.
+pub(super) fn parse_device_code_response(
+    json: &[u8],
+) -> Result<*mut TwitchAuthDeviceCode, glib::Error> {
+    let value = parse_json_object(json)?;
+    if ["device_code", "user_code", "verification_uri"]
+        .iter()
+        .any(|key| string(&value[key]).is_none())
+    {
+        return Err(invalid_response("Twitch did not return a device code"));
+    }
+    let interval = uint(&value["interval"]);
+    Ok(Box::into_raw(Box::new(TwitchAuthDeviceCode {
+        device_code: dup_string(&value["device_code"]),
+        user_code: dup_string(&value["user_code"]),
+        verification_uri: dup_string(&value["verification_uri"]),
+        expires_in: uint(&value["expires_in"]),
+        interval: if interval == 0 { 5 } else { interval },
+    })))
+}
+
+pub(super) fn parse_token_response(json: &[u8]) -> Result<*mut TwitchAuthToken, glib::Error> {
+    let value = parse_json_object(json)?;
+    if string(&value["access_token"]).is_none_or(str::is_empty) {
+        return Err(invalid_response("Twitch did not return an access token"));
+    }
+    Ok(Box::into_raw(Box::new(TwitchAuthToken {
+        access_token: dup_string(&value["access_token"]),
+        refresh_token: dup_string(&value["refresh_token"]),
+        expires_in: uint(&value["expires_in"]),
+    })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::twitch::auth::{twitch_auth_device_code_free, twitch_auth_token_free};
+    use std::ffi::CStr;
+
+    #[test]
+    fn device_code_reads_fields_and_defaults_invalid_numbers() {
+        let code = parse_device_code_response(br#"{"device_code":"device","user_code":"ABCD","verification_uri":"https://twitch.tv/activate","expires_in":600,"interval":2}"#).unwrap();
+        unsafe {
+            assert_eq!(CStr::from_ptr((*code).user_code), c"ABCD");
+            assert_eq!((*code).expires_in, 600);
+            assert_eq!((*code).interval, 2);
+            twitch_auth_device_code_free(code);
         }
-
-        let root = json_parser_get_root(parser);
-        if root.is_null() || json_node_get_node_type(root) != JSON_NODE_OBJECT {
-            g_set_error(
-                error,
-                g_io_error_quark(),
-                G_IO_ERROR_FAILED,
-                c"Twitch returned invalid JSON".as_ptr(),
+        for fields in [
+            "",
+            ",\"expires_in\":-1,\"interval\":0",
+            ",\"expires_in\":4294967296,\"interval\":\"2\"",
+        ] {
+            let json = format!(
+                r#"{{"device_code":"d","user_code":"u","verification_uri":"url"{fields}}}"#
             );
-            return ptr::null_mut();
-        }
-
-        json_node_get_object(root)
-    }
-}
-
-pub(super) unsafe fn json_string_or_null(
-    object: *mut JsonObject,
-    name: *const c_char,
-) -> *const c_char {
-    unsafe {
-        let node = json_object_get_member(object, name);
-        if node.is_null() {
-            return ptr::null();
-        }
-
-        let node_type = json_node_get_node_type(node);
-        if node_type == JSON_NODE_NULL || node_type != JSON_NODE_VALUE {
-            return ptr::null();
-        }
-
-        json_node_get_string(node)
-    }
-}
-
-pub(super) unsafe fn json_uint_or_zero(object: *mut JsonObject, name: *const c_char) -> c_uint {
-    unsafe {
-        let node = json_object_get_member(object, name);
-        if node.is_null() {
-            return 0;
-        }
-
-        let node_type = json_node_get_node_type(node);
-        if node_type == JSON_NODE_NULL || node_type != JSON_NODE_VALUE {
-            return 0;
-        }
-
-        let value = json_node_get_int(node);
-        if value > 0 && value <= c_uint::MAX as i64 {
-            value as c_uint
-        } else {
-            0
-        }
-    }
-}
-
-pub(super) unsafe fn parse_auth_error_message(json: *const c_char) -> *mut c_char {
-    unsafe {
-        let parser = json_parser_new();
-        let mut error: *mut GError = ptr::null_mut();
-        let object = parse_json_object(parser, json, &mut error);
-        if object.is_null() {
-            g_clear_error(&mut error);
-            g_object_unref(parser as *mut c_void);
-            return g_strdup(c"".as_ptr());
-        }
-
-        let message = json_string_or_null(object, c"message".as_ptr());
-        let result = if !message.is_null() && *message != 0 {
-            g_strdup(message)
-        } else {
-            let error_name = json_string_or_null(object, c"error".as_ptr());
-            if error_name.is_null() {
-                g_strdup(c"".as_ptr())
-            } else {
-                g_strdup(error_name)
+            let code = parse_device_code_response(json.as_bytes()).unwrap();
+            unsafe {
+                assert_eq!((*code).expires_in, 0);
+                assert_eq!((*code).interval, 5);
+                twitch_auth_device_code_free(code);
             }
-        };
-        g_object_unref(parser as *mut c_void);
-        result
+        }
     }
-}
 
-pub(super) unsafe fn parse_device_code_response(
-    json: *const c_char,
-    error: *mut *mut GError,
-) -> *mut TwitchAuthDeviceCode {
-    unsafe {
-        let parser = json_parser_new();
-        let object = parse_json_object(parser, json, error);
-        if object.is_null() {
-            g_object_unref(parser as *mut c_void);
-            return ptr::null_mut();
-        }
-
-        let device_code = json_string_or_null(object, c"device_code".as_ptr());
-        let user_code = json_string_or_null(object, c"user_code".as_ptr());
-        let verification_uri = json_string_or_null(object, c"verification_uri".as_ptr());
-        if device_code.is_null() || user_code.is_null() || verification_uri.is_null() {
-            g_set_error(
-                error,
-                g_io_error_quark(),
-                G_IO_ERROR_FAILED,
-                c"Twitch did not return a device code".as_ptr(),
+    #[test]
+    fn token_reads_optional_refresh_token_and_unicode() {
+        let token = parse_token_response(
+            r#"{"access_token":"t\"öken","refresh_token":"refresh","expires_in":3600}"#.as_bytes(),
+        )
+        .unwrap();
+        unsafe {
+            assert_eq!(
+                CStr::from_ptr((*token).access_token).to_str().unwrap(),
+                "t\"öken"
             );
-            g_object_unref(parser as *mut c_void);
-            return ptr::null_mut();
+            assert_eq!(CStr::from_ptr((*token).refresh_token), c"refresh");
+            assert_eq!((*token).expires_in, 3600);
+            twitch_auth_token_free(token);
         }
-
-        let mut code = Box::new(TwitchAuthDeviceCode {
-            device_code: g_strdup(device_code),
-            user_code: g_strdup(user_code),
-            verification_uri: g_strdup(verification_uri),
-            expires_in: json_uint_or_zero(object, c"expires_in".as_ptr()),
-            interval: json_uint_or_zero(object, c"interval".as_ptr()),
-        });
-        if code.interval == 0 {
-            code.interval = 5;
+        let token =
+            parse_token_response(br#"{"access_token":"token","refresh_token":null}"#).unwrap();
+        unsafe {
+            assert!((*token).refresh_token.is_null());
+            assert_eq!((*token).expires_in, 0);
+            twitch_auth_token_free(token);
         }
-        g_object_unref(parser as *mut c_void);
-        Box::into_raw(code)
     }
-}
 
-pub(super) unsafe fn parse_token_response(
-    json: *const c_char,
-    error: *mut *mut GError,
-) -> *mut TwitchAuthToken {
-    unsafe {
-        let parser = json_parser_new();
-        let object = parse_json_object(parser, json, error);
-        if object.is_null() {
-            g_object_unref(parser as *mut c_void);
-            return ptr::null_mut();
+    #[test]
+    fn invalid_auth_responses_return_errors() {
+        for json in [
+            "{",
+            "[]",
+            "{}",
+            r#"{"access_token":false}"#,
+            r#"{"access_token":""}"#,
+            r#"{"access_token":"\u0000hidden"}"#,
+        ] {
+            assert!(parse_token_response(json.as_bytes()).is_err());
         }
+        assert!(parse_device_code_response(br#"{"device_code":"d","user_code":null}"#).is_err());
+    }
 
-        let access_token = json_string_or_null(object, c"access_token".as_ptr());
-        if access_token.is_null() || *access_token == 0 {
-            g_set_error(
-                error,
-                g_io_error_quark(),
-                G_IO_ERROR_FAILED,
-                c"Twitch did not return an access token".as_ptr(),
-            );
-            g_object_unref(parser as *mut c_void);
-            return ptr::null_mut();
+    #[test]
+    fn auth_errors_prefer_message_then_error_name() {
+        for (json, expected) in [
+            (r#"{"message":"Denied","error":"access_denied"}"#, "Denied"),
+            (
+                r#"{"message":"","error":"authorization_pending"}"#,
+                "authorization_pending",
+            ),
+            ("{", ""),
+        ] {
+            assert_eq!(parse_auth_error_message(json.as_bytes()), expected);
         }
-
-        let token = Box::new(TwitchAuthToken {
-            access_token: g_strdup(access_token),
-            refresh_token: g_strdup(json_string_or_null(object, c"refresh_token".as_ptr())),
-            expires_in: json_uint_or_zero(object, c"expires_in".as_ptr()),
-        });
-        g_object_unref(parser as *mut c_void);
-        Box::into_raw(token)
     }
 }
