@@ -27,6 +27,7 @@ const PANEL_EXTRA_VERTICAL_SPACE: c_int = 36;
 const LIVE_CHANNELS_CACHE_SECONDS: i64 = 10;
 const SEARCH_DEBOUNCE_MS: c_uint = 300;
 const PREVIEW_CARD_BUILD_BATCH_SIZE: c_uint = 2;
+const PREVIEW_CARD_BUILD_INTERVAL_MS: c_uint = 8;
 const PANEL_MIN_WIDTH: c_int = 430;
 const PANEL_MAX_WIDTH: c_int = 1300;
 const PANEL_MAX_COLUMNS: c_uint = 4;
@@ -67,7 +68,6 @@ const GDK_COLORSPACE_RGB: c_int = 0;
 const GDK_INTERP_BILINEAR: c_int = 2;
 const GDK_MEMORY_R8G8B8A8: c_int = 5;
 const G_PRIORITY_DEFAULT: c_int = 0;
-const G_PRIORITY_DEFAULT_IDLE: c_int = 200;
 const PANGO_ELLIPSIZE_END: c_int = 3;
 const PLAYER_WINDOW_ICON_CLOSE: c_int = 2;
 
@@ -87,6 +87,8 @@ pub struct ChannelSwitcherOverlay {
     preview_width: c_int,
     preview_height: c_int,
     preview_card_build_source: c_uint,
+    preview_card_next_index: c_uint,
+    preview_card_visible_count: c_uint,
     image_cache: *mut GHashTable,
     image_waiters: *mut GHashTable,
     cached_channels_key: *mut c_char,
@@ -285,7 +287,6 @@ type GClosureNotify = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type GSourceFunc = unsafe extern "C" fn(*mut c_void) -> c_int;
 type GTaskThreadFunc =
     unsafe extern "C" fn(*mut GTask, *mut c_void, *mut c_void, *mut GCancellable);
-type GType = usize;
 pub type ChannelSwitcherActivateCallback =
     Option<unsafe extern "C" fn(*const AppSettingsChannel, *mut c_void)>;
 pub type ChannelSwitcherSettingsCallback = Option<unsafe extern "C" fn(*mut c_void)>;
@@ -333,6 +334,7 @@ unsafe extern "C" {
     fn g_hash_table_destroy(hash_table: *mut GHashTable);
     fn g_hash_table_remove(hash_table: *mut GHashTable, key: *const c_void) -> c_int;
     fn g_hash_table_remove_all(hash_table: *mut GHashTable);
+    #[cfg(test)]
     fn g_idle_add_full(
         priority: c_int,
         function: Option<GSourceFunc>,
@@ -374,7 +376,6 @@ unsafe extern "C" {
         destroy_data: Option<GClosureNotify>,
         connect_flags: c_int,
     ) -> usize;
-    fn g_signal_emit_by_name(instance: *mut c_void, detailed_signal: *const c_char, ...);
     fn g_source_remove(tag: c_uint) -> c_int;
     fn g_str_equal(v1: *const c_void, v2: *const c_void) -> c_int;
     fn g_str_hash(v: *const c_void) -> c_uint;
@@ -408,7 +409,6 @@ unsafe extern "C" {
         task_data: *mut c_void,
         task_data_destroy: Option<GDestroyNotify>,
     );
-    fn g_type_check_instance_is_a(instance: *mut GTypeInstance, iface_type: GType) -> c_int;
     fn g_utf8_casefold(str: *const c_char, len: isize) -> *mut c_char;
 
     fn gdk_display_get_default() -> *mut GdkDisplay;
@@ -453,7 +453,6 @@ unsafe extern "C" {
 
     fn gtk_box_append(box_: *mut GtkBox, child: *mut GtkWidget);
     fn gtk_box_new(orientation: c_int, spacing: c_int) -> *mut GtkWidget;
-    fn gtk_button_get_type() -> GType;
     fn gtk_button_new() -> *mut GtkWidget;
     fn gtk_button_set_child(button: *mut GtkButton, child: *mut GtkWidget);
     fn gtk_css_provider_load_from_string(css_provider: *mut GtkCssProvider, string: *const c_char);
@@ -684,16 +683,14 @@ unsafe fn connect_switcher_signal(
     }
 }
 
-unsafe fn add_switcher_idle(
-    function: Option<GSourceFunc>,
-    switcher: *mut ChannelSwitcherOverlay,
-) -> c_uint {
+unsafe fn queue_preview_card_batch(switcher: *mut ChannelSwitcherOverlay) -> c_uint {
     unsafe {
-        g_idle_add_full(
-            G_PRIORITY_DEFAULT_IDLE,
-            function,
-            channel_switcher_overlay_ref(switcher) as *mut c_void,
-            Some(channel_switcher_source_data_free),
+        // Idle sources can starve behind continuous video redraws. A short timer
+        // makes bounded progress and yields between batches for GTK to lay out/paint.
+        add_switcher_timeout(
+            PREVIEW_CARD_BUILD_INTERVAL_MS,
+            Some(build_preview_card_batch),
+            switcher,
         )
     }
 }
@@ -951,6 +948,8 @@ unsafe fn clear_preview_cards(switcher: *mut ChannelSwitcherOverlay) {
             g_ptr_array_set_size((*switcher).preview_cards, 0);
         }
         (*switcher).preview_card_columns = 0;
+        (*switcher).preview_card_next_index = 0;
+        (*switcher).preview_card_visible_count = 0;
         (*switcher).preview_card_width = 0;
         (*switcher).preview_width = 0;
         (*switcher).preview_height = 0;
@@ -1549,6 +1548,7 @@ unsafe extern "C" fn on_channel_button_clicked(button: *mut GtkButton, user_data
 unsafe fn activate_dynamic_channel(
     switcher: *mut ChannelSwitcherOverlay,
     channel_name: *const c_char,
+    channel_label: *const c_char,
 ) {
     unsafe {
         if switcher_is_closing(switcher)
@@ -1569,7 +1569,11 @@ unsafe fn activate_dynamic_channel(
 
         let dynamic_channel = AppSettingsChannel {
             channel: channel_name as *mut c_char,
-            label: channel_name as *mut c_char,
+            label: if is_nonempty(channel_label) {
+                channel_label as *mut c_char
+            } else {
+                channel_name as *mut c_char
+            },
             url: g_strdup_printf(c"https://www.twitch.tv/%s".as_ptr(), channel_name),
         };
 
@@ -1589,7 +1593,7 @@ unsafe fn open_direct_channel(switcher: *mut ChannelSwitcherOverlay) {
 
         let text = gtk_editable_get_text((*switcher).direct_channel_entry as *mut GtkEditable);
         let channel = extract_twitch_channel_name(text);
-        activate_dynamic_channel(switcher, channel);
+        activate_dynamic_channel(switcher, channel, channel);
         g_free(channel as *mut c_void);
     }
 }
@@ -1858,36 +1862,63 @@ unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
             return G_SOURCE_REMOVE;
         }
 
-        let start = (*(*switcher).preview_cards).len;
+        if gtk_widget_get_visible((*switcher).panel) == 0 {
+            (*switcher).preview_card_build_source = 0;
+            return G_SOURCE_REMOVE;
+        }
+
+        let start = (*switcher).preview_card_next_index;
         let end = (*(*switcher).previews)
             .len
             .min(start.saturating_add(PREVIEW_CARD_BUILD_BATCH_SIZE));
+        if start == 0 {
+            clear_grid(switcher);
+        }
+        let filter = current_search_filter(switcher);
         for i in start..end {
             let preview = ptr_array_index((*switcher).previews, i);
-            let card = create_channel_card(
-                switcher,
-                preview,
-                (*switcher).preview_card_width,
-                (*switcher).preview_width,
-                (*switcher).preview_height,
-            );
-            g_ptr_array_add(
-                (*switcher).preview_cards,
-                g_object_ref_sink(card as *mut c_void),
-            );
+            if i >= (*(*switcher).preview_cards).len {
+                let card = create_channel_card(
+                    switcher,
+                    preview,
+                    (*switcher).preview_card_width,
+                    (*switcher).preview_width,
+                    (*switcher).preview_height,
+                );
+                g_ptr_array_add(
+                    (*switcher).preview_cards,
+                    g_object_ref_sink(card as *mut c_void),
+                );
+            }
+            if preview_matches_filter(preview, filter) {
+                let visible_count = (*switcher).preview_card_visible_count;
+                let columns = (*switcher).preview_card_columns;
+                gtk_grid_attach(
+                    (*switcher).grid as *mut GtkGrid,
+                    ptr_array_index((*switcher).preview_cards, i),
+                    (visible_count % columns) as c_int,
+                    (visible_count / columns) as c_int,
+                    1,
+                    1,
+                );
+                (*switcher).preview_card_visible_count += 1;
+            }
         }
+        (*switcher).preview_card_next_index = end;
 
-        if (*(*switcher).preview_cards).len < (*(*switcher).previews).len {
+        if end < (*(*switcher).previews).len {
             return G_SOURCE_CONTINUE;
         }
 
         (*switcher).preview_card_build_source = 0;
-        render_live_channels(switcher);
+        if (*switcher).preview_card_visible_count == 0 {
+            show_status(switcher, c"No live channels match the filter".as_ptr());
+        }
         G_SOURCE_REMOVE
     }
 }
 
-unsafe fn ensure_preview_cards(switcher: *mut ChannelSwitcherOverlay) -> bool {
+unsafe fn prepare_preview_card_layout(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
         let mut columns = 1;
         let mut card_width = CARD_WIDTH;
@@ -1907,90 +1938,45 @@ unsafe fn ensure_preview_cards(switcher: *mut ChannelSwitcherOverlay) -> bool {
                 g_ptr_array_new_with_free_func(Some(g_object_unref_destroy));
         }
 
-        if (*switcher).previews.is_null() {
-            return true;
-        }
-
         let layout_matches = (*switcher).preview_card_columns == columns
             && (*switcher).preview_card_width == card_width
             && (*switcher).preview_width == preview_width
             && (*switcher).preview_height == preview_height;
-        let card_count = (*(*switcher).preview_cards).len;
-        let preview_count = (*(*switcher).previews).len;
-        if layout_matches && card_count <= preview_count {
-            if card_count == preview_count {
-                return true;
-            }
-            if (*switcher).preview_card_build_source == 0 {
-                (*switcher).preview_card_build_source =
-                    add_switcher_idle(Some(build_preview_card_batch), switcher);
-            }
-            return false;
+        if !layout_matches {
+            clear_preview_cards(switcher);
+            (*switcher).preview_card_columns = columns;
+            (*switcher).preview_card_width = card_width;
+            (*switcher).preview_width = preview_width;
+            (*switcher).preview_height = preview_height;
         }
+    }
+}
 
-        clear_preview_cards(switcher);
-        (*switcher).preview_card_columns = columns;
-        (*switcher).preview_card_width = card_width;
-        (*switcher).preview_width = preview_width;
-        (*switcher).preview_height = preview_height;
-        if preview_count == 0 {
-            return true;
+unsafe fn current_search_filter(switcher: *mut ChannelSwitcherOverlay) -> *const c_char {
+    unsafe {
+        if !(*switcher).search_entry.is_null() {
+            gtk_editable_get_text((*switcher).search_entry as *mut GtkEditable)
+        } else {
+            c"".as_ptr()
         }
-
-        (*switcher).preview_card_build_source =
-            add_switcher_idle(Some(build_preview_card_batch), switcher);
-        false
     }
 }
 
 unsafe fn render_live_channels(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
+        remove_source_if_active(&mut (*switcher).preview_card_build_source);
         if (*switcher).previews.is_null() || (*(*switcher).previews).len == 0 {
             show_status(switcher, c"No configured channels are live".as_ptr());
             return;
         }
 
-        if !ensure_preview_cards(switcher) {
-            show_status(switcher, c"Preparing live channels".as_ptr());
-            return;
-        }
-
-        let filter = if !(*switcher).search_entry.is_null() {
-            gtk_editable_get_text((*switcher).search_entry as *mut GtkEditable)
-        } else {
-            c"".as_ptr()
-        };
-        let mut visible_count = 0;
-
-        clear_grid(switcher);
-        let columns = if (*switcher).preview_card_columns > 0 {
-            (*switcher).preview_card_columns
-        } else {
-            get_grid_columns(switcher)
-        };
-        let preview_count = (*(*switcher).previews)
-            .len
-            .min((*(*switcher).preview_cards).len);
-        for i in 0..preview_count {
-            let preview = ptr_array_index((*switcher).previews, i);
-            if !preview_matches_filter(preview, filter) {
-                continue;
-            }
-
-            gtk_grid_attach(
-                (*switcher).grid as *mut GtkGrid,
-                ptr_array_index((*switcher).preview_cards, i),
-                (visible_count % columns) as c_int,
-                (visible_count / columns) as c_int,
-                1,
-                1,
-            );
-            visible_count += 1;
-        }
-
-        if visible_count == 0 {
-            show_status(switcher, c"No live channels match the filter".as_ptr());
-        }
+        prepare_preview_card_layout(switcher);
+        (*switcher).preview_card_next_index = 0;
+        (*switcher).preview_card_visible_count = 0;
+        show_status(switcher, c"Preparing live channels".as_ptr());
+        // Build AND attach cards in batches, including cached cards on reopen/filter.
+        // Attaching everything at the end creates one large layout/paint stall.
+        (*switcher).preview_card_build_source = queue_preview_card_batch(switcher);
     }
 }
 
@@ -2023,25 +2009,25 @@ unsafe extern "C" fn on_search_changed(_editable: *mut GtkEditable, user_data: *
             return;
         }
 
+        remove_source_if_active(&mut (*switcher).preview_card_build_source);
         (*switcher).search_debounce_source =
             add_switcher_timeout(SEARCH_DEBOUNCE_MS, Some(apply_search_filter), switcher);
     }
 }
 
-unsafe fn activate_first_visible_channel(switcher: *mut ChannelSwitcherOverlay) {
+unsafe fn activate_first_matching_channel(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
-        if switcher.is_null() || (*switcher).grid.is_null() {
+        if switcher.is_null() || (*switcher).previews.is_null() {
             return;
         }
 
-        let button_type = gtk_button_get_type();
-        let mut child = gtk_widget_get_first_child((*switcher).grid);
-        while !child.is_null() {
-            if g_type_check_instance_is_a(child as *mut GTypeInstance, button_type) != 0 {
-                g_signal_emit_by_name(child as *mut c_void, c"clicked".as_ptr());
+        let filter = current_search_filter(switcher);
+        for i in 0..(*(*switcher).previews).len {
+            let preview = ptr_array_index((*switcher).previews, i);
+            if preview_matches_filter(preview, filter) {
+                activate_dynamic_channel(switcher, (*preview).channel, (*preview).display_name);
                 return;
             }
-            child = gtk_widget_get_next_sibling(child);
         }
     }
 }
@@ -2055,7 +2041,7 @@ unsafe extern "C" fn on_search_activate(_entry: *mut GtkSearchEntry, user_data: 
 
         remove_source_if_active(&mut (*switcher).search_debounce_source);
         render_live_channels(switcher);
-        activate_first_visible_channel(switcher);
+        activate_first_matching_channel(switcher);
     }
 }
 
@@ -2339,6 +2325,8 @@ pub unsafe fn channel_switcher_overlay_new<O>(
             preview_width: 0,
             preview_height: 0,
             preview_card_build_source: 0,
+            preview_card_next_index: 0,
+            preview_card_visible_count: 0,
             image_cache: g_hash_table_new_full(
                 Some(g_str_hash),
                 Some(g_str_equal),
@@ -2574,6 +2562,7 @@ pub unsafe fn channel_switcher_overlay_show_at(
         }
 
         bump_generation(switcher);
+        remove_source_if_active(&mut (*switcher).preview_card_build_source);
         remove_source_if_active(&mut (*switcher).search_debounce_source);
         if !(*switcher).search_entry.is_null() {
             gtk_editable_set_text((*switcher).search_entry as *mut GtkEditable, c"".as_ptr());
@@ -2620,6 +2609,7 @@ pub unsafe fn channel_switcher_overlay_hide(switcher: *mut ChannelSwitcherOverla
         }
 
         bump_generation(switcher);
+        remove_source_if_active(&mut (*switcher).preview_card_build_source);
         remove_source_if_active(&mut (*switcher).search_debounce_source);
         if !(*switcher).cancel.is_null() {
             g_cancellable_cancel((*switcher).cancel);
@@ -2699,6 +2689,16 @@ pub unsafe fn channel_switcher_overlay_free(switcher: *mut ChannelSwitcherOverla
 mod tests {
     use super::*;
 
+    static MAIN_CONTEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    unsafe extern "C" {
+        fn g_main_context_iteration(context: *mut c_void, may_block: c_int) -> c_int;
+    }
+
+    unsafe extern "C" fn keep_redraw_ready(_data: *mut c_void) -> c_int {
+        G_SOURCE_CONTINUE
+    }
+
     unsafe fn empty_switcher() -> *mut ChannelSwitcherOverlay {
         Box::into_raw(Box::new(ChannelSwitcherOverlay {
             overlay: ptr::null_mut(),
@@ -2716,6 +2716,8 @@ mod tests {
             preview_width: 0,
             preview_height: 0,
             preview_card_build_source: 0,
+            preview_card_next_index: 0,
+            preview_card_visible_count: 0,
             image_cache: ptr::null_mut(),
             image_waiters: ptr::null_mut(),
             cached_channels_key: ptr::null_mut(),
@@ -2744,6 +2746,83 @@ mod tests {
             assert_eq!((*pending).ref_count.load(Ordering::Acquire), 1);
 
             channel_switcher_overlay_unref(pending);
+        }
+    }
+
+    #[test]
+    fn preview_batches_progress_while_redraw_is_ready() {
+        let _guard = MAIN_CONTEXT_TEST_LOCK.lock().unwrap();
+        unsafe {
+            let switcher = empty_switcher();
+            // GDK redraws run at priority 120. Keep one ready to simulate busy playback.
+            let redraw = g_idle_add_full(120, Some(keep_redraw_ready), ptr::null_mut(), None);
+            (*switcher).preview_card_build_source = queue_preview_card_batch(switcher);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+            while (*switcher).preview_card_build_source != 0 && std::time::Instant::now() < deadline
+            {
+                g_main_context_iteration(ptr::null_mut(), FALSE);
+            }
+            // The empty switcher makes the real batch callback stop before touching GTK.
+            let completed = (*switcher).preview_card_build_source == 0;
+            g_source_remove(redraw);
+            channel_switcher_overlay_free(switcher);
+            assert!(completed, "preview work was starved by continuous redraws");
+        }
+    }
+
+    #[test]
+    fn hiding_cancels_pending_preview_batches() {
+        let _guard = MAIN_CONTEXT_TEST_LOCK.lock().unwrap();
+        unsafe {
+            let switcher = empty_switcher();
+            (*switcher).preview_card_build_source = queue_preview_card_batch(switcher);
+            assert_eq!((*switcher).ref_count.load(Ordering::Acquire), 2);
+
+            channel_switcher_overlay_hide(switcher);
+
+            assert_eq!((*switcher).preview_card_build_source, 0);
+            assert_eq!((*switcher).ref_count.load(Ordering::Acquire), 1);
+            channel_switcher_overlay_free(switcher);
+        }
+    }
+
+    #[test]
+    fn search_activation_works_before_cards_are_built() {
+        unsafe extern "C" fn activated(channel: *const AppSettingsChannel, data: *mut c_void) {
+            unsafe {
+                let selected = &mut *(data as *mut Option<(Vec<u8>, Vec<u8>)>);
+                *selected = Some((
+                    CStr::from_ptr((*channel).channel).to_bytes().to_vec(),
+                    CStr::from_ptr((*channel).label).to_bytes().to_vec(),
+                ));
+            }
+        }
+
+        unsafe {
+            let switcher = empty_switcher();
+            let mut selected: Option<(Vec<u8>, Vec<u8>)> = None;
+            let mut preview = TwitchStreamPreview {
+                channel: c"test_channel".as_ptr() as *mut c_char,
+                display_name: c"Test Channel".as_ptr() as *mut c_char,
+                title: ptr::null_mut(),
+                avatar_url: ptr::null_mut(),
+                preview_url: ptr::null_mut(),
+                started_at: ptr::null_mut(),
+                category_name: ptr::null_mut(),
+                viewer_count: 1,
+            };
+            (*switcher).previews = g_ptr_array_new_with_free_func(None);
+            g_ptr_array_add((*switcher).previews, &mut preview as *mut _ as *mut c_void);
+            (*switcher).activate_callback = Some(activated);
+            (*switcher).user_data = &mut selected as *mut _ as *mut c_void;
+
+            activate_first_matching_channel(switcher);
+
+            assert_eq!(
+                selected,
+                Some((b"test_channel".to_vec(), b"Test Channel".to_vec()))
+            );
+            channel_switcher_overlay_free(switcher);
         }
     }
 }
