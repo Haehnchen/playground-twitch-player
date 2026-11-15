@@ -10,12 +10,16 @@ use super::ffi::{
 };
 use super::layout::preferred_single_tile;
 use super::layout::request_tile_fullscreen_toggle;
-use super::playback::show_tile_channel_switcher;
+use super::playback::{ensure_tile_channel_switcher, show_tile_channel_switcher, tile_has_stream};
 use super::runtime::{is_instance, tile_is_closing};
 use super::{FALSE, PlayerSurface, StreamTile, TRUE};
-use crate::player::channel_switcher_overlay::channel_switcher_overlay_is_visible;
+use crate::player::channel_switcher_overlay::{
+    PREFETCH_RADIUS, channel_switcher_overlay_is_visible, channel_switcher_overlay_leave_center,
+    channel_switcher_overlay_near_center,
+};
 use crate::player::controls::{player_volume_apply_scroll, player_volume_toggle_muted};
 use crate::player::motion::player_motion_tracker_ignore_stationary;
+use gtk4::{glib::translate::from_glib_borrow, prelude::*};
 use std::ffi::{c_double, c_int, c_uint, c_void};
 use std::ptr;
 
@@ -93,6 +97,22 @@ pub(super) unsafe extern "C" fn on_tile_motion(
 
         let state = (*tile).app;
 
+        if !tile_has_stream(tile) {
+            let overlay: gtk4::glib::translate::Borrowed<gtk4::Widget> =
+                from_glib_borrow((*tile).overlay.cast());
+            let distance =
+                (x - overlay.width() as f64 / 2.0).hypot(y - overlay.height() as f64 / 2.0);
+            if distance <= PREFETCH_RADIUS || !(*tile).channel_switcher.is_null() {
+                ensure_tile_channel_switcher(tile);
+                channel_switcher_overlay_near_center(
+                    (*tile).channel_switcher,
+                    (*tile).overlay.cast(),
+                    x,
+                    y,
+                );
+            }
+        }
+
         if player_motion_tracker_ignore_stationary(
             &mut (*state).motion_tracker,
             tile as *mut c_void,
@@ -104,6 +124,18 @@ pub(super) unsafe extern "C" fn on_tile_motion(
         }
 
         show_tile_overlay(tile);
+    }
+}
+
+pub(super) unsafe extern "C" fn on_tile_leave(
+    _controller: *mut GtkEventControllerMotion,
+    user_data: *mut c_void,
+) {
+    unsafe {
+        let tile = user_data as *mut StreamTile;
+        if !tile_is_closing(tile) {
+            channel_switcher_overlay_leave_center((*tile).channel_switcher);
+        }
     }
 }
 

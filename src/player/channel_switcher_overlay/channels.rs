@@ -1,210 +1,262 @@
-//! Live channel queries and caching.
+//! Shared live queries: one request serves every picker in the window.
 
+use super::ChannelSwitcherOverlay;
+use super::cache::{SharedPickerCache, WaitingPicker};
 use super::ffi::*;
-use super::images::clear_image_cache;
-use super::runtime::{G_LOG_DOMAIN, clear_object, log_debug};
+use super::runtime::switcher_is_closing;
 use super::widgets::{clear_preview_cards, render_live_channels, show_status};
-use super::{ChannelSwitcherOverlay, channel_switcher_overlay_ref, channel_switcher_overlay_unref};
+use crate::settings::{AppSettings, app_settings_free, app_settings_ref};
 use crate::twitch::channel_list::{
     twitch_channel_list_fetch_async, twitch_channel_list_fetch_finish,
 };
 use crate::twitch::stream_info::{
-    GAsyncResult, GError, twitch_stream_info_fetch_live_channels_async,
+    GAsyncResult, GError, TwitchStreamPreview, twitch_stream_info_fetch_live_channels_async,
     twitch_stream_info_fetch_live_channels_finish,
 };
-use std::ffi::{c_char, c_int, c_uint, c_void};
-use std::ptr;
-use std::sync::atomic::Ordering;
+use gtk4::{glib::translate::*, prelude::*};
+use std::{
+    ffi::{CString, c_void},
+    ptr,
+};
 
-const LIVE_CHANNELS_CACHE_SECONDS: i64 = 10;
-
-struct LiveFetchCallbackData {
-    switcher: *mut ChannelSwitcherOverlay,
-    generation: c_uint,
+struct FetchRequest {
+    cache: SharedPickerCache,
+    generation: u64,
+    settings: *mut AppSettings,
 }
 
-struct ChannelListFetchCallbackData {
-    switcher: *mut ChannelSwitcherOverlay,
-    generation: c_uint,
-}
-
-unsafe fn live_fetch_callback_data_free(data: *mut LiveFetchCallbackData) {
-    unsafe {
-        if data.is_null() {
-            return;
+impl Drop for FetchRequest {
+    fn drop(&mut self) {
+        unsafe {
+            app_settings_free(self.settings);
         }
-
-        let data = Box::from_raw(data);
-        channel_switcher_overlay_unref(data.switcher);
     }
 }
 
-unsafe fn channel_list_fetch_callback_data_free(data: *mut ChannelListFetchCallbackData) {
+unsafe fn apply_snapshot(switcher: *mut ChannelSwitcherOverlay) -> bool {
     unsafe {
-        if data.is_null() {
-            return;
+        let cache = (*switcher).cache.clone();
+        let live = cache.live.borrow();
+        let Some(previews) = &live.previews else {
+            return false;
+        };
+        if (*switcher).cache_revision != Some(live.revision) {
+            clear_preview_cards(switcher);
+            (*switcher).previews = Some(previews.clone());
+            (*switcher).cache_revision = Some(live.revision);
+            super::radial::reset(switcher);
         }
-
-        let data = Box::from_raw(data);
-        channel_switcher_overlay_unref(data.switcher);
+        drop(live);
+        render_live_channels(switcher);
+        true
     }
 }
 
-// Discard results if the picker closed or a newer request started.
+unsafe fn complete(
+    request: FetchRequest,
+    previews: Option<Vec<TwitchStreamPreview>>,
+    error: Option<String>,
+) {
+    unsafe {
+        let waiters = {
+            let mut live = request.cache.live.borrow_mut();
+            if live.generation != request.generation {
+                return;
+            }
+            live.cancel = None;
+            live.error = error;
+            if let Some(previews) = previews {
+                live.previews = Some(previews);
+                live.cached_at_us = g_get_monotonic_time();
+                live.revision = live.revision.wrapping_add(1);
+            }
+            std::mem::take(&mut live.waiters)
+        };
+        for waiter in waiters {
+            let switcher = waiter.switcher;
+            if switcher_is_closing(switcher) || (*switcher).generation != waiter.generation {
+                continue;
+            }
+            if !apply_snapshot(switcher) {
+                let message = request
+                    .cache
+                    .live
+                    .borrow()
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Live channels could not be loaded".into());
+                let message = CString::new(message)
+                    .unwrap_or_else(|_| c"Live channels could not be loaded".into());
+                show_status(switcher, message.as_ptr());
+            }
+        }
+    }
+}
+
 unsafe extern "C" fn on_live_channels_fetched(
-    _source_object: *mut c_void,
+    _source: *mut c_void,
     result: *mut GAsyncResult,
     user_data: *mut c_void,
 ) {
     unsafe {
-        let data = user_data as *mut LiveFetchCallbackData;
-        let switcher = (*data).switcher;
+        let request = *Box::from_raw(user_data.cast::<FetchRequest>());
         let mut error: *mut GError = ptr::null_mut();
         let previews = twitch_stream_info_fetch_live_channels_finish(result, &mut error);
-
-        if (*switcher).closing.load(Ordering::Acquire)
-            || (*data).generation != (*switcher).generation
-            || (*switcher).panel.is_null()
-        {
-            g_clear_error(&mut error);
-            live_fetch_callback_data_free(data);
-            return;
-        }
-
-        clear_object(&mut (*switcher).cancel);
-
-        if !error.is_null() {
-            if g_error_matches(error, g_io_error_quark(), G_IO_ERROR_CANCELLED) == 0 {
-                g_log(
-                    G_LOG_DOMAIN.as_ptr() as *const c_char,
-                    G_LOG_LEVEL_DEBUG,
-                    c"live channel fetch failed: %s".as_ptr(),
-                    (*error).message,
-                );
-                show_status(switcher, c"Live channels could not be loaded".as_ptr());
-            }
-            g_clear_error(&mut error);
-            live_fetch_callback_data_free(data);
-            return;
-        }
-
-        clear_preview_cards(switcher);
-        (*switcher).previews = previews;
-        (*switcher).cached_at_us = g_get_monotonic_time();
-        render_live_channels(switcher);
-
-        live_fetch_callback_data_free(data);
-    }
-}
-
-unsafe fn has_fresh_cache(switcher: *mut ChannelSwitcherOverlay, channels_key: &str) -> bool {
-    unsafe {
-        let now_us = g_get_monotonic_time();
-
-        (*switcher).previews.is_some()
-            && (*switcher).cached_channels_key.as_deref() == Some(channels_key)
-            && now_us - (*switcher).cached_at_us < LIVE_CHANNELS_CACHE_SECONDS * G_USEC_PER_SEC
-    }
-}
-
-unsafe fn start_live_channel_fetch(
-    switcher: *mut ChannelSwitcherOverlay,
-    channels: &[String],
-    allow_cache: c_int,
-) {
-    unsafe {
-        let channels_key = channels.join("\n");
-
-        if channels.is_empty() {
-            (*switcher).previews = None;
-            clear_preview_cards(switcher);
-            clear_image_cache(switcher);
-            (*switcher).cached_channels_key = None;
-            (*switcher).cached_at_us = 0;
-            show_status(switcher, c"No channels configured".as_ptr());
-            return;
-        }
-
-        if allow_cache != 0 && has_fresh_cache(switcher, &channels_key) {
-            render_live_channels(switcher);
-            return;
-        }
-
-        (*switcher).previews = None;
-        clear_preview_cards(switcher);
-        clear_image_cache(switcher);
-        (*switcher).cached_channels_key = Some(channels_key);
-        (*switcher).cached_at_us = 0;
-
-        (*switcher).cancel = g_cancellable_new();
-        let data = Box::into_raw(Box::new(LiveFetchCallbackData {
-            switcher: channel_switcher_overlay_ref(switcher),
-            generation: (*switcher).generation,
-        }));
-        twitch_stream_info_fetch_live_channels_async(
-            channels,
-            (*switcher).cancel,
-            Some(on_live_channels_fetched),
-            data as *mut c_void,
-        );
+        let error = if error.is_null() {
+            None
+        } else {
+            let error: gtk4::glib::Error = from_glib_full(error);
+            Some(error.to_string())
+        };
+        complete(request, previews, error);
     }
 }
 
 unsafe extern "C" fn on_channel_list_fetched(
-    _source_object: *mut c_void,
+    _source: *mut c_void,
     result: *mut GAsyncResult,
     user_data: *mut c_void,
 ) {
     unsafe {
-        let data = user_data as *mut ChannelListFetchCallbackData;
-        let switcher = (*data).switcher;
+        let request = Box::from_raw(user_data.cast::<FetchRequest>());
         let mut error: *mut GError = ptr::null_mut();
         let channels = twitch_channel_list_fetch_finish(result, &mut error);
-
-        if (*switcher).closing.load(Ordering::Acquire)
-            || (*data).generation != (*switcher).generation
-            || (*switcher).panel.is_null()
-        {
-            g_clear_error(&mut error);
-            channel_list_fetch_callback_data_free(data);
-            return;
-        }
-
-        clear_object(&mut (*switcher).cancel);
-
         if !error.is_null() {
-            if g_error_matches(error, g_io_error_quark(), G_IO_ERROR_CANCELLED) == 0 {
-                log_debug(
-                    c"channel list fetch failed: %s%s".as_ptr(),
-                    (*error).message,
-                    c"".as_ptr(),
-                );
-                show_status(switcher, (*error).message);
-            }
-            g_clear_error(&mut error);
-            channel_list_fetch_callback_data_free(data);
+            let error: gtk4::glib::Error = from_glib_full(error);
+            complete(*request, None, Some(error.to_string()));
             return;
         }
-
-        start_live_channel_fetch(switcher, channels.as_deref().unwrap_or_default(), TRUE);
-        channel_list_fetch_callback_data_free(data);
+        let cancel = {
+            let live = request.cache.live.borrow();
+            if live.generation != request.generation {
+                return;
+            }
+            live.cancel.clone().unwrap()
+        };
+        let channels = channels.unwrap_or_default();
+        if channels.is_empty() {
+            complete(*request, Some(Vec::new()), None);
+            return;
+        }
+        twitch_stream_info_fetch_live_channels_async(
+            &channels,
+            cancel.as_ptr().cast(),
+            Some(on_live_channels_fetched),
+            Box::into_raw(request).cast(),
+        );
     }
 }
 
-// Fetch configured and followed channels without blocking GTK.
 pub(super) unsafe fn fetch_channel_list(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
-        clear_object(&mut (*switcher).cancel);
-        (*switcher).cancel = g_cancellable_new();
-        let data = Box::into_raw(Box::new(ChannelListFetchCallbackData {
-            switcher: channel_switcher_overlay_ref(switcher),
-            generation: (*switcher).generation,
-        }));
+        if switcher_is_closing(switcher) || (*switcher).settings.is_null() {
+            return;
+        }
+        let have_snapshot = apply_snapshot(switcher);
+        let cache = (*switcher).cache.clone();
+        let mut live = cache.live.borrow_mut();
+        let start = live.should_fetch(g_get_monotonic_time());
+        if !have_snapshot {
+            let message = live.error.as_deref().unwrap_or("Loading live channels");
+            let message = CString::new(message)
+                .unwrap_or_else(|_| c"Live channels could not be loaded".into());
+            show_status(switcher, message.as_ptr());
+        }
+        if !start && live.cancel.is_none() {
+            return;
+        }
+        if !live.waiters.iter().any(|waiter| {
+            waiter.switcher == switcher && waiter.generation == (*switcher).generation
+        }) {
+            live.waiters.push(WaitingPicker::new(switcher));
+        }
+        if !start {
+            return;
+        }
+        live.begin(g_get_monotonic_time());
+        let cancel = live.cancel.clone().unwrap();
+        let generation = live.generation;
+        drop(live);
+        let request = Box::new(FetchRequest {
+            cache,
+            generation,
+            settings: app_settings_ref((*switcher).settings),
+        });
         twitch_channel_list_fetch_async(
-            (*switcher).settings,
-            (*switcher).cancel,
+            request.settings,
+            cancel.as_ptr().cast(),
             Some(on_channel_list_fetched),
-            data as *mut c_void,
+            Box::into_raw(request).cast(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::player::channel_switcher_overlay::channel_switcher_overlay_free;
+
+    fn picker(cache: &SharedPickerCache) -> *mut ChannelSwitcherOverlay {
+        let mut picker = ChannelSwitcherOverlay::new(
+            ptr::null_mut(),
+            None,
+            ptr::null_mut(),
+            None,
+            ptr::null_mut(),
+        );
+        picker.cache = cache.clone();
+        Box::into_raw(Box::new(picker))
+    }
+
+    #[test]
+    fn closing_one_tile_does_not_cancel_the_shared_result_for_another_tile() {
+        unsafe {
+            let cache = SharedPickerCache::default();
+            let first = picker(&cache);
+            let second = picker(&cache);
+            cache.live.borrow_mut().begin(0);
+            cache.live.borrow_mut().waiters =
+                vec![WaitingPicker::new(first), WaitingPicker::new(second)];
+            channel_switcher_overlay_free(first);
+            assert!(!cache.live.borrow().cancel.as_ref().unwrap().is_cancelled());
+
+            complete(
+                FetchRequest {
+                    cache: cache.clone(),
+                    generation: 0,
+                    settings: ptr::null_mut(),
+                },
+                Some(Vec::new()),
+                None,
+            );
+
+            assert!((*second).previews.is_some());
+            assert!(cache.live.borrow().waiters.is_empty());
+            let third = picker(&cache);
+            assert!(apply_snapshot(third));
+            assert!((*third).previews.is_some());
+            channel_switcher_overlay_free(second);
+            channel_switcher_overlay_free(third);
+        }
+    }
+
+    #[test]
+    fn an_old_request_cannot_repopulate_the_cache_after_settings_change() {
+        unsafe {
+            let cache = SharedPickerCache::default();
+            cache.live.borrow_mut().begin(0);
+            cache.invalidate();
+            complete(
+                FetchRequest {
+                    cache: cache.clone(),
+                    generation: 0,
+                    settings: ptr::null_mut(),
+                },
+                Some(Vec::new()),
+                None,
+            );
+            assert!(cache.live.borrow().previews.is_none());
+            assert!(cache.live.borrow().should_fetch(1));
+        }
     }
 }

@@ -7,6 +7,7 @@ use super::{
 };
 use crate::settings::AppSettingsChannel;
 use crate::twitch::stream_info::TwitchStreamPreview;
+use gtk4::prelude::*;
 use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
@@ -119,6 +120,29 @@ fn hiding_cancels_pending_preview_batches() {
         assert!((*switcher).image_cancel.is_none());
         assert_eq!((*switcher).preview_card_build_source, 0);
         assert_eq!((*switcher).ref_count.load(Ordering::Acquire), 1);
+        channel_switcher_overlay_free(switcher);
+    }
+}
+
+#[test]
+fn hiding_retains_completed_avatars_for_both_picker_modes() {
+    unsafe {
+        let switcher = empty_switcher();
+        let pixels = gtk4::glib::Bytes::from_static(&[255, 0, 0, 255]);
+        let texture: gtk4::gdk::Texture =
+            gtk4::gdk::MemoryTexture::new(1, 1, gtk4::gdk::MemoryFormat::R8g8b8a8, &pixels, 4)
+                .upcast();
+        let avatar = (String::from("avatar"), 42, 42);
+        let preview = (String::from("preview"), 320, 180);
+        (*switcher)
+            .image_cache
+            .insert(avatar.clone(), texture.clone());
+        (*switcher).image_cache.insert(preview.clone(), texture);
+
+        channel_switcher_overlay_hide(switcher);
+
+        assert!((*switcher).image_cache.contains_key(&avatar));
+        assert!(!(*switcher).image_cache.contains_key(&preview));
         channel_switcher_overlay_free(switcher);
     }
 }

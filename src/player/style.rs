@@ -26,8 +26,8 @@ const OVERLAY_CSS: &CStr = cr#"
   border-color: transparent;
   outline-color: transparent;
   box-shadow: none;
-  min-width: 52px;
-  min-height: 52px;
+  min-width: 80px;
+  min-height: 80px;
   padding: 0;
   opacity: 0.50;
 }

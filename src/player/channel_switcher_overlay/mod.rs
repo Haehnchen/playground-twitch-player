@@ -1,12 +1,16 @@
 //! Channel picker state and public API.
 
 mod actions;
+mod avatar;
+mod cache;
 mod channels;
 mod ffi;
 mod images;
 mod layout;
+mod radial;
 mod runtime;
 mod style;
+mod tooltip;
 mod widgets;
 
 #[cfg(test)]
@@ -22,16 +26,21 @@ pub use self::ffi::{
 };
 use self::images::clear_image_cache;
 use self::layout::position_panel;
-use self::runtime::{bump_generation, clear_object, remove_source_if_active, remove_weak_pointer};
+use self::runtime::{bump_generation, remove_source_if_active, remove_weak_pointer};
 use self::style::install_css;
 use self::widgets::build_widgets;
-use self::widgets::{clear_preview_cards, show_status};
+use self::widgets::clear_preview_cards;
 use crate::settings::{AppSettings, AppSettingsChannel};
-use crate::twitch::stream_info::{GCancellable, TwitchStreamPreview};
+use crate::twitch::stream_info::TwitchStreamPreview;
 use std::collections::HashMap;
 use std::ffi::{c_double, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+pub(crate) use cache::SharedPickerCache;
+pub(crate) use radial::{
+    PREFETCH_RADIUS, channel_switcher_overlay_leave_center, channel_switcher_overlay_near_center,
+};
 
 pub struct ChannelSwitcherOverlay {
     overlay: *mut GtkOverlay,
@@ -41,6 +50,9 @@ pub struct ChannelSwitcherOverlay {
     scroller: *mut GtkWidget,
     search_entry: *mut GtkWidget,
     direct_channel_entry: *mut GtkWidget,
+    radial: Option<radial::RadialPicker>,
+    cache: SharedPickerCache,
+    cache_revision: Option<u64>,
 
     settings: *mut AppSettings,
 
@@ -58,9 +70,6 @@ pub struct ChannelSwitcherOverlay {
     image_waiters: HashMap<images::ImageKey, images::ImageWaiters>,
     image_cancel: Option<gtk4::gio::Cancellable>,
 
-    cached_channels_key: Option<String>,
-    cached_at_us: i64,
-    cancel: *mut GCancellable,
     search_debounce_source: c_uint,
     generation: c_uint,
 
@@ -94,6 +103,9 @@ impl ChannelSwitcherOverlay {
             scroller: ptr::null_mut(),
             search_entry: ptr::null_mut(),
             direct_channel_entry: ptr::null_mut(),
+            radial: None,
+            cache: SharedPickerCache::default(),
+            cache_revision: None,
 
             settings,
 
@@ -111,9 +123,6 @@ impl ChannelSwitcherOverlay {
             image_waiters: HashMap::new(),
             image_cancel: None,
 
-            cached_channels_key: None,
-            cached_at_us: 0,
-            cancel: ptr::null_mut(),
             search_debounce_source: 0,
             generation: 0,
 
@@ -146,10 +155,6 @@ unsafe fn channel_switcher_overlay_unref(switcher: *mut ChannelSwitcherOverlay) 
             return;
         }
 
-        if !(*switcher).cancel.is_null() {
-            g_cancellable_cancel((*switcher).cancel);
-            clear_object(&mut (*switcher).cancel);
-        }
         (*switcher).previews = None;
 
         remove_weak_pointer(&mut (*switcher).direct_channel_entry);
@@ -198,6 +203,16 @@ pub unsafe fn channel_switcher_overlay_new<O>(
     }
 }
 
+/// Attach the window's cache before the picker's first request (GTK main thread).
+pub(crate) unsafe fn channel_switcher_overlay_use_cache(
+    switcher: *mut ChannelSwitcherOverlay,
+    cache: SharedPickerCache,
+) {
+    unsafe {
+        (*switcher).cache = cache;
+    }
+}
+
 /// # Safety
 /// - GTK initialized; GTK main thread.
 /// - `switcher`: null or live instance.
@@ -212,10 +227,12 @@ pub unsafe fn channel_switcher_overlay_set_settings(
         }
 
         (*switcher).settings = settings;
+        bump_generation(switcher);
+        (*switcher).cache.invalidate();
+        (*switcher).cache_revision = None;
+        radial::reset(switcher);
         (*switcher).previews = None;
         clear_preview_cards(switcher);
-        (*switcher).cached_channels_key = None;
-        (*switcher).cached_at_us = 0;
     }
 }
 
@@ -239,6 +256,7 @@ pub unsafe fn channel_switcher_overlay_show_at(
         }
 
         bump_generation(switcher);
+        radial::hide(switcher);
         remove_source_if_active(&mut (*switcher).preview_card_build_source);
         remove_source_if_active(&mut (*switcher).search_debounce_source);
         if !(*switcher).search_entry.is_null() {
@@ -259,8 +277,6 @@ pub unsafe fn channel_switcher_overlay_show_at(
         if !(*switcher).search_entry.is_null() {
             gtk_widget_grab_focus((*switcher).search_entry);
         }
-        show_status(switcher, c"Loading live channels".as_ptr());
-
         fetch_channel_list(switcher);
     }
 }
@@ -279,10 +295,6 @@ pub unsafe fn channel_switcher_overlay_hide(switcher: *mut ChannelSwitcherOverla
         bump_generation(switcher);
         remove_source_if_active(&mut (*switcher).preview_card_build_source);
         remove_source_if_active(&mut (*switcher).search_debounce_source);
-        if !(*switcher).cancel.is_null() {
-            g_cancellable_cancel((*switcher).cancel);
-            clear_object(&mut (*switcher).cancel);
-        }
         if !(*switcher).panel.is_null() {
             gtk_widget_set_visible((*switcher).panel, FALSE);
         }
@@ -296,7 +308,14 @@ pub unsafe fn channel_switcher_overlay_hide(switcher: *mut ChannelSwitcherOverla
             );
         }
         clear_preview_cards(switcher);
-        clear_image_cache(switcher);
+        radial::hide(switcher);
+        images::cancel_image_loads(switcher);
+        // Rebuild pictures on the next approach so interrupted downloads retry.
+        // Completed avatars survive both picker modes; large previews can go.
+        radial::reset(switcher);
+        (*switcher)
+            .image_cache
+            .retain(|(_, width, height), _| width == height && *width <= 64);
     }
 }
 
@@ -329,10 +348,10 @@ pub unsafe fn channel_switcher_overlay_free(switcher: *mut ChannelSwitcherOverla
         }
 
         channel_switcher_overlay_hide(switcher);
+        radial::detach(switcher);
+        clear_image_cache(switcher);
         (*switcher).previews = None;
         clear_preview_cards(switcher);
-        (*switcher).cached_channels_key = None;
-        (*switcher).cached_at_us = 0;
         if !(*switcher).panel.is_null() && !(*switcher).overlay.is_null() {
             gtk_overlay_remove_overlay((*switcher).overlay, (*switcher).panel);
         }

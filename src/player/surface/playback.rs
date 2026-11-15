@@ -25,6 +25,7 @@ use super::{FALSE, PLAYER_STARTING_STREAM_STATUS, StreamTile, TRUE};
 use crate::glib_strings::is_nonempty;
 use crate::player::channel_switcher_overlay::{
     channel_switcher_overlay_new, channel_switcher_overlay_show_at,
+    channel_switcher_overlay_use_cache,
 };
 use crate::player::controls::player_volume_update_mute_button;
 use crate::player::session::{
@@ -181,6 +182,11 @@ pub(super) unsafe fn sync_tile_from_session(tile: *mut StreamTile) {
 pub(super) unsafe fn update_tile_empty_state(tile: *mut StreamTile) {
     unsafe {
         let has_stream = is_nonempty((*tile).channel) as c_int;
+        if has_stream != 0 {
+            crate::player::channel_switcher_overlay::channel_switcher_overlay_leave_center(
+                (*tile).channel_switcher,
+            );
+        }
 
         if !(*tile).gl_area.is_null() {
             gtk_widget_set_visible((*tile).gl_area, has_stream);
@@ -379,7 +385,7 @@ pub(super) unsafe extern "C" fn on_tile_close_clicked(
 }
 
 // Create the picker only when this tile first needs it.
-pub(super) unsafe fn show_tile_channel_switcher(tile: *mut StreamTile, x: c_double, y: c_double) {
+pub(super) unsafe fn ensure_tile_channel_switcher(tile: *mut StreamTile) {
     unsafe {
         if (*tile).channel_switcher.is_null() {
             let state = &*(*tile).app;
@@ -391,7 +397,17 @@ pub(super) unsafe fn show_tile_channel_switcher(tile: *mut StreamTile, x: c_doub
                 state.settings_callback,
                 state.settings_user_data,
             );
+            channel_switcher_overlay_use_cache(
+                (*tile).channel_switcher,
+                state.picker_cache.clone(),
+            );
         }
+    }
+}
+
+pub(super) unsafe fn show_tile_channel_switcher(tile: *mut StreamTile, x: c_double, y: c_double) {
+    unsafe {
+        ensure_tile_channel_switcher(tile);
         channel_switcher_overlay_show_at((*tile).channel_switcher, x, y);
     }
 }

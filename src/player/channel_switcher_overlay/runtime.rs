@@ -7,8 +7,6 @@ use std::ffi::{c_char, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
 
-pub(super) const G_LOG_DOMAIN: &[u8] = b"channel-switcher-overlay\0";
-
 pub(super) unsafe extern "C" fn g_free_destroy(data: *mut c_void) {
     unsafe {
         g_free(data);
@@ -20,15 +18,6 @@ pub(super) unsafe fn preview_at(
     index: c_uint,
 ) -> *const TwitchStreamPreview {
     unsafe { &(*switcher).previews.as_ref().unwrap()[index as usize] }
-}
-
-pub(super) unsafe fn clear_object<T>(slot: *mut *mut T) {
-    unsafe {
-        if !(*slot).is_null() {
-            g_object_unref((*slot) as *mut c_void);
-            *slot = ptr::null_mut();
-        }
-    }
 }
 
 pub(super) unsafe fn remove_weak_pointer<T>(slot: *mut *mut T) {
@@ -97,18 +86,6 @@ pub(super) unsafe fn bump_generation(switcher: *mut ChannelSwitcherOverlay) {
 
 pub(super) unsafe fn switcher_is_closing(switcher: *mut ChannelSwitcherOverlay) -> bool {
     unsafe { switcher.is_null() || (*switcher).closing.load(Ordering::Acquire) }
-}
-
-pub(super) unsafe fn log_debug(format: *const c_char, first: *const c_char, second: *const c_char) {
-    unsafe {
-        g_log(
-            G_LOG_DOMAIN.as_ptr() as *const c_char,
-            G_LOG_LEVEL_DEBUG,
-            format,
-            first,
-            second,
-        );
-    }
 }
 
 pub(super) unsafe fn remove_source_if_active(source_id: *mut c_uint) {

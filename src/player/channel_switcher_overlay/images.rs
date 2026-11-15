@@ -7,6 +7,7 @@ use glib::translate::*;
 use gtk4::{gdk, gdk_pixbuf, gio, glib, prelude::*};
 use std::{
     cell::RefCell,
+    collections::HashMap,
     ffi::{CStr, c_char},
     rc::Rc,
     sync::atomic::Ordering,
@@ -14,6 +15,111 @@ use std::{
 
 pub(super) type ImageKey = (String, i32, i32);
 pub(super) type ImageWaiters = Rc<RefCell<Vec<glib::WeakRef<gtk4::Picture>>>>;
+
+type AvatarRequest = (ImageKey, ImageWaiters);
+
+#[derive(Default)]
+pub(super) struct AvatarCache {
+    textures: HashMap<ImageKey, gdk::Texture>,
+    sources: HashMap<String, glib::Bytes>,
+    downloads: HashMap<String, Vec<AvatarRequest>>,
+    decoding: HashMap<ImageKey, ImageWaiters>,
+}
+
+const MAX_CACHED_AVATARS: usize = 256;
+
+fn decode_avatar(
+    cache: Rc<RefCell<AvatarCache>>,
+    key: ImageKey,
+    waiters: ImageWaiters,
+    bytes: glib::Bytes,
+) {
+    glib::MainContext::default().spawn_local(async move {
+        let (_, width, height) = key;
+        let result = gio::spawn_blocking(move || decode_cover_image(bytes, width, height)).await;
+        cache.borrow_mut().decoding.remove(&key);
+        match result {
+            Ok(Ok(decoded)) => {
+                let texture: gdk::Texture = gdk::MemoryTexture::new(
+                    width,
+                    height,
+                    gdk::MemoryFormat::R8g8b8a8,
+                    &decoded.pixels,
+                    decoded.stride,
+                )
+                .upcast();
+                {
+                    let mut cache = cache.borrow_mut();
+                    if cache.textures.len() >= MAX_CACHED_AVATARS {
+                        cache.textures.clear();
+                    }
+                    cache.textures.insert(key, texture.clone());
+                }
+                for picture in waiters.borrow().iter().filter_map(|weak| weak.upgrade()) {
+                    picture.set_paintable(Some(&texture));
+                }
+            }
+            _ => glib::g_debug!("twitch-player", "Avatar decode failed for {}", key.0),
+        }
+    });
+}
+
+// Downloads and source bytes are shared even when tiles request different sizes.
+fn load_avatar(cache: Rc<RefCell<AvatarCache>>, picture: &gtk4::Picture, key: ImageKey) {
+    let mut state = cache.borrow_mut();
+    if let Some(texture) = state.textures.get(&key).cloned() {
+        drop(state);
+        picture.set_paintable(Some(&texture));
+        return;
+    }
+    if let Some(waiters) = state.decoding.get(&key) {
+        waiters.borrow_mut().push(picture.downgrade());
+        return;
+    }
+    let waiters = Rc::new(RefCell::new(vec![picture.downgrade()]));
+    state.decoding.insert(key.clone(), waiters.clone());
+    if let Some(bytes) = state.sources.get(&key.0).cloned() {
+        drop(state);
+        decode_avatar(cache, key, waiters, bytes);
+        return;
+    }
+    let uri = key.0.clone();
+    let downloads = state.downloads.entry(uri.clone()).or_default();
+    downloads.push((key, waiters));
+    if downloads.len() > 1 {
+        return;
+    }
+    drop(state);
+    glib::MainContext::default().spawn_local(async move {
+        let result = gio::File::for_uri(&uri).load_contents_future().await;
+        let requests = cache
+            .borrow_mut()
+            .downloads
+            .remove(&uri)
+            .unwrap_or_default();
+        match result {
+            Ok((bytes, _)) => {
+                let bytes = glib::Bytes::from_owned(bytes);
+                {
+                    let mut state = cache.borrow_mut();
+                    if state.sources.len() >= MAX_CACHED_AVATARS {
+                        state.sources.clear();
+                    }
+                    state.sources.insert(uri, bytes.clone());
+                }
+                for (key, waiters) in requests {
+                    decode_avatar(cache.clone(), key, waiters, bytes.clone());
+                }
+            }
+            Err(error) => {
+                for (key, _) in requests {
+                    cache.borrow_mut().decoding.remove(&key);
+                }
+                glib::g_debug!("twitch-player", "Avatar load failed for {uri}: {error}");
+            }
+        }
+    });
+}
 
 struct OverlayRef(*mut ChannelSwitcherOverlay);
 
@@ -38,10 +144,16 @@ struct DecodedImage {
 
 pub(super) unsafe fn clear_image_cache(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
+        cancel_image_loads(switcher);
+        (*switcher).image_cache.clear();
+    }
+}
+
+pub(super) unsafe fn cancel_image_loads(switcher: *mut ChannelSwitcherOverlay) {
+    unsafe {
         if let Some(cancel) = (*switcher).image_cancel.take() {
             cancel.cancel();
         }
-        (*switcher).image_cache.clear();
         (*switcher).image_waiters.clear();
     }
 }
@@ -96,6 +208,10 @@ pub(super) unsafe fn load_remote_image(
         let uri = CStr::from_ptr(url).to_string_lossy().into_owned();
         let key = (uri.clone(), width, height);
         let picture: Borrowed<gtk4::Picture> = from_glib_borrow(image.cast());
+        if width == height && width <= 64 {
+            load_avatar((*switcher).cache.avatars.clone(), &picture, key);
+            return;
+        }
         if let Some(texture) = (*switcher).image_cache.get(&key) {
             picture.set_paintable(Some(texture));
             return;

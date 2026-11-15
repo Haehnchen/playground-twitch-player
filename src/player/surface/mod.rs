@@ -51,7 +51,8 @@ use self::style::install_css;
 use crate::chat::panel::{ChatPanel, chat_panel_free};
 use crate::glib_strings::is_nonempty;
 use crate::player::channel_switcher_overlay::{
-    ChannelSwitcherOverlay, channel_switcher_overlay_free, channel_switcher_overlay_set_settings,
+    ChannelSwitcherOverlay, SharedPickerCache, channel_switcher_overlay_free,
+    channel_switcher_overlay_set_settings,
 };
 use crate::player::controls::{PlayerFooterStreamInfo, player_footer_stream_info_free};
 use crate::player::layout::{
@@ -149,6 +150,7 @@ pub struct PlayerSurface {
 
     primary_session: *mut PlayerSession,
     settings: *mut AppSettings,
+    picker_cache: SharedPickerCache,
 
     visible_footer_tile: *mut StreamTile,
     footer_hide_source: c_uint,

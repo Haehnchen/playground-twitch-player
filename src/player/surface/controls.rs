@@ -16,11 +16,11 @@ use super::ffi::{
     gtk_scale_set_draw_value, gtk_widget_add_controller, gtk_widget_add_css_class,
     gtk_widget_get_visible, gtk_widget_set_can_target, gtk_widget_set_halign,
     gtk_widget_set_hexpand, gtk_widget_set_margin_end, gtk_widget_set_size_request,
-    gtk_widget_set_tooltip_text, gtk_widget_set_valign, gtk_widget_set_vexpand,
-    gtk_widget_set_visible,
+    gtk_widget_set_valign, gtk_widget_set_vexpand, gtk_widget_set_visible,
 };
 use super::input::{
-    on_context_pressed, on_tile_drag_event, on_tile_motion, on_tile_pressed, on_tile_scroll,
+    on_context_pressed, on_tile_drag_event, on_tile_leave, on_tile_motion, on_tile_pressed,
+    on_tile_scroll,
 };
 use super::layout::on_tile_focus_clicked;
 use super::playback::{
@@ -460,7 +460,9 @@ pub(super) unsafe fn create_stream_tile(
         gtk_box_append(empty_icon_frame as *mut GtkBox, player_plus_icon_new());
         gtk_button_set_child((*tile).empty_label as *mut GtkButton, empty_icon_frame);
         gtk_widget_add_css_class((*tile).empty_label, c"empty-stream-button".as_ptr());
-        gtk_widget_set_tooltip_text((*tile).empty_label, c"Select channel".as_ptr());
+        let empty_button: gtk4::Button =
+            gtk4::glib::translate::from_glib_none((*tile).empty_label.cast());
+        empty_button.update_property(&[gtk4::accessible::Property::Label("Select channel")]);
         gtk_widget_set_halign((*tile).empty_label, GTK_ALIGN_CENTER);
         gtk_widget_set_valign((*tile).empty_label, GTK_ALIGN_CENTER);
         connect_tile_signal(
@@ -536,6 +538,12 @@ pub(super) unsafe fn create_stream_tile(
             video_motion as *mut c_void,
             c"motion".as_ptr(),
             on_tile_motion as *const c_void,
+            tile,
+        );
+        connect_tile_signal(
+            video_motion as *mut c_void,
+            c"leave".as_ptr(),
+            on_tile_leave as *const c_void,
             tile,
         );
         gtk_widget_add_controller((*tile).overlay, video_motion.cast());

@@ -235,6 +235,7 @@ pub(super) unsafe fn clear_preview_cards(switcher: *mut ChannelSwitcherOverlay) 
 
 pub(super) unsafe fn show_status(switcher: *mut ChannelSwitcherOverlay, message: *const c_char) {
     unsafe {
+        super::radial::show_status(switcher, message);
         if (*switcher).grid.is_null() {
             return;
         }
@@ -532,7 +533,6 @@ unsafe fn prepare_preview_card_layout(switcher: *mut ChannelSwitcherOverlay) {
             && (*switcher).preview_height == layout.preview_height;
         if !layout_matches {
             clear_preview_cards(switcher);
-            super::images::clear_image_cache(switcher);
             (*switcher).preview_card_columns = layout.columns;
             (*switcher).preview_card_width = layout.card_width;
             (*switcher).preview_width = layout.preview_width;
@@ -543,6 +543,10 @@ unsafe fn prepare_preview_card_layout(switcher: *mut ChannelSwitcherOverlay) {
 
 pub(super) unsafe fn render_live_channels(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
+        if (*switcher).panel.is_null() || gtk_widget_get_visible((*switcher).panel) == 0 {
+            super::radial::render(switcher);
+            return;
+        }
         remove_source_if_active(&mut (*switcher).preview_card_build_source);
         if (*switcher).previews.is_none()
             || (*switcher).previews.as_ref().unwrap().len() as c_uint == 0

@@ -1,16 +1,12 @@
 //! GTK, GDK, and GLib bindings.
 
-use crate::twitch::stream_info::{GCancellable, GError};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 pub(super) const FALSE: c_int = 0;
 pub(super) const TRUE: c_int = 1;
 pub(super) const G_SOURCE_REMOVE: c_int = 0;
 pub(super) const G_SOURCE_CONTINUE: c_int = 1;
-pub(super) const G_USEC_PER_SEC: i64 = 1_000_000;
 
-pub(super) const G_IO_ERROR_CANCELLED: c_int = 19;
-pub(super) const G_LOG_LEVEL_DEBUG: c_int = 1 << 7;
 pub(super) const GTK_ALIGN_FILL: c_int = 0;
 pub(super) const GTK_ALIGN_START: c_int = 1;
 pub(super) const GTK_ALIGN_CENTER: c_int = 3;
@@ -52,10 +48,6 @@ pub(super) type GSourceFunc = unsafe extern "C" fn(*mut c_void) -> c_int;
 
 unsafe extern "C" {
     pub(super) fn g_ascii_strcasecmp(str1: *const c_char, str2: *const c_char) -> c_int;
-    pub(super) fn g_cancellable_cancel(cancellable: *mut GCancellable);
-    pub(super) fn g_cancellable_new() -> *mut GCancellable;
-    pub(super) fn g_clear_error(error: *mut *mut GError);
-    pub(super) fn g_error_matches(error: *const GError, domain: c_uint, code: c_int) -> c_int;
     pub(super) fn g_free(mem: *mut c_void);
     pub(super) fn g_get_monotonic_time() -> i64;
     #[cfg(test)]
@@ -65,8 +57,6 @@ unsafe extern "C" {
         data: *mut c_void,
         notify: Option<GDestroyNotify>,
     ) -> c_uint;
-    pub(super) fn g_io_error_quark() -> c_uint;
-    pub(super) fn g_log(log_domain: *const c_char, log_level: c_int, format: *const c_char, ...);
     pub(super) fn g_object_add_weak_pointer(
         object: *mut GObject,
         weak_pointer_location: *mut *mut c_void,

@@ -130,7 +130,22 @@ pub(super) unsafe fn install_css() {
         .channel-switcher-status {\
           color: rgba(255, 255, 255, 0.72);\
           padding: 12px;\
-        }",
+        }\
+        button.channel-orbit-avatar {\
+          background: transparent; background-image: none;\
+          color: #eeeaf5; border: none;\
+          border-radius: 0; padding: 0; min-width: 0; min-height: 0;\
+          outline: none;\
+          box-shadow: none;\
+        }\
+        .channel-orbit-picture { border-radius: 999px; background: #19171e; }\
+        .channel-orbit-initial { font-size: 18px; font-weight: 700; }\
+        .compact-channel-orbit .empty-stream-button { min-width: 40px; min-height: 40px; }\
+        .compact-channel-orbit .channel-orbit-initial { font-size: 11px; }\
+        .channel-orbit-status { color: rgba(255, 255, 255, 0.6); font-size: 11px; }\
+        .channel-orbit-tooltip { font-size: 11px; }\
+        .channel-orbit-tooltip-name { font-size: 12px; font-weight: 700; }\
+        .channel-orbit-tooltip-viewers { font-size: 12px; color: rgba(255, 255, 255, 0.65); }",
         )
         .expect("static CSS has no NUL bytes");
         gtk_css_provider_load_from_string(provider, css.as_ptr());
