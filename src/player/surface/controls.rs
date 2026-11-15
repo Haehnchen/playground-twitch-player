@@ -20,7 +20,7 @@ use super::ffi::{
     gtk_widget_set_visible,
 };
 use super::input::{
-    on_context_pressed, on_tile_drag_event, on_tile_motion, on_tile_scroll, on_video_pressed,
+    on_context_pressed, on_tile_drag_event, on_tile_motion, on_tile_pressed, on_tile_scroll,
 };
 use super::layout::on_tile_focus_clicked;
 use super::playback::{
@@ -492,16 +492,6 @@ pub(super) unsafe fn create_stream_tile(
             (*tile).twitch_playback_panel,
         );
 
-        let video_click = gtk_gesture_click_new();
-        gtk_gesture_single_set_button(video_click as *mut GtkGestureSingle, GDK_BUTTON_PRIMARY);
-        connect_tile_signal(
-            video_click as *mut c_void,
-            c"pressed".as_ptr(),
-            on_video_pressed as *const c_void,
-            tile,
-        );
-        gtk_widget_add_controller((*tile).gl_area, video_click.cast());
-
         let context_click = gtk_gesture_click_new();
         gtk_gesture_single_set_button(context_click as *mut GtkGestureSingle, GDK_BUTTON_SECONDARY);
         connect_tile_signal(
@@ -512,12 +502,23 @@ pub(super) unsafe fn create_stream_tile(
         );
         gtk_widget_add_controller((*tile).overlay, context_click.cast());
 
-        // The video widget is hidden for empty tiles. Also handle drags targeting
+        // The video widget is hidden for empty tiles. Also handle clicks and drags targeting
         // the background itself, without handling events from its buttons or inputs.
         for (widget, phase) in [
             ((*tile).gl_area, GTK_PHASE_BUBBLE),
             ((*tile).overlay, GTK_PHASE_TARGET),
         ] {
+            let click = gtk_gesture_click_new();
+            gtk_gesture_single_set_button(click as *mut GtkGestureSingle, GDK_BUTTON_PRIMARY);
+            gtk_event_controller_set_propagation_phase(click.cast(), phase);
+            connect_tile_signal(
+                click as *mut c_void,
+                c"pressed".as_ptr(),
+                on_tile_pressed as *const c_void,
+                tile,
+            );
+            gtk_widget_add_controller(widget, click.cast());
+
             let drag_controller = gtk_event_controller_legacy_new();
             gtk_event_controller_set_propagation_phase(drag_controller, phase);
             connect_tile_signal(

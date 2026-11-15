@@ -107,7 +107,7 @@ pub(super) unsafe extern "C" fn on_tile_motion(
     }
 }
 
-pub(super) unsafe extern "C" fn on_video_pressed(
+pub(super) unsafe extern "C" fn on_tile_pressed(
     _gesture: *mut GtkGestureClick,
     n_press: c_int,
     _x: c_double,
