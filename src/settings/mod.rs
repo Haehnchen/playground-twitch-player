@@ -6,9 +6,7 @@ pub use self::channels::{
     app_settings_add_channel, app_settings_clear_channels, app_settings_get_channel,
     app_settings_get_channel_count,
 };
-pub use self::ffi::{
-    GError, GPtrArray, JsonArray, JsonBuilder, JsonGenerator, JsonNode, JsonObject, JsonParser,
-};
+pub use self::ffi::{GError, GPtrArray};
 pub use self::storage::{app_settings_get_path, app_settings_load, app_settings_save};
 
 use self::channels::{app_settings_channel_free, dup_bytes, trimmed_bytes};
@@ -296,11 +294,11 @@ mod tests {
                 ptr::null(),
             );
 
-            let json = storage::to_json(settings);
+            let encoded = serde_json::to_string(&storage::to_json(settings)).unwrap();
+            let json = serde_json::from_str(&encoded).unwrap();
             app_settings_free(settings);
             let restored = app_settings_new();
-            storage::load_json(restored, json);
-            ffi::json_node_unref(json);
+            storage::load_json(restored, &json);
 
             assert_eq!(app_settings_get_hwdec_enabled(restored), 0);
             assert_eq!(
@@ -329,6 +327,70 @@ mod tests {
                 assert_eq!(CStr::from_ptr(actual).to_str().unwrap(), expected);
             }
             app_settings_free(restored);
+        }
+    }
+
+    #[test]
+    fn missing_and_unknown_fields_keep_defaults() {
+        for json in [
+            serde_json::json!({}),
+            serde_json::json!({"future_setting": true}),
+            serde_json::Value::Null,
+        ] {
+            unsafe {
+                let settings = app_settings_new();
+                storage::load_json(settings, &json);
+                assert_eq!(app_settings_get_hwdec_enabled(settings), 1);
+                assert_eq!(app_settings_get_channel_count(settings), 0);
+                assert!(app_settings_get_twitch_oauth_token(settings).is_null());
+                app_settings_free(settings);
+            }
+        }
+    }
+
+    #[test]
+    fn null_fields_and_invalid_channel_entries_are_ignored() {
+        let json = serde_json::json!({
+            "hwdec": false,
+            "twitch_oauth_token": null,
+            "twitch_oauth_expires_at": null,
+            "channels": [null, 42, {}, {"channel": "PapaPlatte", "label": null, "url": null}],
+        });
+        unsafe {
+            let settings = app_settings_new();
+            storage::load_json(settings, &json);
+            assert_eq!(app_settings_get_hwdec_enabled(settings), 0);
+            assert_eq!(app_settings_get_channel_count(settings), 1);
+            assert!(app_settings_get_twitch_oauth_token(settings).is_null());
+            let channel = app_settings_get_channel(settings, 0);
+            assert_eq!(CStr::from_ptr((*channel).channel), c"papaplatte");
+            assert_eq!(
+                CStr::from_ptr((*channel).url),
+                c"https://www.twitch.tv/papaplatte"
+            );
+            app_settings_free(settings);
+        }
+    }
+
+    #[test]
+    fn json_preserves_unicode_and_escaping_without_empty_tokens() {
+        unsafe {
+            let settings = app_settings_new();
+            app_settings_add_channel(
+                settings,
+                c"Grüße \"live\"\nChat".as_ptr(),
+                c"example".as_ptr(),
+                ptr::null(),
+            );
+            let json = storage::to_json(settings);
+            assert!(json.get("twitch_oauth_token").is_none());
+            assert!(json.get("twitch_refresh_token").is_none());
+            assert!(json.get("twitch_playback_auth_token").is_none());
+            assert!(json.get("twitch_oauth_expires_at").is_none());
+            let encoded = serde_json::to_string(&json).unwrap();
+            let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded["channels"][0]["label"], "Grüße \"live\"\nChat");
+            app_settings_free(settings);
         }
     }
 }

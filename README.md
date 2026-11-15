@@ -34,8 +34,7 @@ The project uses Rust 1.99.1 and Edition 2024. Install Rust with
 [rustup](https://rustup.rs/); `rust-toolchain.toml` selects the same compiler,
 Clippy and rustfmt locally and in CI.
 
-There are no third-party Cargo dependencies. Native libraries and runtime tools
-are supplied by the operating system. On Ubuntu/Debian:
+Native libraries and runtime tools are supplied by the operating system. On Ubuntu/Debian:
 
 ```bash
 sudo apt install build-essential pkg-config libgtk-4-dev libmpv-dev libepoxy-dev libjson-glib-dev libsoup-3.0-dev mpv yt-dlp

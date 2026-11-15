@@ -2,32 +2,22 @@ use super::channels::{
     app_settings_add_channel, app_settings_get_channel, app_settings_get_channel_count,
 };
 use super::ffi::{
-    G_FILE_TEST_EXISTS, GError, JsonNode, JsonObject, g_build_filenamev, g_clear_error,
-    g_file_error_from_errno, g_file_error_quark, g_file_test, g_free, g_get_user_config_dir,
-    g_mkdir_with_parents, g_object_unref, g_set_error, g_strerror, json_array_get_element,
-    json_array_get_length, json_builder_add_boolean_value, json_builder_add_int_value,
-    json_builder_add_string_value, json_builder_begin_array, json_builder_begin_object,
-    json_builder_end_array, json_builder_end_object, json_builder_get_root, json_builder_new,
-    json_builder_set_member_name, json_generator_new, json_generator_set_pretty,
-    json_generator_set_root, json_generator_to_file, json_node_get_array, json_node_get_node_type,
-    json_node_get_object, json_node_unref, json_object_get_boolean_member_with_default,
-    json_object_get_int_member_with_default, json_object_get_member,
-    json_object_get_string_member_with_default, json_parser_get_root, json_parser_load_from_file,
-    json_parser_new,
+    GError, g_build_filenamev, g_file_error_from_errno, g_file_error_quark, g_file_get_contents,
+    g_file_set_contents, g_free, g_get_user_config_dir, g_mkdir_with_parents, g_set_error,
+    g_strerror,
 };
 use super::{
     AppSettings, app_settings_get_hwdec_enabled, app_settings_get_twitch_oauth_expires_at,
     app_settings_get_twitch_oauth_token, app_settings_get_twitch_playback_auth_token,
     app_settings_get_twitch_refresh_token, app_settings_new, app_settings_set_twitch_auth_tokens,
-    app_settings_set_twitch_oauth_token, app_settings_set_twitch_playback_auth_token,
+    app_settings_set_twitch_playback_auth_token,
 };
-use crate::glib_strings::is_nonempty;
-use std::ffi::{c_char, c_int, c_void};
-use std::{io, ptr};
-pub(super) const JSON_NODE_OBJECT: c_int = 0;
-pub(super) const JSON_NODE_ARRAY: c_int = 1;
+use crate::glib_strings::{dup_bytes, is_nonempty};
+use serde_json::{Value, json};
+use std::ffi::{CStr, c_char, c_int};
+use std::{io, ptr, slice};
 
-pub(super) unsafe fn build_filename(parts: &[*const c_char]) -> *mut c_char {
+unsafe fn build_filename(parts: &[*const c_char]) -> *mut c_char {
     unsafe {
         let mut args: Vec<*mut c_char> = parts.iter().map(|part| *part as *mut c_char).collect();
         args.push(ptr::null_mut());
@@ -45,56 +35,21 @@ pub fn app_settings_get_path() -> *mut c_char {
     }
 }
 
-pub(super) unsafe fn load_channels(settings: *mut AppSettings, root: *mut JsonObject) {
-    unsafe {
-        let channels_node = json_object_get_member(root, c"channels".as_ptr());
-        if channels_node.is_null() || json_node_get_node_type(channels_node) != JSON_NODE_ARRAY {
-            return;
-        }
-
-        let channels = json_node_get_array(channels_node);
-        for i in 0..json_array_get_length(channels) {
-            let node = json_array_get_element(channels, i);
-            if node.is_null() || json_node_get_node_type(node) != JSON_NODE_OBJECT {
-                continue;
-            }
-
-            let item = json_node_get_object(node);
-            let label =
-                json_object_get_string_member_with_default(item, c"label".as_ptr(), c"".as_ptr());
-            let channel =
-                json_object_get_string_member_with_default(item, c"channel".as_ptr(), c"".as_ptr());
-            let url =
-                json_object_get_string_member_with_default(item, c"url".as_ptr(), c"".as_ptr());
-            app_settings_add_channel(settings, label, channel, url);
-        }
-    }
-}
-
 /// Load saved settings, keeping defaults when no settings file is available.
 pub fn app_settings_load() -> *mut AppSettings {
     unsafe {
         let settings = app_settings_new();
         let path = app_settings_get_path();
-
-        if g_file_test(path, G_FILE_TEST_EXISTS) == 0 {
-            g_free(path as *mut c_void);
-            return settings;
+        let mut contents: *mut c_char = ptr::null_mut();
+        let mut length = 0;
+        if g_file_get_contents(path, &mut contents, &mut length, ptr::null_mut()) != 0 {
+            let bytes = slice::from_raw_parts(contents.cast(), length);
+            if let Ok(json) = serde_json::from_slice(bytes) {
+                load_json(settings, &json);
+            }
         }
-
-        let parser = json_parser_new();
-        let mut error: *mut GError = ptr::null_mut();
-        if json_parser_load_from_file(parser, path, &mut error) == 0 {
-            g_clear_error(&mut error);
-            g_object_unref(parser as *mut c_void);
-            g_free(path as *mut c_void);
-            return settings;
-        }
-
-        load_json(settings, json_parser_get_root(parser));
-
-        g_object_unref(parser as *mut c_void);
-        g_free(path as *mut c_void);
+        g_free(contents.cast());
+        g_free(path.cast());
         settings
     }
 }
@@ -119,111 +74,95 @@ pub unsafe fn app_settings_save<E>(settings: *mut AppSettings, error: *mut *mut 
                 config_dir,
                 g_strerror(errno),
             );
-            g_free(config_dir as *mut c_void);
-            g_free(path as *mut c_void);
+            g_free(config_dir.cast());
+            g_free(path.cast());
             return 0;
         }
 
-        let root = to_json(settings);
-        let generator = json_generator_new();
-        json_generator_set_root(generator, root);
-        json_generator_set_pretty(generator, 1);
-        let result = json_generator_to_file(generator, path, error);
-
-        g_object_unref(generator as *mut c_void);
-        json_node_unref(root);
-        g_free(config_dir as *mut c_void);
-        g_free(path as *mut c_void);
+        let json = serde_json::to_vec_pretty(&to_json(settings))
+            .expect("settings contain only JSON values");
+        let result = g_file_set_contents(path, json.as_ptr().cast(), json.len() as isize, error);
+        g_free(config_dir.cast());
+        g_free(path.cast());
         result
     }
 }
 
-// Read settings from a JSON node; invalid roots leave the defaults in place.
-pub(super) unsafe fn load_json(settings: *mut AppSettings, root_node: *mut JsonNode) {
+// Missing or incorrectly typed fields keep their existing defaults.
+pub(super) unsafe fn load_json(settings: *mut AppSettings, root: &Value) {
     unsafe {
-        if root_node.is_null() || json_node_get_node_type(root_node) != JSON_NODE_OBJECT {
+        if !root.is_object() {
             return;
         }
-        let root = json_node_get_object(root_node);
-        (*settings).hwdec_enabled =
-            json_object_get_boolean_member_with_default(root, c"hwdec".as_ptr(), 1);
-        app_settings_set_twitch_oauth_token(
-            settings,
-            json_object_get_string_member_with_default(
-                root,
-                c"twitch_oauth_token".as_ptr(),
-                ptr::null(),
-            ),
-        );
+        (*settings).hwdec_enabled = root["hwdec"].as_bool().unwrap_or(true).into();
+        let [token, refresh, playback] = [
+            "twitch_oauth_token",
+            "twitch_refresh_token",
+            "twitch_playback_auth_token",
+        ]
+        .map(|key| dup_bytes(root[key].as_str().unwrap_or("").as_bytes()));
         app_settings_set_twitch_auth_tokens(
             settings,
-            app_settings_get_twitch_oauth_token(settings),
-            json_object_get_string_member_with_default(
-                root,
-                c"twitch_refresh_token".as_ptr(),
-                ptr::null(),
-            ),
-            json_object_get_int_member_with_default(root, c"twitch_oauth_expires_at".as_ptr(), 0),
+            token,
+            refresh,
+            root["twitch_oauth_expires_at"].as_i64().unwrap_or(0),
         );
-        app_settings_set_twitch_playback_auth_token(
-            settings,
-            json_object_get_string_member_with_default(
-                root,
-                c"twitch_playback_auth_token".as_ptr(),
-                ptr::null(),
-            ),
-        );
-        load_channels(settings, root);
+        app_settings_set_twitch_playback_auth_token(settings, playback);
+        for value in [token, refresh, playback] {
+            g_free(value.cast());
+        }
+
+        if let Some(channels) = root["channels"].as_array() {
+            for entry in channels.iter().filter(|entry| entry.is_object()) {
+                let [label, channel, url] = ["label", "channel", "url"]
+                    .map(|key| dup_bytes(entry[key].as_str().unwrap_or("").as_bytes()));
+                app_settings_add_channel(settings, label, channel, url);
+                for value in [label, channel, url] {
+                    g_free(value.cast());
+                }
+            }
+        }
     }
 }
 
-// Return an owned JSON node for saving or inspecting the settings.
-pub(super) unsafe fn to_json(settings: *mut AppSettings) -> *mut JsonNode {
+pub(super) unsafe fn to_json(settings: *mut AppSettings) -> Value {
     unsafe {
-        let builder = json_builder_new();
-        json_builder_begin_object(builder);
-        json_builder_set_member_name(builder, c"hwdec".as_ptr());
-        json_builder_add_boolean_value(builder, app_settings_get_hwdec_enabled(settings));
-
-        let oauth_token = app_settings_get_twitch_oauth_token(settings);
-        if is_nonempty(oauth_token) {
-            json_builder_set_member_name(builder, c"twitch_oauth_token".as_ptr());
-            json_builder_add_string_value(builder, oauth_token);
+        let channels: Vec<_> = (0..app_settings_get_channel_count(settings))
+            .map(|index| {
+                let channel = app_settings_get_channel(settings, index);
+                json!({
+                    "label": CStr::from_ptr((*channel).label).to_string_lossy(),
+                    "channel": CStr::from_ptr((*channel).channel).to_string_lossy(),
+                    "url": CStr::from_ptr((*channel).url).to_string_lossy(),
+                })
+            })
+            .collect();
+        let mut root = json!({
+            "hwdec": app_settings_get_hwdec_enabled(settings) != 0,
+            "channels": channels,
+        });
+        for (key, value) in [
+            (
+                "twitch_oauth_token",
+                app_settings_get_twitch_oauth_token(settings),
+            ),
+            (
+                "twitch_refresh_token",
+                app_settings_get_twitch_refresh_token(settings),
+            ),
+            (
+                "twitch_playback_auth_token",
+                app_settings_get_twitch_playback_auth_token(settings),
+            ),
+        ] {
+            if is_nonempty(value) {
+                root[key] = json!(CStr::from_ptr(value).to_string_lossy());
+            }
         }
-        let refresh_token = app_settings_get_twitch_refresh_token(settings);
-        if is_nonempty(refresh_token) {
-            json_builder_set_member_name(builder, c"twitch_refresh_token".as_ptr());
-            json_builder_add_string_value(builder, refresh_token);
+        let expires_at = app_settings_get_twitch_oauth_expires_at(settings);
+        if expires_at > 0 {
+            root["twitch_oauth_expires_at"] = json!(expires_at);
         }
-        let oauth_expires_at = app_settings_get_twitch_oauth_expires_at(settings);
-        if oauth_expires_at > 0 {
-            json_builder_set_member_name(builder, c"twitch_oauth_expires_at".as_ptr());
-            json_builder_add_int_value(builder, oauth_expires_at);
-        }
-        let playback_auth_token = app_settings_get_twitch_playback_auth_token(settings);
-        if is_nonempty(playback_auth_token) {
-            json_builder_set_member_name(builder, c"twitch_playback_auth_token".as_ptr());
-            json_builder_add_string_value(builder, playback_auth_token);
-        }
-
-        json_builder_set_member_name(builder, c"channels".as_ptr());
-        json_builder_begin_array(builder);
-        for i in 0..app_settings_get_channel_count(settings) {
-            let channel = app_settings_get_channel(settings, i);
-            json_builder_begin_object(builder);
-            json_builder_set_member_name(builder, c"label".as_ptr());
-            json_builder_add_string_value(builder, (*channel).label);
-            json_builder_set_member_name(builder, c"channel".as_ptr());
-            json_builder_add_string_value(builder, (*channel).channel);
-            json_builder_set_member_name(builder, c"url".as_ptr());
-            json_builder_add_string_value(builder, (*channel).url);
-            json_builder_end_object(builder);
-        }
-        json_builder_end_array(builder);
-        json_builder_end_object(builder);
-
-        let root = json_builder_get_root(builder);
-        g_object_unref(builder as *mut c_void);
         root
     }
 }
