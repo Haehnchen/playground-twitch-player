@@ -13,11 +13,6 @@ path = "src/lib.rs"
 name = "twitch-player"
 path = "src/main.rs"
 
-[[test]]
-name = "settings"
-path = "tests/test_settings.rs"
-harness = false
-
 [profile.release]
 strip = "symbols"
 

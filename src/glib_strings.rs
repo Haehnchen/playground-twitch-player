@@ -18,6 +18,8 @@ pub(crate) unsafe fn is_nonempty(value: *const c_char) -> bool {
     unsafe { !value.is_null() && *value != 0 }
 }
 
+/// Free an owned GLib string and clear its pointer.
+///
 /// # Safety
 /// - Non-null `value`: owned GLib allocation; no remaining borrowers.
 pub(crate) unsafe fn clear_string(value: &mut *mut c_char) {

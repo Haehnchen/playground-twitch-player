@@ -4,6 +4,7 @@ const DEFAULT_BUILD_VERSION: &str = "nightly";
 const DEFAULT_BUILD_DATE: &str = "local";
 const APP_AUTHOR: &str = "Daniel Espendiller";
 
+// Set build metadata and link system libraries reported by pkg-config.
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=BUILD_VERSION");
