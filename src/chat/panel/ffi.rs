@@ -100,7 +100,6 @@ unsafe extern "C" {
         text: *const c_char,
         len: c_int,
     );
-    pub(super) fn gtk_text_iter_forward_line(iter: *mut GtkTextIter) -> c_int;
     pub(super) fn gtk_text_view_get_buffer(text_view: *mut GtkTextView) -> *mut GtkTextBuffer;
     pub(super) fn gtk_text_view_new() -> *mut GtkWidget;
     pub(super) fn gtk_text_view_set_bottom_margin(

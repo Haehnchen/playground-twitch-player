@@ -25,7 +25,7 @@ use self::layout::position_panel;
 use self::runtime::{bump_generation, clear_object, remove_source_if_active, remove_weak_pointer};
 use self::style::install_css;
 use self::widgets::build_widgets;
-use self::widgets::{clear_grid, clear_preview_cards, show_status};
+use self::widgets::{clear_preview_cards, show_status};
 use crate::settings::{AppSettings, AppSettingsChannel};
 use crate::twitch::stream_info::{GCancellable, TwitchStreamPreview};
 use std::collections::HashMap;
@@ -56,6 +56,7 @@ pub struct ChannelSwitcherOverlay {
 
     image_cache: HashMap<images::ImageKey, gtk4::gdk::Texture>,
     image_waiters: HashMap<images::ImageKey, images::ImageWaiters>,
+    image_cancel: Option<gtk4::gio::Cancellable>,
 
     cached_channels_key: Option<String>,
     cached_at_us: i64,
@@ -108,6 +109,7 @@ impl ChannelSwitcherOverlay {
 
             image_cache: HashMap::new(),
             image_waiters: HashMap::new(),
+            image_cancel: None,
 
             cached_channels_key: None,
             cached_at_us: 0,
@@ -293,7 +295,7 @@ pub unsafe fn channel_switcher_overlay_hide(switcher: *mut ChannelSwitcherOverla
                 c"".as_ptr(),
             );
         }
-        clear_grid(switcher);
+        clear_preview_cards(switcher);
         clear_image_cache(switcher);
     }
 }

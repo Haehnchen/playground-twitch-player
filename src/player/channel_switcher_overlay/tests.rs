@@ -108,11 +108,15 @@ fn hiding_cancels_pending_preview_batches() {
     let _guard = MAIN_CONTEXT_TEST_LOCK.lock().unwrap();
     unsafe {
         let switcher = empty_switcher();
+        let images = gtk4::gio::Cancellable::new();
+        (*switcher).image_cancel = Some(images.clone());
         (*switcher).preview_card_build_source = queue_preview_card_batch(switcher);
         assert_eq!((*switcher).ref_count.load(Ordering::Acquire), 2);
 
         channel_switcher_overlay_hide(switcher);
 
+        assert!(gtk4::prelude::CancellableExt::is_cancelled(&images));
+        assert!((*switcher).image_cancel.is_none());
         assert_eq!((*switcher).preview_card_build_source, 0);
         assert_eq!((*switcher).ref_count.load(Ordering::Acquire), 1);
         channel_switcher_overlay_free(switcher);

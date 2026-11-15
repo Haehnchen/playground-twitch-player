@@ -6,7 +6,9 @@ use super::ffi::{
 };
 use super::runtime::{add_tile_timeout, remove_source_if_active, tile_is_closing};
 use super::{DEFAULT_CHAT_WIDTH, FALSE, PLAYER_CHAT_ICON_OPEN, StreamTile, TRUE};
-use crate::chat::panel::{chat_panel_get_widget, chat_panel_start};
+use crate::chat::panel::{
+    chat_panel_free, chat_panel_get_widget, chat_panel_new, chat_panel_start,
+};
 use crate::glib_strings::is_nonempty;
 use crate::player::icons::player_chat_icon_new;
 use std::ffi::{c_int, c_void};
@@ -206,7 +208,7 @@ pub(super) unsafe extern "C" fn on_chat_paned_layout_changed(
 
 pub(super) unsafe fn activate_tile_chat(tile: *mut StreamTile, visible: c_int) {
     unsafe {
-        if (*tile).container.is_null() || (*tile).chat_panel.is_null() {
+        if (*tile).container.is_null() {
             return;
         }
 
@@ -215,7 +217,9 @@ pub(super) unsafe fn activate_tile_chat(tile: *mut StreamTile, visible: c_int) {
                 return;
             }
 
-            // Each tile owns its chat panel; there is intentionally no global right sidebar.
+            if (*tile).chat_panel.is_null() {
+                (*tile).chat_panel = chat_panel_new(DEFAULT_CHAT_WIDTH);
+            }
             start_chat_for_tile(tile);
             if (*tile).chat_visible == 0 {
                 let width = gtk_widget_get_width((*tile).container);
@@ -244,6 +248,8 @@ pub(super) unsafe fn activate_tile_chat(tile: *mut StreamTile, visible: c_int) {
             capture_chat_width_from_paned(tile);
             (*tile).chat_visible = FALSE;
             gtk_paned_set_end_child((*tile).container as *mut GtkPaned, ptr::null_mut());
+            chat_panel_free((*tile).chat_panel);
+            (*tile).chat_panel = ptr::null_mut();
         }
 
         update_chat_button(tile);

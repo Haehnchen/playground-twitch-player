@@ -10,11 +10,10 @@ use super::ffi::{
 };
 use super::layout::preferred_single_tile;
 use super::layout::request_tile_fullscreen_toggle;
+use super::playback::show_tile_channel_switcher;
 use super::runtime::{is_instance, tile_is_closing};
 use super::{FALSE, PlayerSurface, StreamTile, TRUE};
-use crate::player::channel_switcher_overlay::{
-    channel_switcher_overlay_is_visible, channel_switcher_overlay_show_at,
-};
+use crate::player::channel_switcher_overlay::channel_switcher_overlay_is_visible;
 use crate::player::controls::{player_volume_apply_scroll, player_volume_toggle_muted};
 use crate::player::motion::player_motion_tracker_ignore_stationary;
 use std::ffi::{c_double, c_int, c_uint, c_void};
@@ -225,7 +224,7 @@ pub(super) unsafe extern "C" fn on_context_pressed(
             return;
         }
 
-        channel_switcher_overlay_show_at((*tile).channel_switcher, x, y);
+        show_tile_channel_switcher(tile, x, y);
         show_tile_overlay(tile);
     }
 }

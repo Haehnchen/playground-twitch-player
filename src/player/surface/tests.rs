@@ -13,6 +13,21 @@ use super::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
+fn stopping_an_owned_session_does_not_create_an_idle_replacement() {
+    unsafe {
+        let mut surface = PlayerSurface::default();
+        let mut tile = super::StreamTile {
+            app: &mut surface,
+            session: crate::player::session::player_session_new(),
+            owns_session: 1,
+            ..Default::default()
+        };
+        super::playback::reset_owned_tile_session(&mut tile);
+        assert!(tile.session.is_null());
+    }
+}
+
+#[test]
 fn compact_tile_order_moves_streams_ahead_of_grid_gaps() {
     let mut tiles_with_streams = [false; MAX_TILES];
     tiles_with_streams[0] = true;

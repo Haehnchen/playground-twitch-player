@@ -23,9 +23,9 @@ use super::input::{
 };
 use super::layout::on_tile_focus_clicked;
 use super::playback::{
-    activate_tile_context_channel, dup_twitch_channel_name, on_channel_button_clicked,
-    on_channel_refresh_clicked, on_empty_tile_clicked, on_tile_close_clicked,
-    sync_tile_from_session, target_to_label, update_tile_empty_state,
+    dup_twitch_channel_name, on_channel_button_clicked, on_channel_refresh_clicked,
+    on_empty_tile_clicked, on_tile_close_clicked, sync_tile_from_session, target_to_label,
+    update_tile_empty_state,
 };
 use super::render::{configure_gl_area, on_gl_realize, on_gl_render, on_gl_unrealize};
 use super::runtime::{
@@ -35,14 +35,11 @@ use super::runtime::{
 use super::stream_details::{create_tile_twitch_playback_panel, on_tile_twitch_playback_clicked};
 use super::streams::on_tile_stream_settings_clicked;
 use super::{
-    DEFAULT_CHAT_WIDTH, FALSE, MAX_TILES, PLAYER_CHAT_ICON_OPEN, PLAYER_TILE_FOCUS_ICON_EXPAND,
-    PlayerSurface, StreamTile, TRUE,
+    FALSE, MAX_TILES, PLAYER_CHAT_ICON_OPEN, PLAYER_TILE_FOCUS_ICON_EXPAND, PlayerSurface,
+    StreamTile, TRUE,
 };
-use crate::chat::panel::chat_panel_new;
 use crate::glib_strings::is_nonempty;
-use crate::player::channel_switcher_overlay::{
-    channel_switcher_overlay_is_visible, channel_switcher_overlay_new,
-};
+use crate::player::channel_switcher_overlay::channel_switcher_overlay_is_visible;
 use crate::player::controls::{
     player_footer_stream_info_get_widget, player_footer_stream_info_new, player_overlay_button_new,
     player_volume_mute_button_new, player_volume_set_muted, player_volume_sync_session_from_range,
@@ -493,15 +490,6 @@ pub(super) unsafe fn create_stream_tile(
             (*tile).overlay as *mut GtkOverlay,
             (*tile).twitch_playback_panel,
         );
-        (*tile).channel_switcher = channel_switcher_overlay_new(
-            (*state).root_overlay as *mut GtkOverlay,
-            (*state).settings,
-            Some(activate_tile_context_channel),
-            tile as *mut c_void,
-            (*state).settings_callback,
-            (*state).settings_user_data,
-        );
-        (*tile).chat_panel = chat_panel_new(DEFAULT_CHAT_WIDTH);
 
         let video_click = gtk_gesture_click_new();
         gtk_gesture_single_set_button(video_click as *mut GtkGestureSingle, GDK_BUTTON_PRIMARY);

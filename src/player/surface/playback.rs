@@ -23,7 +23,9 @@ use super::streams::{
 };
 use super::{FALSE, PLAYER_STARTING_STREAM_STATUS, StreamTile, TRUE};
 use crate::glib_strings::is_nonempty;
-use crate::player::channel_switcher_overlay::channel_switcher_overlay_show_at;
+use crate::player::channel_switcher_overlay::{
+    channel_switcher_overlay_new, channel_switcher_overlay_show_at,
+};
 use crate::player::controls::player_volume_update_mute_button;
 use crate::player::session::{
     player_session_drop_buffers, player_session_free, player_session_get_channel,
@@ -38,7 +40,7 @@ use crate::twitch::channel::normalize_twitch_channel;
 use gtk4::{glib, prelude::*};
 use libmpv2::{Mpv, events::mpv_event_id, mpv_end_file_reason};
 use libmpv2_sys as mpv_sys;
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_double, c_int, c_void};
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
@@ -180,6 +182,9 @@ pub(super) unsafe fn update_tile_empty_state(tile: *mut StreamTile) {
     unsafe {
         let has_stream = is_nonempty((*tile).channel) as c_int;
 
+        if !(*tile).gl_area.is_null() {
+            gtk_widget_set_visible((*tile).gl_area, has_stream);
+        }
         if !(*tile).empty_label.is_null() {
             gtk_widget_set_visible((*tile).empty_label, (has_stream == 0) as c_int);
         }
@@ -266,11 +271,7 @@ pub(super) unsafe fn reset_owned_tile_session(tile: *mut StreamTile) {
         disable_tile_wakeup_callback(tile);
         if (*tile).owns_session != 0 {
             player_session_free((*tile).session);
-            (*tile).session = player_session_new();
-            player_session_set_hwdec_enabled(
-                (*tile).session,
-                app_settings_get_hwdec_enabled((*(*tile).app).settings),
-            );
+            (*tile).session = ptr::null_mut();
         } else {
             player_session_stop((*tile).session);
         }
@@ -377,6 +378,24 @@ pub(super) unsafe extern "C" fn on_tile_close_clicked(
     }
 }
 
+// Create the picker only when this tile first needs it.
+pub(super) unsafe fn show_tile_channel_switcher(tile: *mut StreamTile, x: c_double, y: c_double) {
+    unsafe {
+        if (*tile).channel_switcher.is_null() {
+            let state = &*(*tile).app;
+            (*tile).channel_switcher = channel_switcher_overlay_new(
+                state.root_overlay,
+                state.settings,
+                Some(activate_tile_context_channel),
+                tile.cast(),
+                state.settings_callback,
+                state.settings_user_data,
+            );
+        }
+        channel_switcher_overlay_show_at((*tile).channel_switcher, x, y);
+    }
+}
+
 pub(super) unsafe extern "C" fn on_empty_tile_clicked(
     _button: *mut GtkButton,
     user_data: *mut c_void,
@@ -387,7 +406,7 @@ pub(super) unsafe extern "C" fn on_empty_tile_clicked(
             return;
         }
 
-        channel_switcher_overlay_show_at((*tile).channel_switcher, 0.0, 0.0);
+        show_tile_channel_switcher(tile, 0.0, 0.0);
         show_tile_overlay(tile);
     }
 }
@@ -425,7 +444,7 @@ pub(super) unsafe extern "C" fn on_channel_button_clicked(
             return;
         }
 
-        channel_switcher_overlay_show_at((*tile).channel_switcher, 0.0, 0.0);
+        show_tile_channel_switcher(tile, 0.0, 0.0);
         show_tile_overlay(tile);
     }
 }

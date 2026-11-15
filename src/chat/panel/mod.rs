@@ -25,7 +25,7 @@ use crate::chat::assets::{ChatAssets, chat_assets_free, chat_assets_new};
 use crate::twitch::chat::{
     TwitchChatClient, twitch_chat_client_free, twitch_chat_client_new, twitch_chat_client_start,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 
@@ -35,6 +35,7 @@ pub struct ChatPanel {
     priv_: *mut ChatPanelPrivate,
 }
 
+#[derive(Default)]
 pub struct ChatPanelPrivate {
     scroller: *mut GtkWidget,
     scroll_controller: *mut GtkEventController,
@@ -43,6 +44,7 @@ pub struct ChatPanelPrivate {
     adjustment: *mut GtkAdjustment,
 
     username_tags: HashMap<Vec<u8>, *mut GtkTextTag>,
+    username_tag_order: VecDeque<Vec<u8>>,
     assets: *mut ChatAssets,
     reply_tag: *mut GtkTextTag,
 
@@ -51,7 +53,6 @@ pub struct ChatPanelPrivate {
     scroll_source: c_uint,
     scroll_state_source: c_uint,
 
-    line_count: c_uint,
     follow_tail: c_int,
     closing: c_int,
 }
@@ -89,26 +90,7 @@ unsafe fn disconnect_signal_handler(instance: *mut c_void, handler_id: *mut usiz
 /// - GTK initialized; GTK main thread.
 pub unsafe fn chat_panel_new(width: c_int) -> *mut ChatPanel {
     unsafe {
-        let priv_ = Box::into_raw(Box::new(ChatPanelPrivate {
-            scroller: ptr::null_mut(),
-            scroll_controller: ptr::null_mut(),
-            view: ptr::null_mut(),
-            buffer: ptr::null_mut(),
-            adjustment: ptr::null_mut(),
-
-            username_tags: HashMap::new(),
-            assets: ptr::null_mut(),
-            reply_tag: ptr::null_mut(),
-
-            scroll_handler: 0,
-            adjustment_changed_handler: 0,
-            scroll_source: 0,
-            scroll_state_source: 0,
-
-            line_count: 0,
-            follow_tail: 0,
-            closing: 0,
-        }));
+        let priv_ = Box::into_raw(Box::new(ChatPanelPrivate::default()));
         let panel = Box::into_raw(Box::new(ChatPanel {
             widget: ptr::null_mut(),
             client: ptr::null_mut(),
@@ -274,6 +256,74 @@ mod tests {
     use super::messages::{adjustment_is_at_bottom, scroll_is_at_bottom};
     use std::ffi::CStr;
     use std::ptr;
+
+    #[test]
+    fn reply_lines_count_toward_the_chat_history_limit() {
+        use gtk4::{glib::translate::from_glib_full, prelude::*};
+        unsafe {
+            let buffer: gtk4::TextBuffer =
+                from_glib_full(gtk4::ffi::gtk_text_buffer_new(ptr::null_mut()));
+            let text: String = (0..600)
+                .map(|i| format!("Reply to parent {i}\nMessage {i}\n"))
+                .collect();
+            buffer.set_text(&text);
+            let mut private = super::ChatPanelPrivate {
+                buffer: buffer.as_ptr(),
+                ..Default::default()
+            };
+            let mut panel = super::ChatPanel {
+                widget: ptr::null_mut(),
+                client: ptr::null_mut(),
+                priv_: &mut private,
+            };
+            super::messages::trim_old_lines(&mut panel);
+            assert_eq!(buffer.line_count(), 201);
+            let (start, end) = buffer.bounds();
+            let retained = buffer.text(&start, &end, false);
+            assert!(retained.starts_with("Reply to parent 500\nMessage 500\n"));
+            assert!(retained.ends_with("Message 599\n"));
+        }
+    }
+
+    #[test]
+    fn username_colors_are_bounded_and_recent_colors_stay_cached() {
+        use gtk4::{glib::translate::from_glib_full, prelude::*};
+        use std::ffi::CString;
+        unsafe {
+            let buffer: gtk4::TextBuffer =
+                from_glib_full(gtk4::ffi::gtk_text_buffer_new(ptr::null_mut()));
+            let mut private = super::ChatPanelPrivate {
+                buffer: buffer.as_ptr(),
+                ..Default::default()
+            };
+            let mut panel = super::ChatPanel {
+                widget: ptr::null_mut(),
+                client: ptr::null_mut(),
+                priv_: &mut private,
+            };
+            let hot = super::messages::get_username_tag(
+                &mut panel,
+                c"User".as_ptr(),
+                c"#ff00ff".as_ptr(),
+            );
+            for i in 0..600 {
+                let color = CString::new(format!("#{i:06x}")).unwrap();
+                super::messages::get_username_tag(&mut panel, c"User".as_ptr(), color.as_ptr());
+                assert_eq!(
+                    super::messages::get_username_tag(
+                        &mut panel,
+                        c"User".as_ptr(),
+                        c"#ff00ff".as_ptr()
+                    ),
+                    hot
+                );
+            }
+            assert!(buffer.tag_table().size() <= 256);
+            super::messages::clear_chat(&mut panel, ptr::null());
+            assert_eq!(buffer.tag_table().size(), 0);
+            assert!(private.username_tags.is_empty());
+        }
+    }
 
     #[test]
     fn fallback_colors_are_deterministic() {

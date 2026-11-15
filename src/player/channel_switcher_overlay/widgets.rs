@@ -532,6 +532,7 @@ unsafe fn prepare_preview_card_layout(switcher: *mut ChannelSwitcherOverlay) {
             && (*switcher).preview_height == layout.preview_height;
         if !layout_matches {
             clear_preview_cards(switcher);
+            super::images::clear_image_cache(switcher);
             (*switcher).preview_card_columns = layout.columns;
             (*switcher).preview_card_width = layout.card_width;
             (*switcher).preview_width = layout.preview_width;

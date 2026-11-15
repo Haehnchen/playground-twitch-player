@@ -13,7 +13,7 @@ use std::{
 };
 
 pub(super) type ImageKey = (String, i32, i32);
-pub(super) type ImageWaiters = Rc<RefCell<Vec<gtk4::Picture>>>;
+pub(super) type ImageWaiters = Rc<RefCell<Vec<glib::WeakRef<gtk4::Picture>>>>;
 
 struct OverlayRef(*mut ChannelSwitcherOverlay);
 
@@ -38,6 +38,9 @@ struct DecodedImage {
 
 pub(super) unsafe fn clear_image_cache(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
+        if let Some(cancel) = (*switcher).image_cancel.take() {
+            cancel.cancel();
+        }
         (*switcher).image_cache.clear();
         (*switcher).image_waiters.clear();
     }
@@ -98,32 +101,45 @@ pub(super) unsafe fn load_remote_image(
             return;
         }
         if let Some(waiters) = (*switcher).image_waiters.get(&key) {
-            waiters.borrow_mut().push((*picture).clone());
+            waiters.borrow_mut().push(picture.downgrade());
             return;
         }
-        let waiters = Rc::new(RefCell::new(vec![(*picture).clone()]));
+        let waiters = Rc::new(RefCell::new(vec![picture.downgrade()]));
         (*switcher)
             .image_waiters
             .insert(key.clone(), waiters.clone());
+        let cancel = (*switcher)
+            .image_cancel
+            .get_or_insert_with(gio::Cancellable::new)
+            .clone();
         let owner = OverlayRef(channel_switcher_overlay_ref(switcher));
         glib::MainContext::default().spawn_local(async move {
-            let result = async {
-                let (bytes, _) = gio::File::for_uri(&uri).load_contents_future().await?;
-                gio::spawn_blocking(move || {
-                    decode_cover_image(glib::Bytes::from_owned(bytes), width, height)
-                })
-                .await
-                .map_err(|_| glib::Error::new(gio::IOErrorEnum::Failed, "Image worker panicked"))?
-            }
+            let result = gio::CancellableFuture::new(
+                async {
+                    let (bytes, _) = gio::File::for_uri(&uri).load_contents_future().await?;
+                    gio::spawn_blocking(move || {
+                        decode_cover_image(glib::Bytes::from_owned(bytes), width, height)
+                    })
+                    .await
+                    .map_err(|_| {
+                        glib::Error::new(gio::IOErrorEnum::Failed, "Image worker panicked")
+                    })?
+                },
+                cancel,
+            )
             .await;
+            let Ok(result) = result else {
+                return;
+            };
             let switcher = owner.get();
-            if (*switcher)
+            if !(*switcher)
                 .image_waiters
                 .get(&key)
                 .is_some_and(|current| Rc::ptr_eq(current, &waiters))
             {
-                (*switcher).image_waiters.remove(&key);
+                return;
             }
+            (*switcher).image_waiters.remove(&key);
             if (*switcher).closing.load(Ordering::Acquire) {
                 return;
             }
@@ -138,7 +154,7 @@ pub(super) unsafe fn load_remote_image(
                     )
                     .upcast();
                     (*switcher).image_cache.insert(key, texture.clone());
-                    for picture in waiters.borrow().iter() {
+                    for picture in waiters.borrow().iter().filter_map(|weak| weak.upgrade()) {
                         picture.set_paintable(Some(&texture));
                     }
                 }

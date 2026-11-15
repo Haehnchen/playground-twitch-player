@@ -5,7 +5,7 @@ use super::ffi::{
     gtk_adjustment_get_value, gtk_adjustment_set_value, gtk_scrolled_window_get_vadjustment,
     gtk_text_buffer_create_tag, gtk_text_buffer_delete, gtk_text_buffer_get_end_iter,
     gtk_text_buffer_get_start_iter, gtk_text_buffer_insert, gtk_text_buffer_insert_with_tags,
-    gtk_text_buffer_set_text, gtk_text_iter_forward_line,
+    gtk_text_buffer_set_text,
 };
 use super::{ChatPanel, remove_source_if_active};
 use crate::chat::assets::chat_assets_insert_message_text;
@@ -15,6 +15,7 @@ use std::ffi::{CStr, c_char, c_double, c_int, c_uint, c_void};
 use std::ptr;
 
 pub(super) const MAX_CHAT_LINES: c_uint = 200;
+const MAX_USERNAME_COLORS: usize = 256;
 
 pub(super) static FALLBACK_COLORS: [&[u8]; 10] = [
     b"#ff7f50\0",
@@ -59,13 +60,27 @@ pub(super) unsafe fn get_username_tag(
         };
 
         let key = CStr::from_ptr(tag_color).to_bytes();
-        if let Some(tag) = (*priv_).username_tags.get(key) {
-            return *tag;
+        if let Some(&tag) = (*priv_).username_tags.get(key) {
+            if let Some(index) = (*priv_)
+                .username_tag_order
+                .iter()
+                .position(|color| color == key)
+            {
+                let color = (*priv_).username_tag_order.remove(index).unwrap();
+                (*priv_).username_tag_order.push_back(color);
+            }
+            return tag;
         }
-        let tag_name = format!("username-color-{}\0", (*priv_).username_tags.len());
+        if (*priv_).username_tags.len() == MAX_USERNAME_COLORS
+            && let Some(oldest) = (*priv_).username_tag_order.pop_front()
+            && let Some(tag) = (*priv_).username_tags.remove(&oldest)
+        {
+            let table = gtk4::ffi::gtk_text_buffer_get_tag_table((*priv_).buffer);
+            gtk4::ffi::gtk_text_tag_table_remove(table, tag);
+        }
         let tag = gtk_text_buffer_create_tag(
             (*priv_).buffer,
-            tag_name.as_ptr() as *const c_char,
+            ptr::null(),
             c"foreground".as_ptr(),
             tag_color,
             c"weight".as_ptr(),
@@ -73,23 +88,25 @@ pub(super) unsafe fn get_username_tag(
             ptr::null::<c_char>(),
         );
         (*priv_).username_tags.insert(key.to_vec(), tag);
+        (*priv_).username_tag_order.push_back(key.to_vec());
         tag
     }
 }
 
+// Count actual buffer lines so replies and multiline messages share the same limit.
 pub(super) unsafe fn trim_old_lines(panel: *mut ChatPanel) {
     unsafe {
-        let priv_ = (*panel).priv_;
-
-        while (*priv_).line_count > MAX_CHAT_LINES {
-            let mut start: GtkTextIter = std::mem::zeroed();
-            gtk_text_buffer_get_start_iter((*priv_).buffer, &mut start);
-
-            let mut delete_end = start;
-            gtk_text_iter_forward_line(&mut delete_end);
-            gtk_text_buffer_delete((*priv_).buffer, &mut start, &mut delete_end);
-            (*priv_).line_count -= 1;
+        let buffer = (*(*panel).priv_).buffer;
+        let excess =
+            gtk4::ffi::gtk_text_buffer_get_line_count(buffer) - 1 - MAX_CHAT_LINES as c_int;
+        if excess <= 0 {
+            return;
         }
+        let mut start: GtkTextIter = std::mem::zeroed();
+        gtk_text_buffer_get_start_iter(buffer, &mut start);
+        let mut end = start;
+        gtk4::ffi::gtk_text_iter_forward_lines(&mut end, excess);
+        gtk_text_buffer_delete(buffer, &mut start, &mut end);
     }
 }
 
@@ -142,7 +159,6 @@ pub(super) unsafe fn insert_reply(
         }
 
         gtk_text_buffer_insert((*priv_).buffer, iter, c"\n".as_ptr(), -1);
-        (*priv_).line_count += 1;
     }
 }
 
@@ -159,7 +175,6 @@ pub(super) unsafe fn append_status_line(panel: *mut ChatPanel, line: *const c_ch
         gtk_text_buffer_get_end_iter((*priv_).buffer, &mut end);
         gtk_text_buffer_insert((*priv_).buffer, &mut end, line, -1);
         gtk_text_buffer_insert((*priv_).buffer, &mut end, c"\n".as_ptr(), -1);
-        (*priv_).line_count += 1;
 
         trim_old_lines(panel);
         if stick_to_bottom {
@@ -203,7 +218,6 @@ pub(super) unsafe fn append_message(panel: *mut ChatPanel, line: *const TwitchCh
             (*line).emotes.as_ptr(),
         );
         gtk_text_buffer_insert((*priv_).buffer, &mut end, c"\n".as_ptr(), -1);
-        (*priv_).line_count += 1;
 
         trim_old_lines(panel);
         if stick_to_bottom {
@@ -216,7 +230,11 @@ pub(super) unsafe fn clear_chat(panel: *mut ChatPanel, channel: *const c_char) {
     unsafe {
         let priv_ = (*panel).priv_;
         gtk_text_buffer_set_text((*priv_).buffer, c"".as_ptr(), -1);
-        (*priv_).line_count = 0;
+        let table = gtk4::ffi::gtk_text_buffer_get_tag_table((*priv_).buffer);
+        for (_, tag) in (*priv_).username_tags.drain() {
+            gtk4::ffi::gtk_text_tag_table_remove(table, tag);
+        }
+        (*priv_).username_tag_order.clear();
         (*priv_).follow_tail = 1;
 
         if !channel.is_null() {
