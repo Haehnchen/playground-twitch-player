@@ -28,8 +28,8 @@ use self::chat::capture_chat_width_from_paned;
 use self::controls::create_stream_tile;
 use self::controls::{schedule_footer_hide, show_tile_overlay};
 use self::ffi::{
-    GtkGrid, GtkOverlay, GtkPaned, MpvRenderContext, g_free, g_malloc0, g_strdup, gtk_grid_attach,
-    gtk_grid_new, gtk_grid_set_column_homogeneous, gtk_grid_set_row_homogeneous, gtk_overlay_new,
+    GtkGrid, GtkOverlay, GtkPaned, g_free, g_malloc0, g_strdup, gtk_grid_attach, gtk_grid_new,
+    gtk_grid_set_column_homogeneous, gtk_grid_set_row_homogeneous, gtk_overlay_new,
     gtk_overlay_set_child, gtk_paned_set_end_child, gtk_widget_add_css_class,
     gtk_widget_set_hexpand, gtk_widget_set_vexpand, gtk_widget_unparent,
 };
@@ -40,7 +40,7 @@ use self::playback::{
     ensure_tile_session, load_tile_stream, set_tile_status, sync_tile_from_session,
     update_tile_empty_state,
 };
-use self::render::clear_tile_render_context;
+use self::render::{PlayerRenderContext, clear_tile_render_context};
 use self::runtime::{
     add_surface_seconds_timeout, add_weak_pointer, clear_pointer, disable_tile_wakeup_callback,
     remove_source_if_active, remove_weak_pointer,
@@ -115,7 +115,7 @@ struct StreamTile {
     stream_info: *mut PlayerFooterStreamInfo,
     stream_quality: PlayerStreamQualityState,
 
-    mpv_gl: *mut MpvRenderContext,
+    mpv_gl: Option<Box<PlayerRenderContext>>,
     last_render_width: c_int,
     last_render_height: c_int,
     render_queued: c_int,
@@ -223,6 +223,7 @@ unsafe fn player_surface_unref(state: *mut PlayerSurface) {
             return;
         }
 
+        ptr::drop_in_place(state);
         g_free(state as *mut c_void);
     }
 }

@@ -1,15 +1,10 @@
 use super::ffi::{
     G_SOURCE_CONTINUE, G_SOURCE_REMOVE, GL_COLOR_BUFFER_BIT, GL_FRAMEBUFFER_BINDING, GdkGLContext,
-    GtkGLArea, GtkWidget, MPV_MAINLOOP_PRIORITY, MPV_RENDER_PARAM_API_TYPE,
-    MPV_RENDER_PARAM_FLIP_Y, MPV_RENDER_PARAM_INVALID, MPV_RENDER_PARAM_OPENGL_FBO,
-    MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, MPV_RENDER_UPDATE_FRAME, MpvOpenGLFbo,
-    MpvOpenGLInitParams, MpvRenderParam, epoxy_eglGetProcAddress, epoxy_glClear,
+    GtkGLArea, GtkWidget, MPV_MAINLOOP_PRIORITY, epoxy_eglGetProcAddress, epoxy_glClear,
     epoxy_glClearColor, epoxy_glGetIntegerv, g_atomic_int_compare_and_exchange, g_atomic_int_set,
     gtk_gl_area_attach_buffers, gtk_gl_area_get_error, gtk_gl_area_make_current,
     gtk_gl_area_queue_render, gtk_gl_area_set_auto_render, gtk_widget_get_height,
-    gtk_widget_get_realized, gtk_widget_get_scale_factor, gtk_widget_get_width, mpv_error_string,
-    mpv_render_context_create, mpv_render_context_free, mpv_render_context_render,
-    mpv_render_context_set_update_callback, mpv_render_context_update,
+    gtk_widget_get_realized, gtk_widget_get_scale_factor, gtk_widget_get_width,
 };
 use super::playback::{set_tile_status, tile_mpv};
 use super::runtime::{
@@ -17,22 +12,54 @@ use super::runtime::{
 };
 use super::{FALSE, StreamTile, TRUE, player_surface_ref, player_surface_unref};
 use crate::player::session::player_session_reenable_video;
+use crate::player::session::report;
+use libmpv2::Mpv;
+// libmpv2 7.0.1 omits internal_format in its OpenGL framebuffer type.
+use libmpv2_sys::{
+    self as mpv_sys, mpv_opengl_fbo as MpvOpenGLFbo, mpv_opengl_init_params as MpvOpenGLInitParams,
+    mpv_render_param as MpvRenderParam,
+    mpv_render_param_type_MPV_RENDER_PARAM_API_TYPE as MPV_RENDER_PARAM_API_TYPE,
+    mpv_render_param_type_MPV_RENDER_PARAM_FLIP_Y as MPV_RENDER_PARAM_FLIP_Y,
+    mpv_render_param_type_MPV_RENDER_PARAM_INVALID as MPV_RENDER_PARAM_INVALID,
+    mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_FBO as MPV_RENDER_PARAM_OPENGL_FBO,
+    mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_INIT_PARAMS as MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
+    mpv_render_update_flag_MPV_RENDER_UPDATE_FRAME as MPV_RENDER_UPDATE_FRAME,
+};
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
+use std::{ptr::NonNull, rc::Rc};
+
+pub(super) struct PlayerRenderContext {
+    ctx: NonNull<mpv_sys::mpv_render_context>,
+    _mpv: Rc<Mpv>,
+}
+
+impl Drop for PlayerRenderContext {
+    fn drop(&mut self) {
+        unsafe {
+            mpv_sys::mpv_render_context_set_update_callback(
+                self.ctx.as_ptr(),
+                None,
+                ptr::null_mut(),
+            );
+            mpv_sys::mpv_render_context_free(self.ctx.as_ptr());
+        }
+    }
+}
 
 pub(super) unsafe fn enable_tile_render_callback(tile: *mut StreamTile) {
     unsafe {
-        if (*tile).mpv_gl.is_null() {
+        let Some(context) = (*tile).mpv_gl.as_ref() else {
             return;
-        }
+        };
 
         if (*tile).render_callback_ref_held == 0 {
             player_surface_ref((*tile).app);
             (*tile).render_callback_ref_held = TRUE;
         }
-        mpv_render_context_set_update_callback(
-            (*tile).mpv_gl,
+        mpv_sys::mpv_render_context_set_update_callback(
+            context.ctx.as_ptr(),
             Some(on_mpv_render_update),
             tile as *mut c_void,
         );
@@ -41,8 +68,12 @@ pub(super) unsafe fn enable_tile_render_callback(tile: *mut StreamTile) {
 
 pub(super) unsafe fn disable_tile_render_callback(tile: *mut StreamTile) {
     unsafe {
-        if !(*tile).mpv_gl.is_null() {
-            mpv_render_context_set_update_callback((*tile).mpv_gl, None, ptr::null_mut());
+        if let Some(context) = (*tile).mpv_gl.as_ref() {
+            mpv_sys::mpv_render_context_set_update_callback(
+                context.ctx.as_ptr(),
+                None,
+                ptr::null_mut(),
+            );
         }
         if (*tile).render_callback_ref_held != 0 {
             (*tile).render_callback_ref_held = FALSE;
@@ -131,10 +162,9 @@ pub(super) unsafe fn clear_tile_render_context(tile: *mut StreamTile) {
             gtk_gl_area_make_current((*tile).gl_area as *mut GtkGLArea);
         }
 
-        if !(*tile).mpv_gl.is_null() {
+        if (*tile).mpv_gl.is_some() {
             disable_tile_render_callback(tile);
-            mpv_render_context_free((*tile).mpv_gl);
-            (*tile).mpv_gl = ptr::null_mut();
+            (*tile).mpv_gl.take();
         }
         remove_source_if_active(&mut (*tile).render_warmup_source);
         (*tile).last_render_width = 0;
@@ -156,7 +186,7 @@ pub(super) unsafe extern "C" fn on_gl_render(
             return TRUE;
         }
 
-        if (*tile).mpv_gl.is_null() {
+        if (*tile).mpv_gl.is_none() {
             gtk_gl_area_attach_buffers(area);
             (epoxy_glClearColor)(0.02, 0.02, 0.02, 1.0);
             (epoxy_glClear)(GL_COLOR_BUFFER_BIT);
@@ -171,12 +201,13 @@ pub(super) unsafe extern "C" fn on_gl_render(
             return TRUE;
         }
 
-        let update_flags = mpv_render_context_update((*tile).mpv_gl) as u64;
+        let update_flags =
+            mpv_sys::mpv_render_context_update((*tile).mpv_gl.as_ref().unwrap().ctx.as_ptr());
         let size_changed =
             width != (*tile).last_render_width || height != (*tile).last_render_height;
         let warming_up = (*tile).render_warmup_frames > 0;
 
-        if (update_flags & MPV_RENDER_UPDATE_FRAME) == 0 && !size_changed && !warming_up {
+        if (update_flags & MPV_RENDER_UPDATE_FRAME as u64) == 0 && !size_changed && !warming_up {
             return TRUE;
         }
 
@@ -207,9 +238,12 @@ pub(super) unsafe extern "C" fn on_gl_render(
             },
         ];
 
-        let status = mpv_render_context_render((*tile).mpv_gl, params.as_mut_ptr());
+        let status = mpv_sys::mpv_render_context_render(
+            (*tile).mpv_gl.as_ref().unwrap().ctx.as_ptr(),
+            params.as_mut_ptr(),
+        );
         if status < 0 {
-            log_warning(c"mpv render: %s".as_ptr(), mpv_error_string(status));
+            report(Err(libmpv2::Error::Raw(status)), "mpv render");
         } else {
             (*tile).last_render_width = width;
             (*tile).last_render_height = height;
@@ -221,8 +255,10 @@ pub(super) unsafe extern "C" fn on_gl_render(
 
 pub(super) unsafe fn create_mpv_render_context(tile: *mut StreamTile) -> c_int {
     unsafe {
-        let mpv = tile_mpv(tile);
-        if mpv.is_null() || (*tile).gl_area.is_null() {
+        let Some(mpv) = tile_mpv(tile) else {
+            return FALSE;
+        };
+        if (*tile).gl_area.is_null() {
             return FALSE;
         }
 
@@ -234,10 +270,9 @@ pub(super) unsafe fn create_mpv_render_context(tile: *mut StreamTile) -> c_int {
             return FALSE;
         }
 
-        if !(*tile).mpv_gl.is_null() {
+        if (*tile).mpv_gl.is_some() {
             disable_tile_render_callback(tile);
-            mpv_render_context_free((*tile).mpv_gl);
-            (*tile).mpv_gl = ptr::null_mut();
+            (*tile).mpv_gl.take();
         }
 
         let mut gl_init_params = MpvOpenGLInitParams {
@@ -259,12 +294,21 @@ pub(super) unsafe fn create_mpv_render_context(tile: *mut StreamTile) -> c_int {
             },
         ];
 
-        let status = mpv_render_context_create(&mut (*tile).mpv_gl, mpv, params.as_mut_ptr());
+        let mut ctx = ptr::null_mut();
+        let status =
+            mpv_sys::mpv_render_context_create(&mut ctx, mpv.ctx.as_ptr(), params.as_mut_ptr());
         if status < 0 {
-            log_warning(c"mpv render context: %s".as_ptr(), mpv_error_string(status));
+            report(Err(libmpv2::Error::Raw(status)), "mpv render context");
             return FALSE;
         }
 
+        let Some(ctx) = NonNull::new(ctx) else {
+            return FALSE;
+        };
+        (*tile).mpv_gl = Some(Box::new(PlayerRenderContext {
+            ctx,
+            _mpv: mpv,
+        }));
         enable_tile_render_callback(tile);
         // The session may already be playing; force mpv to bind video to this new GLArea.
         player_session_reenable_video((*tile).session);
@@ -282,7 +326,7 @@ pub(super) unsafe extern "C" fn on_gl_realize(_area: *mut GtkGLArea, user_data: 
             return;
         }
 
-        if !tile_mpv(tile).is_null() && create_mpv_render_context(tile) == 0 {
+        if tile_mpv(tile).is_some() && create_mpv_render_context(tile) == 0 {
             set_tile_status(tile, c"Render error".as_ptr());
         }
     }

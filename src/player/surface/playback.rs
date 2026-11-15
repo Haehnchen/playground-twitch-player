@@ -1,12 +1,10 @@
 use super::chat::{activate_tile_chat, sync_chat_for_tile};
 use super::controls::show_tile_overlay;
 use super::ffi::{
-    G_LOG_LEVEL_DEBUG, G_SOURCE_REMOVE, GtkButton, GtkGLArea, MPV_END_FILE_REASON_EOF,
-    MPV_END_FILE_REASON_ERROR, MPV_EVENT_END_FILE, MPV_EVENT_FILE_LOADED, MPV_EVENT_LOG_MESSAGE,
-    MPV_EVENT_NONE, MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE, MPV_EVENT_VIDEO_RECONFIG,
-    MPV_MAINLOOP_PRIORITY, MpvEventEndFile, MpvEventLogMessage, g_atomic_int_compare_and_exchange,
-    g_atomic_int_set, g_free, g_log, g_strdup, g_strdup_printf, gtk_gl_area_queue_render,
-    gtk_widget_get_realized, gtk_widget_set_sensitive, gtk_widget_set_visible, mpv_wait_event,
+    G_SOURCE_REMOVE, GtkButton, GtkGLArea, MPV_MAINLOOP_PRIORITY,
+    g_atomic_int_compare_and_exchange, g_atomic_int_set, g_free, g_strdup, g_strdup_printf,
+    gtk_gl_area_queue_render, gtk_widget_get_realized, gtk_widget_set_sensitive,
+    gtk_widget_set_visible,
 };
 use super::render::{
     clear_tile_render_context, create_mpv_render_context, queue_tile_render, start_render_warmup,
@@ -23,12 +21,12 @@ use super::streams::{request_tile_qualities_update, reset_tile_quality_selection
 use super::streams::{
     request_tile_title_update, reset_tile_stream_title, update_tile_channel_label,
 };
-use super::{FALSE, G_LOG_DOMAIN, PLAYER_STARTING_STREAM_STATUS, StreamTile, TRUE};
+use super::{FALSE, PLAYER_STARTING_STREAM_STATUS, StreamTile, TRUE};
 use crate::glib_strings::is_nonempty;
 use crate::player::channel_switcher_overlay::channel_switcher_overlay_show_at;
 use crate::player::controls::player_volume_update_mute_button;
 use crate::player::session::{
-    MpvHandle, player_session_drop_buffers, player_session_free, player_session_get_channel,
+    player_session_drop_buffers, player_session_free, player_session_get_channel,
     player_session_get_label, player_session_get_mpv, player_session_is_playing,
     player_session_is_ready, player_session_load_stream, player_session_new,
     player_session_set_hwdec_enabled, player_session_set_ytdl_raw_options, player_session_stop,
@@ -37,11 +35,14 @@ use crate::settings::{
     AppSettingsChannel, app_settings_get_hwdec_enabled, app_settings_get_twitch_playback_auth_token,
 };
 use crate::twitch::channel::normalize_twitch_channel;
+use gtk4::glib;
+use libmpv2::{Mpv, events::Event, mpv_end_file_reason};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
-pub(super) unsafe fn tile_mpv(tile: *mut StreamTile) -> *mut MpvHandle {
+pub(super) unsafe fn tile_mpv(tile: *mut StreamTile) -> Option<Rc<Mpv>> {
     unsafe { player_session_get_mpv((*tile).session) }
 }
 
@@ -52,43 +53,30 @@ pub(super) unsafe extern "C" fn process_mpv_events(user_data: *mut c_void) -> c_
 
         g_atomic_int_set(&mut (*tile).event_queued, 0);
 
-        let mpv = tile_mpv(tile);
-        if (*(*tile).app).closing.load(Ordering::Acquire) || mpv.is_null() {
+        if (*(*tile).app).closing.load(Ordering::Acquire) {
             return G_SOURCE_REMOVE;
         }
-
-        loop {
-            let event = mpv_wait_event(mpv, 0.0);
-            if event.is_null() || (*event).event_id == MPV_EVENT_NONE {
-                break;
-            }
-
-            match (*event).event_id {
-                MPV_EVENT_START_FILE => set_tile_status(tile, c"Loading".as_ptr()),
-                MPV_EVENT_FILE_LOADED => set_tile_status(tile, c"Playback running".as_ptr()),
-                MPV_EVENT_END_FILE => {
-                    let end = (*event).data as *mut MpvEventEndFile;
-                    if !end.is_null() && (*end).reason == MPV_END_FILE_REASON_ERROR {
-                        set_tile_status(tile, c"Stream could not be played".as_ptr());
-                    } else if end.is_null() || (*end).reason == MPV_END_FILE_REASON_EOF {
-                        set_tile_status(tile, c"Stopped".as_ptr());
-                    }
+        let Some(mpv) = tile_mpv(tile) else {
+            return G_SOURCE_REMOVE;
+        };
+        while let Some(event) = mpv.wait_event(0.0) {
+            match event {
+                Ok(Event::StartFile) => set_tile_status(tile, c"Loading".as_ptr()),
+                Ok(Event::FileLoaded) => set_tile_status(tile, c"Playback running".as_ptr()),
+                Ok(Event::EndFile(mpv_end_file_reason::Eof)) => {
+                    set_tile_status(tile, c"Stopped".as_ptr())
                 }
-                MPV_EVENT_VIDEO_RECONFIG => {}
-                MPV_EVENT_LOG_MESSAGE => {
-                    let log = (*event).data as *mut MpvEventLogMessage;
-                    if !log.is_null() && !(*log).prefix.is_null() && !(*log).text.is_null() {
-                        g_log(
-                            G_LOG_DOMAIN.as_ptr() as *const c_char,
-                            G_LOG_LEVEL_DEBUG,
-                            c"mpv[%s][%u]: %s".as_ptr(),
-                            (*log).prefix,
-                            (*tile).index,
-                            (*log).text,
-                        );
-                    }
+                Ok(Event::EndFile(mpv_end_file_reason::Error)) | Err(_) => {
+                    set_tile_status(tile, c"Stream could not be played".as_ptr());
                 }
-                MPV_EVENT_SHUTDOWN => return G_SOURCE_REMOVE,
+                Ok(Event::LogMessage {
+                    prefix,
+                    text,
+                    ..
+                }) => {
+                    glib::g_debug!("twitch-player", "mpv[{prefix}][{}]: {text}", (*tile).index);
+                }
+                Ok(Event::Shutdown) => return G_SOURCE_REMOVE,
                 _ => {}
             }
         }

@@ -1,7 +1,6 @@
 use super::{FALSE, GClosureNotify, GDestroyNotify, GSourceFunc, GType, TRUE};
-use crate::player::session::MpvHandle;
 use crate::twitch::stream_info::{GCancellable, GError, GPtrArray};
-use std::ffi::{c_char, c_double, c_int, c_uint, c_ulonglong, c_void};
+use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 pub(super) const MPV_MAINLOOP_PRIORITY: c_int = -100;
 pub(super) const G_PRIORITY_DEFAULT: c_int = 0;
 pub(super) const G_SOURCE_REMOVE: c_int = 0;
@@ -31,21 +30,6 @@ pub(super) const GDK_KEY_M_UPPER: c_uint = 0x04d;
 pub(super) const GDK_KEY_M_LOWER: c_uint = 0x06d;
 pub(super) const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 pub(super) const GL_FRAMEBUFFER_BINDING: c_uint = 0x8CA6;
-pub(super) const MPV_EVENT_NONE: c_int = 0;
-pub(super) const MPV_EVENT_SHUTDOWN: c_int = 1;
-pub(super) const MPV_EVENT_LOG_MESSAGE: c_int = 2;
-pub(super) const MPV_EVENT_START_FILE: c_int = 6;
-pub(super) const MPV_EVENT_END_FILE: c_int = 7;
-pub(super) const MPV_EVENT_FILE_LOADED: c_int = 8;
-pub(super) const MPV_EVENT_VIDEO_RECONFIG: c_int = 17;
-pub(super) const MPV_END_FILE_REASON_EOF: c_int = 0;
-pub(super) const MPV_END_FILE_REASON_ERROR: c_int = 4;
-pub(super) const MPV_RENDER_PARAM_INVALID: c_int = 0;
-pub(super) const MPV_RENDER_PARAM_API_TYPE: c_int = 1;
-pub(super) const MPV_RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
-pub(super) const MPV_RENDER_PARAM_OPENGL_FBO: c_int = 3;
-pub(super) const MPV_RENDER_PARAM_FLIP_Y: c_int = 4;
-pub(super) const MPV_RENDER_UPDATE_FRAME: u64 = 1 << 0;
 pub(super) const PANGO_ELLIPSIZE_END: c_int = 3;
 
 #[repr(C)]
@@ -221,57 +205,6 @@ pub struct GtkWidget {
 #[repr(C)]
 pub struct GtkWindow {
     _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct MpvRenderContext {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub(super) struct MpvEvent {
-    pub(super) event_id: c_int,
-    pub(super) error: c_int,
-    pub(super) reply_userdata: u64,
-    pub(super) data: *mut c_void,
-}
-
-#[repr(C)]
-pub(super) struct MpvEventLogMessage {
-    pub(super) prefix: *const c_char,
-    pub(super) level: *const c_char,
-    pub(super) text: *const c_char,
-    pub(super) log_level: c_int,
-}
-
-#[repr(C)]
-pub(super) struct MpvEventEndFile {
-    pub(super) reason: c_int,
-    pub(super) error: c_int,
-    pub(super) playlist_entry_id: i64,
-    pub(super) playlist_insert_id: i64,
-    pub(super) playlist_insert_num_entries: c_int,
-}
-
-#[repr(C)]
-pub(super) struct MpvOpenGLInitParams {
-    pub(super) get_proc_address:
-        Option<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>,
-    pub(super) get_proc_address_ctx: *mut c_void,
-}
-
-#[repr(C)]
-pub(super) struct MpvOpenGLFbo {
-    pub(super) fbo: c_int,
-    pub(super) w: c_int,
-    pub(super) h: c_int,
-    pub(super) internal_format: c_int,
-}
-
-#[repr(C)]
-pub(super) struct MpvRenderParam {
-    pub(super) type_: c_int,
-    pub(super) data: *mut c_void,
 }
 
 unsafe extern "C" {
@@ -469,24 +402,5 @@ unsafe extern "C" {
     pub(super) fn gtk_widget_set_vexpand(widget: *mut GtkWidget, expand: c_int);
     pub(super) fn gtk_widget_set_visible(widget: *mut GtkWidget, visible: c_int);
     pub(super) fn gtk_widget_unparent(widget: *mut GtkWidget);
-
-    pub(super) fn mpv_error_string(error: c_int) -> *const c_char;
-    pub(super) fn mpv_render_context_create(
-        res: *mut *mut MpvRenderContext,
-        mpv: *mut MpvHandle,
-        params: *mut MpvRenderParam,
-    ) -> c_int;
-    pub(super) fn mpv_render_context_free(ctx: *mut MpvRenderContext);
-    pub(super) fn mpv_render_context_render(
-        ctx: *mut MpvRenderContext,
-        params: *mut MpvRenderParam,
-    ) -> c_int;
-    pub(super) fn mpv_render_context_set_update_callback(
-        ctx: *mut MpvRenderContext,
-        callback: Option<unsafe extern "C" fn(*mut c_void)>,
-        callback_ctx: *mut c_void,
-    );
-    pub(super) fn mpv_render_context_update(ctx: *mut MpvRenderContext) -> c_ulonglong;
-    pub(super) fn mpv_wait_event(ctx: *mut MpvHandle, timeout: c_double) -> *mut MpvEvent;
 
 }
