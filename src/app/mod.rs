@@ -59,6 +59,7 @@ use self::window::{
     on_minimize_clicked, on_root_motion, on_window_close_request, on_window_fullscreen_changed,
     on_window_maximized_changed, schedule_window_overlay_hide,
 };
+use crate::player::controls::player_overlay_button_new;
 use crate::player::icons::{
     player_layout_menu_icon_new, player_settings_icon_new, player_window_icon_new,
 };
@@ -66,7 +67,6 @@ use crate::player::layout::{
     PLAYER_LAYOUT_2X2_INDEX, PLAYER_LAYOUT_MAX_TILES, PLAYER_LAYOUT_SINGLE_INDEX,
 };
 use crate::player::motion::PlayerMotionTracker;
-use crate::player::overlay_controls::player_overlay_button_new;
 use crate::player::session::{
     PlayerSession, player_session_free, player_session_new, player_session_set_hwdec_enabled,
 };
@@ -204,6 +204,8 @@ unsafe extern "C" fn destroy_state(user_data: *mut c_void) {
 
 unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *mut c_void) {
     unsafe {
+        // GtkApplication has initialized GTK on this main thread.
+        gtk4::set_initialized();
         let config = user_data as *mut StartupConfig;
 
         install_css();

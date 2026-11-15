@@ -19,7 +19,7 @@ use super::{
     StreamQualityCallbackData, StreamTile, StreamTitleCallbackData, TRUE, player_surface_unref,
 };
 use crate::glib_strings::is_nonempty;
-use crate::player::footer::player_footer_stream_info_set;
+use crate::player::controls::player_footer_stream_info_set;
 use crate::player::session::{player_session_is_playing, player_session_load_stream};
 use crate::player::stream_quality::{
     player_stream_quality_state_begin_fetch, player_stream_quality_state_cache_is_valid,

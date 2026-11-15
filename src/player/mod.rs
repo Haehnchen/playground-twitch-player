@@ -1,12 +1,10 @@
 pub mod channel_switcher_overlay;
-pub mod footer;
+pub mod controls;
 pub mod icons;
 pub mod layout;
 pub mod motion;
-pub mod overlay_controls;
 pub mod session;
 pub mod stream_quality;
 pub mod stream_settings;
 pub mod style;
 pub mod surface;
-pub mod volume;

@@ -15,8 +15,8 @@ use super::{FALSE, PlayerSurface, StreamTile, TRUE};
 use crate::player::channel_switcher_overlay::{
     channel_switcher_overlay_is_visible, channel_switcher_overlay_show_at,
 };
+use crate::player::controls::{player_volume_apply_scroll, player_volume_toggle_muted};
 use crate::player::motion::player_motion_tracker_ignore_stationary;
-use crate::player::volume::{player_volume_apply_scroll, player_volume_toggle_muted};
 use std::ffi::{c_double, c_int, c_uint, c_void};
 use std::ptr;
 

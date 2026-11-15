@@ -26,13 +26,13 @@ use super::streams::{
 use super::{FALSE, G_LOG_DOMAIN, PLAYER_STARTING_STREAM_STATUS, StreamTile, TRUE};
 use crate::glib_strings::is_nonempty;
 use crate::player::channel_switcher_overlay::channel_switcher_overlay_show_at;
+use crate::player::controls::player_volume_update_mute_button;
 use crate::player::session::{
     MpvHandle, player_session_drop_buffers, player_session_free, player_session_get_channel,
     player_session_get_label, player_session_get_mpv, player_session_is_playing,
     player_session_is_ready, player_session_load_stream, player_session_new,
     player_session_set_hwdec_enabled, player_session_set_ytdl_raw_options, player_session_stop,
 };
-use crate::player::volume::player_volume_update_mute_button;
 use crate::settings::{
     AppSettingsChannel, app_settings_get_hwdec_enabled, app_settings_get_twitch_playback_auth_token,
 };

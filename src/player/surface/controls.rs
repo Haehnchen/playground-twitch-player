@@ -43,21 +43,20 @@ use crate::glib_strings::is_nonempty;
 use crate::player::channel_switcher_overlay::{
     channel_switcher_overlay_is_visible, channel_switcher_overlay_new,
 };
-use crate::player::footer::{player_footer_stream_info_get_widget, player_footer_stream_info_new};
+use crate::player::controls::{
+    player_footer_stream_info_get_widget, player_footer_stream_info_new, player_overlay_button_new,
+    player_volume_mute_button_new, player_volume_set_muted, player_volume_sync_session_from_range,
+    player_volume_toggle_muted,
+};
 use crate::player::icons::{
     player_chat_icon_new, player_plus_icon_new, player_refresh_icon_new,
     player_stream_settings_icon_new, player_tile_focus_icon_new, player_trash_icon_new,
 };
-use crate::player::overlay_controls::player_overlay_button_new;
 use crate::player::session::{
     player_session_get_muted, player_session_get_volume, player_session_new,
     player_session_set_hwdec_enabled, player_session_toggle_stream_info,
 };
 use crate::player::stream_settings::player_stream_settings_popover_new;
-use crate::player::volume::{
-    player_volume_mute_button_new, player_volume_set_muted, player_volume_sync_session_from_range,
-    player_volume_toggle_muted,
-};
 use crate::settings::app_settings_get_hwdec_enabled;
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 use std::ptr;

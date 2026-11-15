@@ -55,7 +55,7 @@ use crate::glib_strings::is_nonempty;
 use crate::player::channel_switcher_overlay::{
     ChannelSwitcherOverlay, channel_switcher_overlay_free, channel_switcher_overlay_set_settings,
 };
-use crate::player::footer::{PlayerFooterStreamInfo, player_footer_stream_info_free};
+use crate::player::controls::{PlayerFooterStreamInfo, player_footer_stream_info_free};
 use crate::player::layout::{
     PLAYER_LAYOUT_2X2_INDEX, PLAYER_LAYOUT_MAX_TILES, PLAYER_LAYOUTS, PlayerLayoutCell,
 };
