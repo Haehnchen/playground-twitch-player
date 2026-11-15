@@ -12,6 +12,7 @@ pub(super) const GTK_ALIGN_END: c_int = 2;
 pub(super) const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
 pub(super) const GTK_ORIENTATION_VERTICAL: c_int = 1;
 pub(super) const GTK_PHASE_CAPTURE: c_int = 1;
+pub(super) const GTK_PHASE_BUBBLE: c_int = 2;
 pub(super) const GTK_POS_BOTTOM: c_int = 3;
 pub(super) const GTK_STYLE_PROVIDER_PRIORITY_APPLICATION: c_uint = 600;
 pub(super) const GDK_BUTTON_PRIMARY: c_int = 1;

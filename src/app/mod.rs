@@ -38,15 +38,15 @@ use self::content::{
 use self::desktop::{install_app_icon, write_user_desktop_identity};
 use self::ffi::{
     G_APPLICATION_NON_UNIQUE, GObject, GTK_ALIGN_END, GTK_ALIGN_START, GTK_ORIENTATION_HORIZONTAL,
-    GTK_PHASE_CAPTURE, GtkApplication, GtkBox, GtkOverlay, GtkWidget, GtkWindow, g_application_run,
-    g_object_set_data_full, g_object_unref, g_set_application_name, g_set_prgname, g_setenv,
-    g_signal_connect_data, gtk_application_new, gtk_application_window_new, gtk_box_append,
-    gtk_box_new, gtk_event_controller_key_new, gtk_event_controller_motion_new,
-    gtk_event_controller_set_propagation_phase, gtk_overlay_add_overlay, gtk_overlay_new,
-    gtk_widget_add_controller, gtk_widget_add_css_class, gtk_widget_set_halign,
-    gtk_widget_set_valign, gtk_widget_unparent, gtk_window_present, gtk_window_set_child,
-    gtk_window_set_decorated, gtk_window_set_default_size, gtk_window_set_icon_name,
-    gtk_window_set_title,
+    GTK_PHASE_BUBBLE, GTK_PHASE_CAPTURE, GtkApplication, GtkBox, GtkOverlay, GtkWidget, GtkWindow,
+    g_application_run, g_object_set_data_full, g_object_unref, g_set_application_name,
+    g_set_prgname, g_setenv, g_signal_connect_data, gtk_application_new,
+    gtk_application_window_new, gtk_box_append, gtk_box_new, gtk_event_controller_key_new,
+    gtk_event_controller_motion_new, gtk_event_controller_set_propagation_phase,
+    gtk_overlay_add_overlay, gtk_overlay_new, gtk_widget_add_controller, gtk_widget_add_css_class,
+    gtk_widget_set_halign, gtk_widget_set_valign, gtk_widget_unparent, gtk_window_present,
+    gtk_window_set_child, gtk_window_set_decorated, gtk_window_set_default_size,
+    gtk_window_set_icon_name, gtk_window_set_title,
 };
 use self::runtime::{
     add_weak_pointer, connect_app_state_signal, remove_source_if_active, remove_weak_pointer,
@@ -354,7 +354,8 @@ unsafe extern "C" fn on_activate(application: *mut GtkApplication, user_data: *m
         gtk_widget_add_controller((*state).root_overlay, motion.cast());
 
         let key_controller = gtk_event_controller_key_new();
-        gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
+        // Let focused inputs consume text before handling player shortcuts.
+        gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_BUBBLE);
         connect_app_state_signal(
             key_controller as *mut c_void,
             c"key-pressed".as_ptr(),
