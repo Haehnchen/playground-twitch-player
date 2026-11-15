@@ -198,22 +198,22 @@ pub(super) unsafe fn reset(switcher: *mut ChannelSwitcherOverlay) {
 
 pub(super) unsafe fn detach(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
-        if let Some(radial) = (*switcher).radial.take() {
-            if let Some(host) = radial.host.upgrade() {
-                host.remove_overlay(&radial.fixed);
-            }
+        if let Some(radial) = (*switcher).radial.take()
+            && let Some(host) = radial.host.upgrade()
+        {
+            host.remove_overlay(&radial.fixed);
         }
     }
 }
 
 pub(super) unsafe fn show_status(switcher: *mut ChannelSwitcherOverlay, message: *const c_char) {
     unsafe {
-        if let Some(radial) = &(*switcher).radial {
-            if !radial.populated {
-                radial
-                    .status
-                    .set_label(&CStr::from_ptr(message).to_string_lossy());
-            }
+        if let Some(radial) = &(*switcher).radial
+            && !radial.populated
+        {
+            radial
+                .status
+                .set_label(&CStr::from_ptr(message).to_string_lossy());
         }
     }
 }
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn activation_keeps_the_route_to_both_rings_open() {
-        assert!(PREFETCH_RADIUS > OPEN_RADIUS);
+        const { assert!(PREFETCH_RADIUS > OPEN_RADIUS) };
         assert!(!in_activation_area(120.0, false, 360));
         assert!(in_activation_area(90.0, false, 360));
         assert!(in_activation_area(180.0, true, 360));

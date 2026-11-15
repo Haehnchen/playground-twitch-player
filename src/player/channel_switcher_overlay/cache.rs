@@ -118,8 +118,10 @@ mod tests {
 
     #[test]
     fn failures_back_off_without_discarding_the_previous_snapshot() {
-        let mut live = LiveCache::default();
-        live.previews = Some(Vec::new());
+        let mut live = LiveCache {
+            previews: Some(Vec::new()),
+            ..Default::default()
+        };
         live.begin(LIVE_CACHE_US);
         live.cancel = None;
         assert!(!live.should_fetch(LIVE_CACHE_US + 1));
