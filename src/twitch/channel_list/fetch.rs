@@ -1,13 +1,11 @@
 use super::ffi::{
-    G_IO_ERROR_CANCELLED, G_IO_ERROR_FAILED, G_USEC_PER_SEC, GTask, g_ascii_strcasecmp,
-    g_ascii_strdown, g_clear_error, g_error_matches, g_free, g_get_monotonic_time, g_get_real_time,
-    g_io_error_quark, g_malloc0, g_ptr_array_add, g_ptr_array_new_with_free_func, g_ptr_array_ref,
-    g_ptr_array_unref, g_set_error, g_strdup, g_task_return_pointer,
+    G_IO_ERROR_CANCELLED, G_IO_ERROR_FAILED, G_USEC_PER_SEC, GTask, g_clear_error, g_error_matches,
+    g_free, g_get_real_time, g_io_error_quark, g_malloc0, g_ptr_array_add,
+    g_ptr_array_new_with_free_func, g_ptr_array_unref, g_set_error, g_strdup,
+    g_task_return_pointer,
 };
-use super::{
-    ChannelListResult, FetchChannelListData, FollowedCache, channel_list_result_free,
-    g_free_destroy,
-};
+use super::{ChannelListResult, FetchChannelListData, FollowedCache, channel_list_result_free};
+use crate::glib_strings::dup_bytes;
 use crate::settings::{
     AppSettings, app_settings_get_channel, app_settings_get_channel_count, app_settings_save,
     app_settings_set_twitch_auth_tokens,
@@ -17,9 +15,11 @@ use crate::twitch::stream_info::{
     GCancellable, GError, GPtrArray, TwitchFollowedChannel, twitch_stream_info_error_quark,
     twitch_stream_info_fetch_followed_channels,
 };
-use std::ffi::{c_char, c_int, c_uint, c_void};
+use std::collections::HashSet;
+use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub(super) const TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED: c_int = 0;
 
@@ -39,34 +39,23 @@ pub(super) unsafe fn token_needs_refresh(expires_at: i64) -> bool {
     unsafe { expires_at > 0 && g_get_real_time() / G_USEC_PER_SEC + 60 >= expires_at }
 }
 
-pub(super) unsafe fn add_unique_channel(channels: *mut GPtrArray, channel: *const c_char) {
-    unsafe {
-        if channel.is_null() || *channel == 0 {
-            return;
-        }
-
-        for i in 0..(*channels).len {
-            let existing = *(*channels).pdata.add(i as usize) as *const c_char;
-            if g_ascii_strcasecmp(existing, channel) == 0 {
-                return;
-            }
-        }
-
-        g_ptr_array_add(channels, g_ascii_strdown(channel, -1) as *mut c_void);
-    }
+// Keep insertion order while removing duplicate channel logins.
+fn unique_channels(channels: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    channels
+        .into_iter()
+        .map(|channel| channel.to_ascii_lowercase())
+        .filter(|channel| !channel.is_empty() && seen.insert(channel.clone()))
+        .collect()
 }
 
-pub(super) unsafe fn channels_array_from_ptr_array(channels: *mut GPtrArray) -> *mut *mut c_char {
+fn channels_array(channels: &[String]) -> *mut *mut c_char {
     unsafe {
-        let count = (*channels).len as usize;
-        let result =
-            g_malloc0((count + 1) * std::mem::size_of::<*mut c_char>()) as *mut *mut c_char;
-
-        for i in 0..count {
-            let channel = *(*channels).pdata.add(i) as *const c_char;
-            *result.add(i) = g_strdup(channel);
+        let result = g_malloc0((channels.len() + 1) * std::mem::size_of::<*mut c_char>())
+            .cast::<*mut c_char>();
+        for (index, channel) in channels.iter().enumerate() {
+            *result.add(index) = dup_bytes(channel.as_bytes());
         }
-
         result
     }
 }
@@ -105,35 +94,35 @@ pub(super) unsafe fn build_channel_list_result(
     followed_channels: *mut GPtrArray,
 ) -> *mut ChannelListResult {
     unsafe {
-        let combined = g_ptr_array_new_with_free_func(Some(g_free_destroy));
-
+        let mut channels = Vec::new();
         for i in 0..manual_channel_count {
-            add_unique_channel(combined, *manual_channels.add(i as usize));
+            let channel = *manual_channels.add(i as usize);
+            if !channel.is_null() {
+                channels.push(CStr::from_ptr(channel).to_string_lossy().into_owned());
+            }
         }
-
         if !followed_channels.is_null() {
             for i in 0..(*followed_channels).len {
                 let followed =
                     *(*followed_channels).pdata.add(i as usize) as *mut TwitchFollowedChannel;
-                add_unique_channel(
-                    combined,
-                    if followed.is_null() {
-                        ptr::null()
-                    } else {
-                        (*followed).channel
-                    },
-                );
+                if !followed.is_null() && !(*followed).channel.is_null() {
+                    channels.push(
+                        CStr::from_ptr((*followed).channel)
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
             }
         }
+        let channels = unique_channels(channels);
 
         let result = Box::new(ChannelListResult {
             settings: ptr::null_mut(),
-            channels: channels_array_from_ptr_array(combined),
-            channel_count: (*combined).len,
+            channels: channels_array(&channels),
+            channel_count: channels.len() as c_uint,
             refreshed_token: ptr::null_mut(),
             error: ptr::null_mut(),
         });
-        g_ptr_array_unref(combined);
         Box::into_raw(result)
     }
 }
@@ -381,25 +370,37 @@ pub(super) fn followed_cache() -> &'static Mutex<FollowedCache> {
     static CACHE: OnceLock<Mutex<FollowedCache>> = OnceLock::new();
     CACHE.get_or_init(|| {
         Mutex::new(FollowedCache {
-            channels: ptr::null_mut(),
-            cached_at_us: 0,
+            channels: Vec::new(),
+            cached_at: None,
         })
     })
 }
 
+unsafe extern "C" fn free_followed_channel(data: *mut c_void) {
+    unsafe {
+        crate::twitch::stream_info::twitch_followed_channel_free(data.cast());
+    }
+}
+
 pub(super) unsafe fn dup_fresh_followed_cache() -> *mut GPtrArray {
     unsafe {
-        let now_us = g_get_monotonic_time();
         let cache = followed_cache()
             .lock()
             .expect("followed channel cache poisoned");
-        if !cache.channels.is_null()
-            && now_us - cache.cached_at_us < FOLLOWED_CHANNELS_CACHE_SECONDS * G_USEC_PER_SEC
-        {
-            g_ptr_array_ref(cache.channels)
-        } else {
-            ptr::null_mut()
+        if !cache.cached_at.is_some_and(|time| {
+            time.elapsed() < Duration::from_secs(FOLLOWED_CHANNELS_CACHE_SECONDS as u64)
+        }) {
+            return ptr::null_mut();
         }
+        let channels = g_ptr_array_new_with_free_func(Some(free_followed_channel));
+        for (channel, display_name) in &cache.channels {
+            let followed = Box::new(TwitchFollowedChannel {
+                channel: dup_bytes(channel.as_bytes()),
+                display_name: dup_bytes(display_name.as_bytes()),
+            });
+            g_ptr_array_add(channels, Box::into_raw(followed).cast());
+        }
+        channels
     }
 }
 
@@ -408,27 +409,73 @@ pub(super) unsafe fn store_followed_cache(channels: *mut GPtrArray) {
         let mut cache = followed_cache()
             .lock()
             .expect("followed channel cache poisoned");
-        if !cache.channels.is_null() {
-            g_ptr_array_unref(cache.channels);
-        }
-        cache.channels = if channels.is_null() {
-            ptr::null_mut()
+        cache.channels.clear();
+        cache.cached_at = if channels.is_null() {
+            None
         } else {
-            g_ptr_array_ref(channels)
+            Some(Instant::now())
         };
-        cache.cached_at_us = g_get_monotonic_time();
+        if !channels.is_null() {
+            for index in 0..(*channels).len {
+                let channel = *(*channels).pdata.add(index as usize) as *mut TwitchFollowedChannel;
+                cache.channels.push((
+                    CStr::from_ptr((*channel).channel)
+                        .to_string_lossy()
+                        .into_owned(),
+                    CStr::from_ptr((*channel).display_name)
+                        .to_string_lossy()
+                        .into_owned(),
+                ));
+            }
+        }
     }
 }
 
 pub fn twitch_channel_list_invalidate_followed_cache() {
-    unsafe {
-        let mut cache = followed_cache()
-            .lock()
-            .expect("followed channel cache poisoned");
-        if !cache.channels.is_null() {
-            g_ptr_array_unref(cache.channels);
-            cache.channels = ptr::null_mut();
+    let mut cache = followed_cache()
+        .lock()
+        .expect("followed channel cache poisoned");
+    cache.channels.clear();
+    cache.cached_at = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_merge_keeps_order_and_ignores_case_and_empty_names() {
+        assert_eq!(
+            unique_channels(["Foo", "", "BAR", "foo", "Baz", "bar"].map(String::from)),
+            ["foo", "bar", "baz"]
+        );
+    }
+
+    #[test]
+    fn followed_cache_snapshot_survives_invalidation_and_expires() {
+        unsafe {
+            let channels = g_ptr_array_new_with_free_func(Some(free_followed_channel));
+            let channel = Box::new(TwitchFollowedChannel {
+                channel: dup_bytes(b"example"),
+                display_name: dup_bytes(b"Example"),
+            });
+            g_ptr_array_add(channels, Box::into_raw(channel).cast());
+            store_followed_cache(channels);
+            g_ptr_array_unref(channels);
+            let snapshot = dup_fresh_followed_cache();
+            assert!(!snapshot.is_null());
+            twitch_channel_list_invalidate_followed_cache();
+            assert!(dup_fresh_followed_cache().is_null());
+            assert_eq!((*snapshot).len, 1);
+            let channel = *(*snapshot).pdata as *mut TwitchFollowedChannel;
+            assert_eq!(CStr::from_ptr((*channel).channel), c"example");
+            store_followed_cache(snapshot);
+            g_ptr_array_unref(snapshot);
+            followed_cache().lock().unwrap().cached_at = Some(
+                Instant::now() - Duration::from_secs(FOLLOWED_CHANNELS_CACHE_SECONDS as u64 + 1),
+            );
+            assert!(dup_fresh_followed_cache().is_null());
+            twitch_channel_list_invalidate_followed_cache();
         }
-        cache.cached_at_us = 0;
     }
 }

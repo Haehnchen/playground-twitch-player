@@ -4,4 +4,5 @@ pub mod channel_list;
 pub mod chat;
 pub mod stream_info;
 
+mod http;
 mod json;

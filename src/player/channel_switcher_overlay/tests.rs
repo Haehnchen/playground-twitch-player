@@ -135,11 +135,14 @@ fn search_activation_works_before_cards_are_built() {
         let switcher = empty_switcher();
         let mut selected: Option<(Vec<u8>, Vec<u8>)> = None;
         let mut preview = sample_preview();
-        (*switcher).previews = g_ptr_array_new_with_free_func(None);
-        g_ptr_array_add((*switcher).previews, &mut preview as *mut _ as *mut c_void);
+        (*switcher).previews = gtk4::glib::ffi::g_ptr_array_new_with_free_func(None).cast();
+        gtk4::glib::ffi::g_ptr_array_add(
+            (*switcher).previews.cast(),
+            &mut preview as *mut _ as *mut c_void,
+        );
         (*switcher).activate_callback = Some(activated);
         (*switcher).user_data = &mut selected as *mut _ as *mut c_void;
-        assert_eq!((*(*switcher).preview_cards).len, 0);
+        assert_eq!((*switcher).preview_cards.len(), 0);
 
         activate_first_matching_channel(switcher);
 

@@ -2,7 +2,7 @@ mod ffi;
 mod parser;
 mod requests;
 
-pub use self::ffi::{GBytes, GTask, SoupMessage, SoupMessageHeaders, SoupSession};
+pub use self::ffi::GTask;
 pub use self::requests::twitch_auth_refresh_token;
 
 use self::ffi::{

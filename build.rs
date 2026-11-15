@@ -22,14 +22,7 @@ fn main() {
     );
     println!("cargo:rustc-env=TWITCH_PLAYER_AUTHOR={APP_AUTHOR}");
 
-    let packages = [
-        "gtk4",
-        "gio-2.0",
-        "gdk-pixbuf-2.0",
-        "mpv",
-        "epoxy",
-        "libsoup-3.0",
-    ];
+    let packages = ["mpv", "epoxy"];
 
     let output = Command::new("pkg-config")
         .arg("--libs")

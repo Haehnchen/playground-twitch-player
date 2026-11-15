@@ -25,15 +25,13 @@ pub use self::ffi::{
 };
 use self::images::clear_image_cache;
 use self::layout::position_panel;
-use self::runtime::{
-    bump_generation, clear_object, g_free_destroy, g_object_unref_destroy,
-    g_ptr_array_unref_destroy, remove_source_if_active, remove_weak_pointer,
-};
+use self::runtime::{bump_generation, clear_object, remove_source_if_active, remove_weak_pointer};
 use self::style::install_css;
 use self::widgets::build_widgets;
 use self::widgets::{clear_grid, clear_preview_cards, show_status};
 use crate::settings::{AppSettings, AppSettingsChannel};
 use crate::twitch::stream_info::{GCancellable, GPtrArray};
+use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -50,7 +48,7 @@ pub struct ChannelSwitcherOverlay {
     settings: *mut AppSettings,
 
     previews: *mut GPtrArray,
-    preview_cards: *mut GPtrArray,
+    preview_cards: Vec<gtk4::Widget>,
     preview_card_columns: c_uint,
     preview_card_width: c_int,
     preview_width: c_int,
@@ -59,8 +57,8 @@ pub struct ChannelSwitcherOverlay {
     preview_card_next_index: c_uint,
     preview_card_visible_count: c_uint,
 
-    image_cache: *mut GHashTable,
-    image_waiters: *mut GHashTable,
+    image_cache: HashMap<images::ImageKey, gtk4::gdk::Texture>,
+    image_waiters: HashMap<images::ImageKey, images::ImageWaiters>,
 
     cached_channels_key: *mut c_char,
     cached_at_us: i64,
@@ -90,55 +88,43 @@ impl ChannelSwitcherOverlay {
         settings_callback: ChannelSwitcherSettingsCallback,
         settings_user_data: *mut c_void,
     ) -> Self {
-        unsafe {
-            Self {
-                overlay: ptr::null_mut(),
-                backdrop: ptr::null_mut(),
-                panel: ptr::null_mut(),
-                grid: ptr::null_mut(),
-                scroller: ptr::null_mut(),
-                search_entry: ptr::null_mut(),
-                direct_channel_entry: ptr::null_mut(),
+        Self {
+            overlay: ptr::null_mut(),
+            backdrop: ptr::null_mut(),
+            panel: ptr::null_mut(),
+            grid: ptr::null_mut(),
+            scroller: ptr::null_mut(),
+            search_entry: ptr::null_mut(),
+            direct_channel_entry: ptr::null_mut(),
 
-                settings,
+            settings,
 
-                previews: ptr::null_mut(),
-                preview_cards: g_ptr_array_new_with_free_func(Some(g_object_unref_destroy)),
-                preview_card_columns: 0,
-                preview_card_width: 0,
-                preview_width: 0,
-                preview_height: 0,
-                preview_card_build_source: 0,
-                preview_card_next_index: 0,
-                preview_card_visible_count: 0,
+            previews: ptr::null_mut(),
+            preview_cards: Vec::new(),
+            preview_card_columns: 0,
+            preview_card_width: 0,
+            preview_width: 0,
+            preview_height: 0,
+            preview_card_build_source: 0,
+            preview_card_next_index: 0,
+            preview_card_visible_count: 0,
 
-                image_cache: g_hash_table_new_full(
-                    Some(g_str_hash),
-                    Some(g_str_equal),
-                    Some(g_free_destroy),
-                    Some(g_object_unref_destroy),
-                ),
-                image_waiters: g_hash_table_new_full(
-                    Some(g_str_hash),
-                    Some(g_str_equal),
-                    Some(g_free_destroy),
-                    Some(g_ptr_array_unref_destroy),
-                ),
+            image_cache: HashMap::new(),
+            image_waiters: HashMap::new(),
 
-                cached_channels_key: ptr::null_mut(),
-                cached_at_us: 0,
-                cancel: ptr::null_mut(),
-                search_debounce_source: 0,
-                generation: 0,
+            cached_channels_key: ptr::null_mut(),
+            cached_at_us: 0,
+            cancel: ptr::null_mut(),
+            search_debounce_source: 0,
+            generation: 0,
 
-                activate_callback,
-                user_data,
-                settings_callback,
-                settings_user_data,
+            activate_callback,
+            user_data,
+            settings_callback,
+            settings_user_data,
 
-                ref_count: AtomicUsize::new(1),
-                closing: AtomicBool::new(false),
-            }
+            ref_count: AtomicUsize::new(1),
+            closing: AtomicBool::new(false),
         }
     }
 }
@@ -167,15 +153,6 @@ unsafe fn channel_switcher_overlay_unref(switcher: *mut ChannelSwitcherOverlay) 
         }
         if !(*switcher).previews.is_null() {
             g_ptr_array_unref((*switcher).previews);
-        }
-        if !(*switcher).preview_cards.is_null() {
-            g_ptr_array_unref((*switcher).preview_cards);
-        }
-        if !(*switcher).image_cache.is_null() {
-            g_hash_table_destroy((*switcher).image_cache);
-        }
-        if !(*switcher).image_waiters.is_null() {
-            g_hash_table_destroy((*switcher).image_waiters);
         }
         g_free((*switcher).cached_channels_key as *mut c_void);
 

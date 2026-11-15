@@ -1,21 +1,22 @@
 use super::ffi::{
-    G_IO_ERROR_FAILED, G_IO_ERROR_TIMED_OUT, G_USEC_PER_SEC, GTask, g_bytes_get_data,
-    g_bytes_new_static, g_bytes_unref, g_cancellable_set_error_if_cancelled, g_free,
-    g_get_monotonic_time, g_io_error_quark, g_object_set, g_object_unref, g_set_error, g_strndup,
-    g_task_return_error, g_task_return_pointer, g_uri_escape_string, g_usleep,
-    soup_message_get_request_headers, soup_message_get_status, soup_message_headers_append,
-    soup_message_new, soup_message_set_request_body_from_bytes, soup_session_new,
-    soup_session_send_and_read,
+    G_IO_ERROR_FAILED, G_IO_ERROR_TIMED_OUT, G_USEC_PER_SEC, GTask,
+    g_cancellable_set_error_if_cancelled, g_free, g_get_monotonic_time, g_io_error_quark,
+    g_set_error, g_task_return_error, g_task_return_pointer, g_uri_escape_string, g_usleep,
 };
 use super::parser::{parse_auth_error_message, parse_device_code_response, parse_token_response};
 use super::{
     AuthResponse, DeviceCodeData, PollTokenData, TwitchAuthDeviceCode, TwitchAuthToken,
     twitch_auth_device_code_free, twitch_auth_token_free,
 };
+use crate::glib_strings::dup_bytes;
+use crate::twitch::http;
 use crate::twitch::stream_info::{GCancellable, GError};
 use gtk4::{
     gio,
-    glib::{self, translate::IntoGlibPtr},
+    glib::{
+        self,
+        translate::{IntoGlibPtr, from_glib_none},
+    },
 };
 use std::ffi::{CStr, c_char, c_int, c_uint, c_ulong, c_void};
 use std::ptr;
@@ -61,47 +62,24 @@ pub(super) unsafe fn post_auth_form(
     error: *mut *mut GError,
 ) -> *mut AuthResponse {
     unsafe {
-        let session = soup_session_new();
-        let message = soup_message_new(c"POST".as_ptr(), uri);
-        let body_bytes = g_bytes_new_static(body.as_ptr() as *const c_void, body.len());
-
-        g_object_set(
-            session as *mut c_void,
-            c"timeout".as_ptr(),
-            15,
-            ptr::null::<c_char>(),
-        );
-        let request_headers = soup_message_get_request_headers(message);
-        soup_message_headers_append(
-            request_headers,
-            c"Accept".as_ptr(),
-            c"application/json".as_ptr(),
-        );
-        soup_message_set_request_body_from_bytes(
-            message,
-            c"application/x-www-form-urlencoded".as_ptr(),
-            body_bytes,
-        );
-
-        let response_bytes = soup_session_send_and_read(session, message, cancel, error);
-        g_bytes_unref(body_bytes);
-        if response_bytes.is_null() {
-            g_object_unref(message as *mut c_void);
-            g_object_unref(session as *mut c_void);
-            return ptr::null_mut();
+        let uri = CStr::from_ptr(uri).to_string_lossy();
+        let cancel: Option<gio::Cancellable> = from_glib_none(cancel.cast());
+        match http::send(
+            "POST",
+            &uri,
+            &[("Accept", "application/json")],
+            Some(("application/x-www-form-urlencoded", body)),
+            cancel.as_ref(),
+        ) {
+            Ok(response) => Box::into_raw(Box::new(AuthResponse {
+                status: response.status,
+                body: dup_bytes(&response.body),
+            })),
+            Err(err) => {
+                glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                ptr::null_mut()
+            }
         }
-
-        let mut response_size = 0usize;
-        let response_data = g_bytes_get_data(response_bytes, &mut response_size) as *const c_char;
-        let response = Box::new(AuthResponse {
-            status: soup_message_get_status(message),
-            body: g_strndup(response_data, response_size),
-        });
-
-        g_bytes_unref(response_bytes);
-        g_object_unref(message as *mut c_void);
-        g_object_unref(session as *mut c_void);
-        Box::into_raw(response)
     }
 }
 

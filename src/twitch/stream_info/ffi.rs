@@ -32,11 +32,6 @@ pub struct GAsyncResult {
 }
 
 #[repr(C)]
-pub struct GBytes {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
 pub struct GCancellable {
     _private: [u8; 0],
 }
@@ -59,33 +54,9 @@ pub struct GTask {
     _private: [u8; 0],
 }
 
-#[repr(C)]
-pub struct SoupMessage {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct SoupMessageHeaders {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-pub struct SoupSession {
-    _private: [u8; 0],
-}
-
 unsafe extern "C" {
     pub(super) fn g_ascii_strcasecmp(s1: *const c_char, s2: *const c_char) -> c_int;
     pub(super) fn g_ascii_strdown(str: *const c_char, len: isize) -> *mut c_char;
-    pub(super) fn g_ascii_strtod(nptr: *const c_char, endptr: *mut *mut c_char) -> c_double;
-    pub(super) fn g_ascii_strtoull(
-        nptr: *const c_char,
-        endptr: *mut *mut c_char,
-        base: c_uint,
-    ) -> u64;
-    pub(super) fn g_bytes_get_data(bytes: *mut GBytes, size: *mut usize) -> *const c_void;
-    pub(super) fn g_bytes_new_static(data: *const c_void, size: usize) -> *mut GBytes;
-    pub(super) fn g_bytes_unref(bytes: *mut GBytes);
     pub(super) fn g_date_time_difference(end: *mut GDateTime, begin: *mut GDateTime) -> i64;
     pub(super) fn g_date_time_new_from_iso8601(
         text: *const c_char,
@@ -96,7 +67,6 @@ unsafe extern "C" {
     pub(super) fn g_free(mem: *mut c_void);
     pub(super) fn g_io_error_quark() -> c_uint;
     pub(super) fn g_malloc0(n_bytes: usize) -> *mut c_void;
-    pub(super) fn g_object_set(object: *mut c_void, first_property_name: *const c_char, ...);
     pub(super) fn g_object_unref(object: *mut c_void);
     pub(super) fn g_ptr_array_add(array: *mut GPtrArray, data: *mut c_void);
     pub(super) fn g_ptr_array_new_with_free_func(
@@ -118,7 +88,6 @@ unsafe extern "C" {
         ...
     );
     pub(super) fn g_strdup(str: *const c_char) -> *mut c_char;
-    pub(super) fn g_strndup(str: *const c_char, n: usize) -> *mut c_char;
     pub(super) fn g_task_is_valid(result: *mut c_void, source_object: *mut c_void) -> c_int;
     pub(super) fn g_task_new(
         source_object: *mut c_void,
@@ -148,31 +117,6 @@ unsafe extern "C" {
         allow_utf8: c_int,
     ) -> *mut c_char;
 
-    pub(super) fn soup_message_get_request_headers(
-        message: *mut SoupMessage,
-    ) -> *mut SoupMessageHeaders;
-    pub(super) fn soup_message_get_status(message: *mut SoupMessage) -> c_uint;
-    pub(super) fn soup_message_headers_append(
-        hdrs: *mut SoupMessageHeaders,
-        name: *const c_char,
-        value: *const c_char,
-    );
-    pub(super) fn soup_message_new(
-        method: *const c_char,
-        uri_string: *const c_char,
-    ) -> *mut SoupMessage;
-    pub(super) fn soup_message_set_request_body_from_bytes(
-        msg: *mut SoupMessage,
-        content_type: *const c_char,
-        bytes: *mut GBytes,
-    );
-    pub(super) fn soup_session_new() -> *mut SoupSession;
-    pub(super) fn soup_session_send_and_read(
-        session: *mut SoupSession,
-        msg: *mut SoupMessage,
-        cancellable: *mut GCancellable,
-        error: *mut *mut GError,
-    ) -> *mut GBytes;
 }
 
 #[repr(C)]

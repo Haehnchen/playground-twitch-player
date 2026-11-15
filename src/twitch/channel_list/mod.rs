@@ -17,7 +17,7 @@ use crate::settings::{
     app_settings_get_twitch_oauth_token, app_settings_get_twitch_refresh_token, app_settings_ref,
 };
 use crate::twitch::auth::{TwitchAuthToken, twitch_auth_token_free};
-use crate::twitch::stream_info::{GAsyncResult, GCancellable, GError, GPtrArray};
+use crate::twitch::stream_info::{GAsyncResult, GCancellable, GError};
 use std::ffi::{c_char, c_uint, c_void};
 use std::ptr;
 
@@ -40,11 +40,9 @@ struct ChannelListResult {
 }
 
 struct FollowedCache {
-    channels: *mut GPtrArray,
-    cached_at_us: i64,
+    channels: Vec<(String, String)>,
+    cached_at: Option<std::time::Instant>,
 }
-
-unsafe impl Send for FollowedCache {}
 
 type GAsyncReadyCallback =
     Option<unsafe extern "C" fn(*mut c_void, *mut GAsyncResult, *mut c_void)>;
@@ -53,12 +51,6 @@ type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
 
 type GTaskThreadFunc =
     unsafe extern "C" fn(*mut GTask, *mut c_void, *mut c_void, *mut GCancellable);
-
-unsafe extern "C" fn g_free_destroy(data: *mut c_void) {
-    unsafe {
-        g_free(data);
-    }
-}
 
 unsafe extern "C" fn fetch_channel_list_data_free(data: *mut c_void) {
     unsafe {

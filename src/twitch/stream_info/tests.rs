@@ -490,3 +490,36 @@ fn helix_pages_skip_invalid_entries_and_use_login_as_display_name() {
         g_ptr_array_unref(channels);
     }
 }
+
+#[test]
+fn hls_parser_handles_quoted_commas_and_excludes_audio_and_iframe_variants() {
+    unsafe {
+        let playlist = cstring(
+            "#EXTM3U\n#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100,RESOLUTION=320x180,URI=\"iframe.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1234,RESOLUTION=1280x720,FRAME-RATE=59.94,CODECS=\"avc1.64001f,mp4a.40.2\"\nvideo.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=123,NAME=\"Audio Only\"\naudio.m3u8\n",
+        );
+        let mut error = ptr::null_mut();
+        let qualities = parse_stream_qualities_playlist(playlist.as_ptr(), &mut error);
+        assert!(error.is_null());
+        assert!(!qualities.is_null());
+        assert_eq!((*qualities).len, 1);
+        let quality = ptr_array_index::<TwitchStreamQuality>(qualities, 0);
+        assert_cstr_eq((*quality).label, "720p60");
+        assert_cstr_eq((*quality).url, "video.m3u8");
+        g_ptr_array_unref(qualities);
+    }
+}
+
+#[test]
+fn hls_parser_reports_invalid_or_video_free_playlists() {
+    unsafe {
+        for playlist in [
+            c"bad playlist",
+            c"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=123,NAME=\"Audio Only\"\naudio.m3u8\n",
+        ] {
+            let mut error = ptr::null_mut();
+            assert!(parse_stream_qualities_playlist(playlist.as_ptr(), &mut error).is_null());
+            assert!(!error.is_null());
+            gtk4::glib::ffi::g_error_free(error.cast());
+        }
+    }
+}

@@ -2,7 +2,7 @@
 
 use super::ffi::*;
 use super::{ChannelSwitcherOverlay, channel_switcher_overlay_ref, channel_switcher_overlay_unref};
-use crate::twitch::stream_info::{GError, GPtrArray};
+use crate::twitch::stream_info::GPtrArray;
 use std::ffi::{c_char, c_uint, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
@@ -12,18 +12,6 @@ pub(super) const G_LOG_DOMAIN: &[u8] = b"channel-switcher-overlay\0";
 pub(super) unsafe extern "C" fn g_free_destroy(data: *mut c_void) {
     unsafe {
         g_free(data);
-    }
-}
-
-pub(super) unsafe extern "C" fn g_object_unref_destroy(data: *mut c_void) {
-    unsafe {
-        g_object_unref(data);
-    }
-}
-
-pub(super) unsafe extern "C" fn g_ptr_array_unref_destroy(data: *mut c_void) {
-    unsafe {
-        g_ptr_array_unref(data as *mut GPtrArray);
     }
 }
 
@@ -106,16 +94,6 @@ pub(super) unsafe fn bump_generation(switcher: *mut ChannelSwitcherOverlay) {
 
 pub(super) unsafe fn switcher_is_closing(switcher: *mut ChannelSwitcherOverlay) -> bool {
     unsafe { switcher.is_null() || (*switcher).closing.load(Ordering::Acquire) }
-}
-
-pub(super) unsafe fn error_message(error: *mut GError) -> *const c_char {
-    unsafe {
-        if error.is_null() || (*error).message.is_null() {
-            c"unknown error".as_ptr()
-        } else {
-            (*error).message
-        }
-    }
 }
 
 pub(super) unsafe fn log_debug(format: *const c_char, first: *const c_char, second: *const c_char) {

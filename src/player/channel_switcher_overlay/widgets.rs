@@ -9,7 +9,7 @@ use super::images::load_remote_image;
 use super::layout::{AVATAR_SIZE, CARD_SPACING, current_card_layout, get_grid_columns};
 use super::runtime::{
     add_switcher_timeout, add_weak_pointer, connect_switcher_signal, g_free_destroy,
-    g_object_unref_destroy, ptr_array_index, remove_source_if_active, switcher_is_closing,
+    ptr_array_index, remove_source_if_active, switcher_is_closing,
 };
 use crate::glib_strings::is_nonempty;
 use crate::player::icons::{player_settings_icon_new, player_window_icon_new};
@@ -17,6 +17,7 @@ use crate::twitch::stream_info::{
     TwitchStreamPreview, twitch_stream_info_format_live_duration,
     twitch_stream_info_format_viewer_count,
 };
+use gtk4::{glib::translate::from_glib_none, prelude::*};
 use std::ffi::{c_char, c_int, c_uint, c_void};
 
 pub(super) unsafe fn build_widgets(switcher: *mut ChannelSwitcherOverlay) {
@@ -222,9 +223,7 @@ pub(super) unsafe fn clear_preview_cards(switcher: *mut ChannelSwitcherOverlay) 
     unsafe {
         remove_source_if_active(&mut (*switcher).preview_card_build_source);
         clear_grid(switcher);
-        if !(*switcher).preview_cards.is_null() {
-            g_ptr_array_set_size((*switcher).preview_cards, 0);
-        }
+        (*switcher).preview_cards.clear();
         (*switcher).preview_card_columns = 0;
         (*switcher).preview_card_next_index = 0;
         (*switcher).preview_card_visible_count = 0;
@@ -466,7 +465,6 @@ unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
         if switcher_is_closing(switcher)
             || (*switcher).panel.is_null()
             || (*switcher).previews.is_null()
-            || (*switcher).preview_cards.is_null()
         {
             (*switcher).preview_card_build_source = 0;
             return G_SOURCE_REMOVE;
@@ -487,7 +485,7 @@ unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
         let filter = current_search_filter(switcher);
         for i in start..end {
             let preview = ptr_array_index((*switcher).previews, i);
-            if i >= (*(*switcher).preview_cards).len {
+            if i as usize >= (*switcher).preview_cards.len() {
                 let card = create_channel_card(
                     switcher,
                     preview,
@@ -495,17 +493,14 @@ unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
                     (*switcher).preview_width,
                     (*switcher).preview_height,
                 );
-                g_ptr_array_add(
-                    (*switcher).preview_cards,
-                    g_object_ref_sink(card as *mut c_void),
-                );
+                (*switcher).preview_cards.push(from_glib_none(card.cast()));
             }
             if preview_matches_filter(preview, filter) {
                 let visible_count = (*switcher).preview_card_visible_count;
                 let columns = (*switcher).preview_card_columns;
                 gtk_grid_attach(
                     (*switcher).grid as *mut GtkGrid,
-                    ptr_array_index((*switcher).preview_cards, i),
+                    (&(*switcher).preview_cards)[i as usize].as_ptr().cast(),
                     (visible_count % columns) as c_int,
                     (visible_count / columns) as c_int,
                     1,
@@ -531,11 +526,6 @@ unsafe extern "C" fn build_preview_card_batch(user_data: *mut c_void) -> c_int {
 unsafe fn prepare_preview_card_layout(switcher: *mut ChannelSwitcherOverlay) {
     unsafe {
         let layout = current_card_layout(switcher);
-
-        if (*switcher).preview_cards.is_null() {
-            (*switcher).preview_cards =
-                g_ptr_array_new_with_free_func(Some(g_object_unref_destroy));
-        }
 
         let layout_matches = (*switcher).preview_card_columns == layout.columns
             && (*switcher).preview_card_width == layout.card_width

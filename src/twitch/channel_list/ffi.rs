@@ -11,12 +11,9 @@ pub struct GTask {
 }
 
 unsafe extern "C" {
-    pub(super) fn g_ascii_strcasecmp(s1: *const c_char, s2: *const c_char) -> c_int;
-    pub(super) fn g_ascii_strdown(str: *const c_char, len: isize) -> *mut c_char;
     pub(super) fn g_clear_error(error: *mut *mut GError);
     pub(super) fn g_error_matches(error: *const GError, domain: c_uint, code: c_int) -> c_int;
     pub(super) fn g_free(mem: *mut c_void);
-    pub(super) fn g_get_monotonic_time() -> i64;
     pub(super) fn g_get_real_time() -> i64;
     pub(super) fn g_io_error_quark() -> c_uint;
     pub(super) fn g_malloc0(n_bytes: usize) -> *mut c_void;
@@ -31,7 +28,6 @@ unsafe extern "C" {
     pub(super) fn g_ptr_array_new_with_free_func(
         element_free_func: Option<GDestroyNotify>,
     ) -> *mut GPtrArray;
-    pub(super) fn g_ptr_array_ref(array: *mut GPtrArray) -> *mut GPtrArray;
     pub(super) fn g_ptr_array_unref(array: *mut GPtrArray);
     pub(super) fn g_set_error(
         error: *mut *mut GError,

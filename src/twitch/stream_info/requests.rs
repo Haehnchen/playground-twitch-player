@@ -1,18 +1,16 @@
-use super::ffi::{
-    G_IO_ERROR_FAILED, GBytes, GCancellable, GError, g_bytes_get_data, g_bytes_new_static,
-    g_bytes_unref, g_free, g_io_error_quark, g_object_set, g_object_unref, g_set_error, g_strdup,
-    g_strndup, soup_message_get_request_headers, soup_message_get_status,
-    soup_message_headers_append, soup_message_new, soup_message_set_request_body_from_bytes,
-    soup_session_new, soup_session_send_and_read,
-};
+use super::ffi::{GCancellable, GError};
 use super::twitch_stream_info_error_quark;
 use crate::glib_strings::{dup_bytes, is_nonempty};
+use crate::twitch::http;
+use gtk4::{
+    gio,
+    glib::{self, translate::*},
+};
 use serde_json::json;
-use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::ffi::{CStr, c_char, c_int, c_uint};
 use std::ptr;
+
 pub(super) const TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED: c_int = 0;
-pub(super) const TWITCH_GQL_URI: &[u8] = b"https://gql.twitch.tv/gql\0";
-pub(super) const TWITCH_GQL_CLIENT_ID: &[u8] = b"kimne78kx3ncx6brgo4mv6wki5h1ko\0";
 pub(super) const TWITCH_GQL_QUERY: &str =
     "query($login:String!){user(login:$login){stream{title viewersCount createdAt game{name}}}}";
 pub(super) const TWITCH_GQL_LIVE_CHANNELS_QUERY: &str = "query($logins:[String!]!){users(logins:$logins){login displayName profileImageURL(width:70) stream{title viewersCount createdAt previewImageURL(width:320,height:180) game{name}}}}";
@@ -58,33 +56,29 @@ pub(super) unsafe fn build_playback_access_token_request_body(
     unsafe { build_gql_login_body(TWITCH_GQL_PLAYBACK_ACCESS_TOKEN_QUERY, channel) }
 }
 
-pub(super) unsafe fn response_bytes_to_string(response: *mut GBytes) -> *mut c_char {
-    unsafe {
-        let mut response_size = 0usize;
-        let response_data = g_bytes_get_data(response, &mut response_size);
-        g_strndup(response_data as *const c_char, response_size)
+fn http_error(status: u32, hls: bool) -> glib::Error {
+    if status == 401 && !hls {
+        glib::Error::with_domain(
+            unsafe { from_glib(twitch_stream_info_error_quark()) },
+            TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED,
+            "Twitch access token is expired or invalid",
+        )
+    } else {
+        glib::Error::new(
+            gio::IOErrorEnum::Failed,
+            &format!(
+                "Twitch{} returned HTTP {status}",
+                if hls { " HLS" } else { "" }
+            ),
+        )
     }
 }
 
-pub(super) unsafe fn set_twitch_http_error(error: *mut *mut GError, status: c_uint) {
-    unsafe {
-        if status == 401 {
-            g_set_error(
-                error,
-                twitch_stream_info_error_quark(),
-                TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED,
-                c"Twitch access token is expired or invalid".as_ptr(),
-            );
-        } else {
-            g_set_error(
-                error,
-                g_io_error_quark(),
-                G_IO_ERROR_FAILED,
-                c"Twitch returned HTTP %u".as_ptr(),
-                status,
-            );
-        }
-    }
+fn sanitize_oauth_token(token: &str) -> &str {
+    ["oauth:", "Bearer ", "OAuth "]
+        .iter()
+        .find_map(|prefix| token.strip_prefix(prefix))
+        .unwrap_or(token)
 }
 
 pub(super) unsafe fn post_twitch_gql_request(
@@ -94,86 +88,42 @@ pub(super) unsafe fn post_twitch_gql_request(
     error: *mut *mut GError,
 ) -> *mut c_char {
     unsafe {
-        let session = soup_session_new();
-        let message = soup_message_new(c"POST".as_ptr(), TWITCH_GQL_URI.as_ptr() as *const c_char);
-        let body_len = CStr::from_ptr(body).to_bytes().len();
-        let body_bytes = g_bytes_new_static(body as *const c_void, body_len);
-
-        g_object_set(
-            session as *mut c_void,
-            c"timeout".as_ptr(),
-            15,
-            ptr::null::<c_char>(),
+        let token = if !is_nonempty(oauth_token) {
+            String::new()
+        } else {
+            format!(
+                "OAuth {}",
+                sanitize_oauth_token(&CStr::from_ptr(oauth_token).to_string_lossy())
+            )
+        };
+        let mut headers = vec![
+            ("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko"),
+            ("Accept", "application/json"),
+        ];
+        if !token.is_empty() {
+            headers.push(("Authorization", &token));
+        }
+        let cancel: Option<gio::Cancellable> = from_glib_none(cancel.cast());
+        let response = http::send(
+            "POST",
+            "https://gql.twitch.tv/gql",
+            &headers,
+            Some(("application/json", CStr::from_ptr(body).to_bytes())),
+            cancel.as_ref(),
         );
-        let request_headers = soup_message_get_request_headers(message);
-        soup_message_headers_append(
-            request_headers,
-            c"Client-ID".as_ptr(),
-            TWITCH_GQL_CLIENT_ID.as_ptr() as *const c_char,
-        );
-        soup_message_headers_append(
-            request_headers,
-            c"Accept".as_ptr(),
-            c"application/json".as_ptr(),
-        );
-        if is_nonempty(oauth_token) {
-            let token = sanitize_oauth_token(oauth_token);
-            let mut auth = Vec::new();
-            auth.extend_from_slice(b"OAuth ");
-            auth.extend_from_slice(CStr::from_ptr(token).to_bytes());
-            auth.push(0);
-            soup_message_headers_append(
-                request_headers,
-                c"Authorization".as_ptr(),
-                auth.as_ptr() as *const c_char,
-            );
-            g_free(token as *mut c_void);
+        match response.and_then(|response| {
+            if (200..300).contains(&response.status) {
+                Ok(response.body)
+            } else {
+                Err(http_error(response.status, false))
+            }
+        }) {
+            Ok(bytes) => dup_bytes(&bytes),
+            Err(err) => {
+                glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                ptr::null_mut()
+            }
         }
-        soup_message_set_request_body_from_bytes(message, c"application/json".as_ptr(), body_bytes);
-        g_bytes_unref(body_bytes);
-
-        let response = soup_session_send_and_read(session, message, cancel, error);
-        if response.is_null() {
-            g_object_unref(message as *mut c_void);
-            g_object_unref(session as *mut c_void);
-            return ptr::null_mut();
-        }
-
-        let status = soup_message_get_status(message);
-        if !(200..300).contains(&status) {
-            set_twitch_http_error(error, status);
-            g_bytes_unref(response);
-            g_object_unref(message as *mut c_void);
-            g_object_unref(session as *mut c_void);
-            return ptr::null_mut();
-        }
-
-        let result = response_bytes_to_string(response);
-        g_bytes_unref(response);
-        g_object_unref(message as *mut c_void);
-        g_object_unref(session as *mut c_void);
-        result
-    }
-}
-
-pub(super) unsafe fn sanitize_oauth_token(oauth_token: *const c_char) -> *mut c_char {
-    unsafe {
-        if oauth_token.is_null() {
-            return g_strdup(c"".as_ptr());
-        }
-
-        let bytes = CStr::from_ptr(oauth_token).to_bytes();
-        if bytes.starts_with(b"oauth:") {
-            return dup_bytes(&bytes[6..]);
-        }
-        if bytes.starts_with(b"Bearer ") {
-            return dup_bytes(&bytes[7..]);
-        }
-        if bytes.starts_with(b"OAuth ") {
-            return dup_bytes(&bytes[6..]);
-        }
-
-        g_strdup(oauth_token)
     }
 }
 
@@ -185,55 +135,39 @@ pub(super) unsafe fn get_twitch_helix_request(
     error: *mut *mut GError,
 ) -> *mut c_char {
     unsafe {
-        let session = soup_session_new();
-        let message = soup_message_new(c"GET".as_ptr(), uri);
-        let token = sanitize_oauth_token(oauth_token);
-        let mut auth = Vec::new();
-        auth.extend_from_slice(b"Bearer ");
-        auth.extend_from_slice(CStr::from_ptr(token).to_bytes());
-        auth.push(0);
-
-        g_object_set(
-            session as *mut c_void,
-            c"timeout".as_ptr(),
-            15,
-            ptr::null::<c_char>(),
+        let oauth_token = if oauth_token.is_null() {
+            std::borrow::Cow::Borrowed("")
+        } else {
+            CStr::from_ptr(oauth_token).to_string_lossy()
+        };
+        let token = format!("Bearer {}", sanitize_oauth_token(&oauth_token));
+        let client_id = CStr::from_ptr(client_id).to_string_lossy();
+        let uri = CStr::from_ptr(uri).to_string_lossy();
+        let cancel: Option<gio::Cancellable> = from_glib_none(cancel.cast());
+        let response = http::send(
+            "GET",
+            &uri,
+            &[
+                ("Client-ID", &client_id),
+                ("Authorization", &token),
+                ("Accept", "application/json"),
+            ],
+            None,
+            cancel.as_ref(),
         );
-        let request_headers = soup_message_get_request_headers(message);
-        soup_message_headers_append(request_headers, c"Client-ID".as_ptr(), client_id);
-        soup_message_headers_append(
-            request_headers,
-            c"Authorization".as_ptr(),
-            auth.as_ptr() as *const c_char,
-        );
-        soup_message_headers_append(
-            request_headers,
-            c"Accept".as_ptr(),
-            c"application/json".as_ptr(),
-        );
-
-        let response = soup_session_send_and_read(session, message, cancel, error);
-        g_free(token as *mut c_void);
-        if response.is_null() {
-            g_object_unref(message as *mut c_void);
-            g_object_unref(session as *mut c_void);
-            return ptr::null_mut();
+        match response.and_then(|response| {
+            if (200..300).contains(&response.status) {
+                Ok(response.body)
+            } else {
+                Err(http_error(response.status, false))
+            }
+        }) {
+            Ok(bytes) => dup_bytes(&bytes),
+            Err(err) => {
+                glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                ptr::null_mut()
+            }
         }
-
-        let status = soup_message_get_status(message);
-        if !(200..300).contains(&status) {
-            set_twitch_http_error(error, status);
-            g_bytes_unref(response);
-            g_object_unref(message as *mut c_void);
-            g_object_unref(session as *mut c_void);
-            return ptr::null_mut();
-        }
-
-        let result = response_bytes_to_string(response);
-        g_bytes_unref(response);
-        g_object_unref(message as *mut c_void);
-        g_object_unref(session as *mut c_void);
-        result
     }
 }
 
@@ -243,53 +177,55 @@ pub(super) unsafe fn get_twitch_hls_playlist(
     error: *mut *mut GError,
 ) -> *mut c_char {
     unsafe {
-        let session = soup_session_new();
-        let message = soup_message_new(c"GET".as_ptr(), uri);
-
-        g_object_set(
-            session as *mut c_void,
-            c"timeout".as_ptr(),
-            15,
-            ptr::null::<c_char>(),
+        let uri = CStr::from_ptr(uri).to_string_lossy();
+        let cancel: Option<gio::Cancellable> = from_glib_none(cancel.cast());
+        let response = http::send(
+            "GET",
+            &uri,
+            &[
+                ("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko"),
+                (
+                    "Accept",
+                    "application/x-mpegURL, application/vnd.apple.mpegurl, */*",
+                ),
+            ],
+            None,
+            cancel.as_ref(),
         );
-        let request_headers = soup_message_get_request_headers(message);
-        soup_message_headers_append(
-            request_headers,
-            c"Client-ID".as_ptr(),
-            TWITCH_GQL_CLIENT_ID.as_ptr() as *const c_char,
-        );
-        soup_message_headers_append(
-            request_headers,
-            c"Accept".as_ptr(),
-            c"application/x-mpegURL, application/vnd.apple.mpegurl, */*".as_ptr(),
-        );
-
-        let response = soup_session_send_and_read(session, message, cancel, error);
-        if response.is_null() {
-            g_object_unref(message as *mut c_void);
-            g_object_unref(session as *mut c_void);
-            return ptr::null_mut();
+        match response.and_then(|response| {
+            if (200..300).contains(&response.status) {
+                Ok(response.body)
+            } else {
+                Err(http_error(response.status, true))
+            }
+        }) {
+            Ok(bytes) => dup_bytes(&bytes),
+            Err(err) => {
+                glib::ffi::g_propagate_error(error.cast(), err.into_glib_ptr());
+                ptr::null_mut()
+            }
         }
+    }
+}
 
-        let status = soup_message_get_status(message);
-        if !(200..300).contains(&status) {
-            g_set_error(
-                error,
-                g_io_error_quark(),
-                G_IO_ERROR_FAILED,
-                c"Twitch HLS returned HTTP %u".as_ptr(),
-                status,
-            );
-            g_bytes_unref(response);
-            g_object_unref(message as *mut c_void);
-            g_object_unref(session as *mut c_void);
-            return ptr::null_mut();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokens_accept_existing_authorization_prefixes() {
+        for token in ["abc", "oauth:abc", "Bearer abc", "OAuth abc"] {
+            assert_eq!(sanitize_oauth_token(token), "abc");
         }
+    }
 
-        let result = response_bytes_to_string(response);
-        g_bytes_unref(response);
-        g_object_unref(message as *mut c_void);
-        g_object_unref(session as *mut c_void);
-        result
+    #[test]
+    fn unauthorized_errors_preserve_the_refresh_signal() {
+        let err = http_error(401, false);
+        assert_eq!(err.domain(), unsafe {
+            from_glib(twitch_stream_info_error_quark())
+        });
+        assert_eq!(err.code(), TWITCH_STREAM_INFO_ERROR_UNAUTHORIZED);
+        assert!(http_error(503, false).message().contains("503"));
     }
 }

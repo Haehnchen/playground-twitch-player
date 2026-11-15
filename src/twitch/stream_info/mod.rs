@@ -8,8 +8,8 @@ mod tests;
 mod utils;
 
 pub use self::ffi::{
-    GAsyncResult, GBytes, GCancellable, GDateTime, GError, GPtrArray, GTask, SoupMessage,
-    SoupMessageHeaders, SoupSession, TwitchPlaybackInfo, TwitchStreamQuality,
+    GAsyncResult, GCancellable, GDateTime, GError, GPtrArray, GTask, TwitchPlaybackInfo,
+    TwitchStreamQuality,
 };
 pub use self::responses::twitch_stream_info_fetch_followed_channels;
 pub use self::utils::{

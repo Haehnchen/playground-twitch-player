@@ -9,16 +9,7 @@ pub use self::ffi::{
 };
 
 use self::channels::{add_channel_row, update_empty_state};
-use self::ffi::{
-    GTK_ORIENTATION_HORIZONTAL, GTK_ORIENTATION_VERTICAL, GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER,
-    g_cancellable_cancel, g_free, g_object_set_data_full, g_object_unref, g_signal_connect_data,
-    gtk_box_append, gtk_box_new, gtk_scrolled_window_new, gtk_scrolled_window_set_child,
-    gtk_scrolled_window_set_policy, gtk_stack_add_named, gtk_stack_new,
-    gtk_stack_set_visible_child_name, gtk_widget_add_css_class, gtk_widget_set_hexpand,
-    gtk_widget_set_vexpand, gtk_window_new, gtk_window_present, gtk_window_set_child,
-    gtk_window_set_default_size, gtk_window_set_modal, gtk_window_set_title,
-    gtk_window_set_transient_for,
-};
+use self::ffi::{g_cancellable_cancel, g_object_set_data_full, g_object_unref};
 use self::pages::{
     create_about_page, create_channels_page, create_footer, create_general_page, create_sidebar,
     page_name_for_page,
@@ -28,6 +19,10 @@ use crate::settings::{
     app_settings_ref,
 };
 use crate::twitch::stream_info::{GAsyncResult, GCancellable};
+use gtk4::{
+    glib::{self, translate::*},
+    prelude::*,
+};
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
@@ -53,17 +48,9 @@ pub struct SettingsWindow {
     auth_in_progress: c_int,
 }
 
-pub struct ChannelRow {
-    view: *mut SettingsWindow,
-    row: *mut GtkWidget,
-    channel_entry: *mut GtkWidget,
-}
-
 type GAsyncReadyCallback = unsafe extern "C" fn(*mut c_void, *mut GAsyncResult, *mut c_void);
 
 type GDestroyNotify = unsafe extern "C" fn(*mut c_void);
-
-type GSourceFunc = unsafe extern "C" fn(*mut c_void) -> c_int;
 
 pub type SettingsWindowSavedCallback = unsafe extern "C" fn(*mut AppSettings, *mut c_void);
 
@@ -83,31 +70,6 @@ unsafe extern "C" fn settings_window_free(data: *mut c_void) {
             user_data_free((*view).user_data);
         }
         drop(Box::from_raw(view));
-    }
-}
-
-unsafe extern "C" fn g_free_destroy(data: *mut c_void) {
-    unsafe {
-        g_free(data);
-    }
-}
-
-unsafe extern "C" fn g_object_unref_destroy(data: *mut c_void) {
-    unsafe {
-        g_object_unref(data);
-    }
-}
-
-unsafe extern "C" fn on_settings_window_close_request(
-    _window: *mut GtkWindow,
-    user_data: *mut c_void,
-) -> c_int {
-    unsafe {
-        let view = user_data as *mut SettingsWindow;
-        if !(*view).auth_cancel.is_null() {
-            g_cancellable_cancel((*view).auth_cancel);
-        }
-        0
     }
 }
 
@@ -156,68 +118,55 @@ pub unsafe fn settings_window_show<W>(
             auth_in_progress: 0,
         }));
 
-        (*view).window = gtk_window_new();
-        gtk_window_set_title((*view).window as *mut GtkWindow, c"Settings".as_ptr());
-        gtk_window_set_default_size((*view).window as *mut GtkWindow, 760, 480);
-        gtk_window_set_modal((*view).window as *mut GtkWindow, 1);
-        gtk_window_set_transient_for((*view).window as *mut GtkWindow, parent);
+        let window = gtk4::Window::builder()
+            .title("Settings")
+            .default_width(760)
+            .default_height(480)
+            .modal(true)
+            .build();
+        if !parent.is_null() {
+            let parent: glib::translate::Borrowed<gtk4::Window> = from_glib_borrow(parent.cast());
+            window.set_transient_for(Some(&*parent));
+        }
+        (*view).window = window.as_ptr().cast();
         g_object_set_data_full(
-            (*view).window as *mut GObject,
+            window.as_ptr().cast(),
             c"settings-window".as_ptr(),
-            view as *mut c_void,
+            view.cast(),
             Some(settings_window_free),
         );
-        g_signal_connect_data(
-            (*view).window as *mut c_void,
-            c"close-request".as_ptr(),
-            on_settings_window_close_request as *const c_void,
-            view as *mut c_void,
-            ptr::null_mut(),
-            0,
-        );
-
-        let root = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        gtk_widget_add_css_class(root, c"settings-window".as_ptr());
-        gtk_window_set_child((*view).window as *mut GtkWindow, root);
-
-        (*view).stack = gtk_stack_new();
-        gtk_widget_set_hexpand((*view).stack, 1);
-        gtk_widget_set_vexpand((*view).stack, 1);
-        gtk_stack_add_named(
-            (*view).stack as *mut GtkStack,
-            create_general_page(view),
-            c"general".as_ptr(),
-        );
-        gtk_stack_add_named(
-            (*view).stack as *mut GtkStack,
-            create_channels_page(view),
-            c"channels".as_ptr(),
-        );
-        gtk_stack_add_named(
-            (*view).stack as *mut GtkStack,
-            create_about_page(),
-            c"about".as_ptr(),
-        );
-
-        let content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-        gtk_widget_set_hexpand(content, 1);
-        gtk_widget_set_vexpand(content, 1);
-        let scrolled = gtk_scrolled_window_new();
-        gtk_widget_set_hexpand(scrolled, 1);
-        gtk_widget_set_vexpand(scrolled, 1);
-        gtk_scrolled_window_set_policy(
-            scrolled as *mut GtkScrolledWindow,
-            GTK_POLICY_NEVER,
-            GTK_POLICY_AUTOMATIC,
-        );
-        gtk_scrolled_window_set_child(scrolled as *mut GtkScrolledWindow, (*view).stack);
-        gtk_box_append(content as *mut GtkBox, scrolled);
-        gtk_box_append(content as *mut GtkBox, create_footer(view));
-
-        (*view).sidebar = create_sidebar(view, initial_page);
-        gtk_box_append(root as *mut GtkBox, (*view).sidebar);
-        gtk_box_append(root as *mut GtkBox, content);
-
+        window.connect_close_request(move |_| {
+            if !(*view).auth_cancel.is_null() {
+                g_cancellable_cancel((*view).auth_cancel);
+            }
+            glib::Propagation::Proceed
+        });
+        let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        root.add_css_class("settings-window");
+        window.set_child(Some(&root));
+        let stack = gtk4::Stack::new();
+        stack.set_hexpand(true);
+        stack.set_vexpand(true);
+        (*view).stack = stack.as_ptr().cast();
+        stack.add_named(&create_general_page(view), Some("general"));
+        stack.add_named(&create_channels_page(view), Some("channels"));
+        stack.add_named(&create_about_page(), Some("about"));
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        content.set_hexpand(true);
+        content.set_vexpand(true);
+        let scrolled = gtk4::ScrolledWindow::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .build();
+        scrolled.set_child(Some(&stack));
+        content.append(&scrolled);
+        content.append(&create_footer(view));
+        let sidebar = create_sidebar(view, initial_page);
+        (*view).sidebar = sidebar.as_ptr().cast();
+        root.append(&sidebar);
+        root.append(&content);
         for i in 0..app_settings_get_channel_count(settings) {
             let channel = app_settings_get_channel(settings, i);
             if !channel.is_null() {
@@ -225,11 +174,7 @@ pub unsafe fn settings_window_show<W>(
             }
         }
         update_empty_state(view);
-        gtk_stack_set_visible_child_name(
-            (*view).stack as *mut GtkStack,
-            page_name_for_page(initial_page),
-        );
-
-        gtk_window_present((*view).window as *mut GtkWindow);
+        stack.set_visible_child_name(page_name_for_page(initial_page));
+        window.present();
     }
 }
