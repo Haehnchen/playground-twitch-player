@@ -2,24 +2,25 @@ use super::chat::{get_default_chat_width, on_chat_paned_layout_changed, on_tile_
 use super::ffi::{
     G_SOURCE_REMOVE, GDK_BUTTON_PRIMARY, GDK_BUTTON_SECONDARY, GTK_ALIGN_CENTER, GTK_ALIGN_END,
     GTK_ALIGN_FILL, GTK_ALIGN_START, GTK_EVENT_CONTROLLER_SCROLL_VERTICAL,
-    GTK_ORIENTATION_HORIZONTAL, GTK_ORIENTATION_VERTICAL, GTK_PHASE_CAPTURE, GtkBox, GtkButton,
-    GtkGLArea, GtkGestureSingle, GtkLabel, GtkOverlay, GtkPaned, GtkPopover, GtkRange, GtkScale,
-    GtkWidget, PANGO_ELLIPSIZE_END, gtk_box_append, gtk_box_new, gtk_button_new,
-    gtk_button_set_child, gtk_event_controller_legacy_new, gtk_event_controller_motion_new,
-    gtk_event_controller_scroll_new, gtk_event_controller_set_propagation_phase,
-    gtk_gesture_click_new, gtk_gesture_single_set_button, gtk_gl_area_new, gtk_label_new,
-    gtk_label_set_ellipsize, gtk_label_set_xalign, gtk_overlay_add_overlay, gtk_overlay_new,
-    gtk_overlay_set_child, gtk_paned_new, gtk_paned_set_resize_end_child,
-    gtk_paned_set_resize_start_child, gtk_paned_set_shrink_end_child,
-    gtk_paned_set_shrink_start_child, gtk_paned_set_start_child, gtk_paned_set_wide_handle,
-    gtk_popover_popdown, gtk_range_set_value, gtk_scale_new_with_range, gtk_scale_set_draw_value,
-    gtk_widget_add_controller, gtk_widget_add_css_class, gtk_widget_get_visible,
-    gtk_widget_set_can_target, gtk_widget_set_halign, gtk_widget_set_hexpand,
-    gtk_widget_set_margin_end, gtk_widget_set_size_request, gtk_widget_set_tooltip_text,
-    gtk_widget_set_valign, gtk_widget_set_vexpand, gtk_widget_set_visible,
+    GTK_ORIENTATION_HORIZONTAL, GTK_ORIENTATION_VERTICAL, GTK_PHASE_BUBBLE, GTK_PHASE_CAPTURE,
+    GTK_PHASE_TARGET, GtkBox, GtkButton, GtkGLArea, GtkGestureSingle, GtkLabel, GtkOverlay,
+    GtkPaned, GtkPopover, GtkRange, GtkScale, GtkWidget, PANGO_ELLIPSIZE_END, gtk_box_append,
+    gtk_box_new, gtk_button_new, gtk_button_set_child, gtk_event_controller_legacy_new,
+    gtk_event_controller_motion_new, gtk_event_controller_scroll_new,
+    gtk_event_controller_set_propagation_phase, gtk_gesture_click_new,
+    gtk_gesture_single_set_button, gtk_gl_area_new, gtk_label_new, gtk_label_set_ellipsize,
+    gtk_label_set_xalign, gtk_overlay_add_overlay, gtk_overlay_new, gtk_overlay_set_child,
+    gtk_paned_new, gtk_paned_set_resize_end_child, gtk_paned_set_resize_start_child,
+    gtk_paned_set_shrink_end_child, gtk_paned_set_shrink_start_child, gtk_paned_set_start_child,
+    gtk_paned_set_wide_handle, gtk_popover_popdown, gtk_range_set_value, gtk_scale_new_with_range,
+    gtk_scale_set_draw_value, gtk_widget_add_controller, gtk_widget_add_css_class,
+    gtk_widget_get_visible, gtk_widget_set_can_target, gtk_widget_set_halign,
+    gtk_widget_set_hexpand, gtk_widget_set_margin_end, gtk_widget_set_size_request,
+    gtk_widget_set_tooltip_text, gtk_widget_set_valign, gtk_widget_set_vexpand,
+    gtk_widget_set_visible,
 };
 use super::input::{
-    on_context_pressed, on_tile_motion, on_tile_scroll, on_video_legacy_event, on_video_pressed,
+    on_context_pressed, on_tile_drag_event, on_tile_motion, on_tile_scroll, on_video_pressed,
 };
 use super::layout::on_tile_focus_clicked;
 use super::playback::{
@@ -511,14 +512,22 @@ pub(super) unsafe fn create_stream_tile(
         );
         gtk_widget_add_controller((*tile).overlay, context_click.cast());
 
-        let video_legacy = gtk_event_controller_legacy_new();
-        connect_tile_signal(
-            video_legacy as *mut c_void,
-            c"event".as_ptr(),
-            on_video_legacy_event as *const c_void,
-            tile,
-        );
-        gtk_widget_add_controller((*tile).gl_area, video_legacy.cast());
+        // The video widget is hidden for empty tiles. Also handle drags targeting
+        // the background itself, without handling events from its buttons or inputs.
+        for (widget, phase) in [
+            ((*tile).gl_area, GTK_PHASE_BUBBLE),
+            ((*tile).overlay, GTK_PHASE_TARGET),
+        ] {
+            let drag_controller = gtk_event_controller_legacy_new();
+            gtk_event_controller_set_propagation_phase(drag_controller, phase);
+            connect_tile_signal(
+                drag_controller as *mut c_void,
+                c"event".as_ptr(),
+                on_tile_drag_event as *const c_void,
+                tile,
+            );
+            gtk_widget_add_controller(widget, drag_controller.cast());
+        }
 
         let video_motion = gtk_event_controller_motion_new();
         gtk_event_controller_set_propagation_phase(video_motion, GTK_PHASE_CAPTURE);

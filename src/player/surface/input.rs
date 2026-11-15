@@ -122,7 +122,7 @@ pub(super) unsafe extern "C" fn on_video_pressed(
     }
 }
 
-pub(super) unsafe extern "C" fn on_video_legacy_event(
+pub(super) unsafe extern "C" fn on_tile_drag_event(
     _controller: *mut GtkEventControllerLegacy,
     event: *mut GdkEvent,
     user_data: *mut c_void,
